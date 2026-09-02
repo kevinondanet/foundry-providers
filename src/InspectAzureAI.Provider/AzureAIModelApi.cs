@@ -89,7 +89,8 @@ public sealed class AzureAIModelApi
 
         if (string.IsNullOrEmpty(ApiKey))
         {
-            TokenProvider = AzureHosting.ResolveAzureTokenProvider("AzureAI", Settings.TokenCredential);
+            Credential = AzureHosting.ResolveAzureCredential("AzureAI", Settings.TokenCredential);
+            TokenProvider = AzureHosting.TokenProviderFor(Credential);
         }
 
         if (string.IsNullOrEmpty(ApiKey) && TokenProvider is null)
@@ -132,8 +133,16 @@ public sealed class AzureAIModelApi
     /// <summary>Resolved api key (explicit, hook-overridden, or from the environment).</summary>
     public string? ApiKey { get; private set; }
 
-    /// <summary>Entra ID token provider, set only when no api key was found.</summary>
+    /// <summary>Entra ID token provider (the Python callable shape), set only when no api key was found.</summary>
     public TokenProvider? TokenProvider { get; }
+
+    /// <summary>
+    /// Entra ID credential pinned to <see cref="TokenAudience"/>, set only when no api key was found. It
+    /// is handed to the SDK's <c>TokenCredential</c> constructor, so the token travels only as
+    /// <c>Authorization: Bearer</c> and is cached and refreshed by the SDK (README fidelity note 17).
+    /// By default it is a <c>DefaultAzureCredential</c>, which picks up <c>az login</c>.
+    /// </summary>
+    public AudienceTokenCredential? Credential { get; }
 
     /// <summary>Tool emulation setting: null (auto), true, or false. Flips to true on the first generate for Llama models.</summary>
     public bool? EmulateTools { get; private set; }
@@ -376,21 +385,25 @@ public sealed class AzureAIModelApi
             options.AdditionalProperties[key] = BinaryData.FromObjectAsJson(value);
         }
 
-        AzureKeyCredential credential;
+        ChatCompletionsClient client;
         if (!string.IsNullOrEmpty(ApiKey))
         {
-            credential = new AzureKeyCredential(ApiKey);
+            // An api key goes out as both `api-key` and `Authorization: Bearer`, as the Python SDK sends it.
+            client = new ChatCompletionsClient(new Uri(EndpointUrl), new AzureKeyCredential(ApiKey), CreateClientOptions());
         }
-        else if (TokenProvider is not null)
+        else if (Credential is not null)
         {
-            credential = new AzureKeyCredential(await TokenProvider(cancellationToken).ConfigureAwait(false));
+            // Entra ID (az login, managed identity, ...): the SDK's bearer-token policy sends only
+            // `Authorization: Bearer` and refreshes the token itself; Credential pins the scope to
+            // AZUREAI_AUDIENCE instead of the SDK's ml.azure.com default. Python tunnels the token through
+            // AzureKeyCredential, which also puts it in `api-key` — a header Azure gateways may reject.
+            client = new ChatCompletionsClient(new Uri(EndpointUrl), Credential, CreateClientOptions());
         }
         else
         {
             throw new PrerequisiteError("Azure AI must have either an API key or token provider.");
         }
 
-        var client = new ChatCompletionsClient(new Uri(EndpointUrl), credential, CreateClientOptions());
         var modelCall = ModelCall.Create(RequestSnapshot(options, completionParams, streaming, sendTools), OpenAIUtil.OpenAIMediaFilter);
 
         try

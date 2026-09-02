@@ -2,9 +2,12 @@ using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Azure;
+using Azure.Core;
+using Azure.Identity;
 using InspectAzureAI.Provider;
 using InspectAzureAI.Provider.Core;
 using InspectAzureAI.Provider.Testing;
+using InspectAzureAI.Provider.Util;
 using InspectAzureAI.Sample;
 
 var arguments = args.ToList();
@@ -12,6 +15,7 @@ var fake = arguments.Remove("--fake");
 var streamingArg = TakeOption(arguments, "--streaming");
 var emulateArg = TakeOption(arguments, "--emulate-tools");
 var modelArg = TakeOption(arguments, "--model");
+var authArg = TakeOption(arguments, "--auth");
 
 if (arguments.Count == 0 || arguments[0] is "--help" or "-h" or "help")
 {
@@ -25,14 +29,15 @@ try
 {
     return command switch
     {
-        "config" => Cli.Config(Cli.CreateApi(modelArg, streamingArg, emulateArg, fake)),
+        "config" => Cli.Config(Cli.CreateApi(modelArg, streamingArg, emulateArg, fake, authArg)),
         "naming" => Cli.Naming(rest),
-        "chat" => await Cli.Chat(Cli.CreateApi(modelArg, streamingArg, emulateArg, fake), string.Join(" ", rest)),
-        "stream" => await Cli.Stream(Cli.CreateApi(modelArg, streamingArg, emulateArg, fake), string.Join(" ", rest)),
-        "tools" => await Cli.ToolLoop(Cli.CreateApi(modelArg, streamingArg, emulateArg ?? "false", fake), string.Join(" ", rest)),
-        "emulate-tools" => await Cli.ToolLoop(Cli.CreateApi(modelArg, streamingArg, emulateArg ?? "true", fake), string.Join(" ", rest)),
-        "image" => await Cli.Image(Cli.CreateApi(modelArg, streamingArg, emulateArg, fake), rest),
-        "retry-demo" => Cli.RetryDemo(Cli.CreateApi(modelArg, streamingArg, emulateArg, fake)),
+        "chat" => await Cli.Chat(Cli.CreateApi(modelArg, streamingArg, emulateArg, fake, authArg), string.Join(" ", rest)),
+        "stream" => await Cli.Stream(Cli.CreateApi(modelArg, streamingArg, emulateArg, fake, authArg), string.Join(" ", rest)),
+        "tools" => await Cli.ToolLoop(Cli.CreateApi(modelArg, streamingArg, emulateArg ?? "false", fake, authArg), string.Join(" ", rest)),
+        "emulate-tools" => await Cli.ToolLoop(Cli.CreateApi(modelArg, streamingArg, emulateArg ?? "true", fake, authArg), string.Join(" ", rest)),
+        "image" => await Cli.Image(Cli.CreateApi(modelArg, streamingArg, emulateArg, fake, authArg), rest),
+        "retry-demo" => Cli.RetryDemo(Cli.CreateApi(modelArg, streamingArg, emulateArg, fake, authArg)),
+        "token" => await Cli.Token(Cli.CreateApi(modelArg, streamingArg, emulateArg, fake, authArg)),
         _ => Cli.Unknown(command),
     };
 }
@@ -45,6 +50,11 @@ catch (PrerequisiteError ex)
 {
     Console.Error.WriteLine(ex.Message);
     return 2;
+}
+catch (Exception ex) when (Cli.IsSignInFailure(ex))
+{
+    Console.Error.WriteLine($"Entra ID sign-in failed: {Cli.SignInFailureMessage(ex)}\n\n{Cli.LoginHint}");
+    return 3;
 }
 catch (RequestFailedException ex)
 {
@@ -97,6 +107,8 @@ namespace InspectAzureAI.Sample
               emulate-tools [prompt]    Llama <tool_call> prompt-format tool-calling loop, same tool
               image <path-or-url>       send an image (materialised as a data URI) with a question
               retry-demo                show ShouldRetry / IsAuthFailure / HandleAzureError decisions
+              token                     acquire an Entra ID token with the resolved credential and print
+                                        who it belongs to (verifies that `az login` is picked up; no model call)
               --help                    this text
 
             options:
@@ -104,13 +116,39 @@ namespace InspectAzureAI.Sample
               --streaming auto|true|false   the `streaming` model arg (default auto)
               --emulate-tools true|false    the `emulate_tools` model arg
               --fake                    answer from a canned in-memory transport (no network, no keys)
+              --auth <selector>         Entra ID credential: default (DefaultAzureCredential, includes az login),
+                                        cli, developer-cli, managed-identity, environment, interactive
 
             environment (same names and precedence as the Python provider):
               AZURE_API_KEY / AZUREAI_API_KEY                       api key (legacy name wins)
               AZURE_ENDPOINT_URL / AZUREAI_ENDPOINT_URL / AZUREAI_BASE_URL   endpoint (in that order)
               INSPECT_EVAL_MODEL_BASE_URL                           last-resort endpoint fallback
-              AZUREAI_AUDIENCE                                      Entra ID token scope (managed identity)
+              AZUREAI_AUDIENCE                                      Entra ID token scope (default https://cognitiveservices.azure.com/.default)
+              AZUREAI_CREDENTIAL                                    same values as --auth (default: default)
+              AZURE_TENANT_ID / AZURE_CLIENT_ID                     tenant pin / user-assigned managed identity
+
+            Entra ID is used whenever no API key is set: sign in with `az login` (and `az account set`),
+            then run `token` to confirm which identity the credential resolves to.
             """;
+
+        /// <summary>What to try when token acquisition fails.</summary>
+        public const string LoginHint = """
+            Hints:
+              az login                                   sign in (add --tenant <id> for a specific tenant)
+              az account set --subscription <name|id>    pick the subscription that owns the endpoint
+              --auth cli / AZUREAI_CREDENTIAL=cli        skip the managed-identity probe and use az login directly
+              AZURE_TENANT_ID=<id>                       pin the tenant for the default / cli credentials
+              AZUREAI_AUDIENCE=<scope>                   change the token scope (default https://cognitiveservices.azure.com/.default)
+            """;
+
+        public static bool IsSignInFailure(Exception ex) =>
+            ex is CredentialUnavailableException or AuthenticationFailedException
+            || (ex is AggregateException aggregate && aggregate.InnerExceptions.Any(IsSignInFailure));
+
+        public static string SignInFailureMessage(Exception ex) =>
+            ex is AggregateException aggregate && aggregate.InnerExceptions.Count > 0
+                ? SignInFailureMessage(aggregate.InnerExceptions[^1])
+                : ex.Message;
 
         private static readonly JsonSerializerOptions Pretty = new() { WriteIndented = true, Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
 
@@ -126,8 +164,21 @@ namespace InspectAzureAI.Sample
             },
         };
 
-        public static AzureAIModelApi CreateApi(string? model, string? streaming, string? emulateTools, bool fake)
+        public static AzureAIModelApi CreateApi(string? model, string? streaming, string? emulateTools, bool fake, string? auth = null)
         {
+            var settings = new AzureAIClientSettings();
+            if (auth is not null)
+            {
+                try
+                {
+                    settings = settings with { TokenCredential = AzureHosting.CreateCredential(auth) };
+                }
+                catch (PrerequisiteError ex)
+                {
+                    throw new UsageError($"--auth: {ex.Message}");
+                }
+            }
+
             model ??= Environment.GetEnvironmentVariable("INSPECT_AZUREAI_MODEL") ?? "Llama-3.3-70B-Instruct";
             var modelArgs = new Dictionary<string, object?>();
             if (emulateTools is not null)
@@ -148,7 +199,7 @@ namespace InspectAzureAI.Sample
                         settings: new AzureAIClientSettings { Transport = FakeAzure.Transport() });
                 }
 
-                return new AzureAIModelApi(model, streaming: streaming, modelArgs: modelArgs);
+                return new AzureAIModelApi(model, streaming: streaming, modelArgs: modelArgs, settings: settings);
             }
             catch (ArgumentException ex)
             {
@@ -160,7 +211,12 @@ namespace InspectAzureAI.Sample
         public static int Config(AzureAIModelApi api)
         {
             Console.WriteLine($"endpoint            : {api.EndpointUrl}");
-            Console.WriteLine($"auth mode           : {(api.ApiKey is not null ? "api key (Authorization: Bearer + api-key headers)" : $"Entra ID via DefaultAzureCredential, scope {AzureAIModelApi.TokenAudience}")}");
+            Console.WriteLine($"auth mode           : {(api.ApiKey is not null ? "api key (sent as api-key + Authorization: Bearer)" : "Entra ID (Authorization: Bearer only)")}");
+            if (api.Credential is not null)
+            {
+                Console.WriteLine($"credential          : {AzureHosting.Describe(api.Credential)}");
+                Console.WriteLine("                      run `token` to confirm the sign-in (az login) yields a token");
+            }
             Console.WriteLine($"model_name          : {api.ModelName}");
             Console.WriteLine($"service_model_name  : {api.ServiceModelName()}");
             Console.WriteLine($"canonical_name      : {api.CanonicalName()}");
@@ -249,6 +305,46 @@ namespace InspectAzureAI.Sample
             };
             var result = await api.GenerateAsync(input, [], ToolChoice.Auto, DefaultConfig(api));
             return Report(result);
+        }
+
+        /// <summary>Acquires a token with the resolved credential and prints who it belongs to (never the token).</summary>
+        public static async Task<int> Token(AzureAIModelApi api)
+        {
+            if (api.Credential is null)
+            {
+                Console.WriteLine("An API key is configured, so Entra ID is not used. Unset AZURE_API_KEY / AZUREAI_API_KEY to sign in with az login.");
+                return 0;
+            }
+
+            Console.WriteLine($"credential : {AzureHosting.Describe(api.Credential.Inner)}");
+            Console.WriteLine($"scope      : {api.Credential.Scope}");
+            try
+            {
+                var token = await api.Credential.GetTokenAsync(new TokenRequestContext([api.Credential.Scope]), CancellationToken.None);
+                Console.WriteLine($"acquired   : yes, expires {token.ExpiresOn:u}");
+                var info = EntraTokenInfo.TryParse(token.Token);
+                if (info is null)
+                {
+                    Console.WriteLine("claims     : (opaque token, not a JWT)");
+                    return 0;
+                }
+
+                Console.WriteLine($"identity   : {info.UserPrincipalName ?? info.AppId ?? "(unknown)"}{(info.Name is null ? "" : $" ({info.Name})")}");
+                Console.WriteLine($"tenant     : {info.TenantId ?? "(unknown)"}");
+                Console.WriteLine($"object id  : {info.ObjectId ?? "(unknown)"}");
+                Console.WriteLine($"audience   : {info.Audience ?? "(unknown)"}");
+                if (info.Scopes.Count > 0)
+                {
+                    Console.WriteLine($"scopes     : {string.Join(' ', info.Scopes)}");
+                }
+
+                return 0;
+            }
+            catch (Exception ex) when (IsSignInFailure(ex))
+            {
+                Console.Error.WriteLine($"Could not acquire a token: {SignInFailureMessage(ex)}\n\n{LoginHint}");
+                return 3;
+            }
         }
 
         public static int RetryDemo(AzureAIModelApi api)

@@ -141,8 +141,10 @@ public class GenerateTests
     }
 
     [Fact]
-    public async Task entra_token_is_sent_in_both_headers()
+    public async Task entra_token_is_sent_as_bearer_only()
     {
+        // Python tunnels the token through AzureKeyCredential (both headers); the port uses the SDK's
+        // TokenCredential constructor so the token travels only as Authorization: Bearer (fidelity note 17).
         using var env = EnvScope.Clean();
         var transport = Transport(Fixtures.Completion("ok"));
         var credential = new FakeTokenCredential("entra-token");
@@ -150,7 +152,7 @@ public class GenerateTests
 
         await Generate(api, transport);
 
-        Assert.Equal("entra-token", transport.LastRequest!.Headers["api-key"]);
+        Assert.False(transport.LastRequest!.Headers.ContainsKey("api-key"));
         Assert.Equal("Bearer entra-token", transport.LastRequest.Headers["Authorization"]);
         Assert.Equal(["https://cognitiveservices.azure.com/.default"], Assert.Single(credential.Scopes));
     }

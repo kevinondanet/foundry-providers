@@ -4,6 +4,7 @@ using Azure.Core;
 using InspectAzureAI.Provider;
 using InspectAzureAI.Provider.Core;
 using InspectAzureAI.Provider.Testing;
+using InspectAzureAI.Provider.Util;
 
 [assembly: CollectionBehavior(DisableTestParallelization = true)]
 
@@ -16,7 +17,7 @@ internal sealed class EnvScope : IDisposable
     [
         AzureAIModelApi.AzureApiKeyVar, AzureAIModelApi.AzureAIApiKeyVar, AzureAIModelApi.AzureEndpointUrlVar,
         AzureAIModelApi.AzureAIEndpointUrlVar, AzureAIModelApi.AzureAIBaseUrlVar, "INSPECT_EVAL_MODEL_BASE_URL",
-        AzureAIModelApi.AzureAIAudienceVar,
+        AzureAIModelApi.AzureAIAudienceVar, AzureHosting.AzureAICredential, AzureHosting.AzureTenantId, AzureHosting.AzureClientId,
     ];
 
     private readonly Dictionary<string, string?> _saved = new();

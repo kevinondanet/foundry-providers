@@ -96,7 +96,8 @@ flowchart LR
 | `yaml.safe_load` (non-JSON tool arguments) | `Tools/YamlScalar.cs` (approximation, see fidelity notes) |
 | `util/_json.py` `json_schema_dump`, `JSON_SCHEMA_EXTENDED_FIELDS`, `JSONSchema` | `Tools/JsonSchemaDump.cs`, `Core/Tools.cs` (`ToolParam.ToJson`) |
 | `util/util.py` `normalize_stream_arg`, `model_base_url`, `environment_prerequisite_error` | `Util/ProviderUtil.cs` |
-| `util/azure_hosting.py` `resolve_azure_token_provider`, `DEFAULT_AZURE_AUDIENCE` | `Util/AzureHosting.cs` |
+| `util/azure_hosting.py` `resolve_azure_token_provider`, `DEFAULT_AZURE_AUDIENCE` | `Util/AzureHosting.cs` (`ResolveAzureCredential`, `CreateCredential`, `AudienceTokenCredential`) |
+| *(none)* Entra token diagnostics for the `token` command | `Util/EntraTokenInfo.cs` |
 | `_util/http.py` `is_retryable_http_status`, `parse_retry_after(_from_exception)`, `status_code_of` | `Util/HttpRetryUtil.cs` |
 | `_openai.py` `needs_max_completion_tokens`, `openai_stop_details`, `openai_media_filter` | `Util/OpenAIUtil.cs` |
 | `_model_output.py` `collect_stop_details` | `Util/ModelOutputUtil.cs` |
@@ -125,12 +126,36 @@ Same names and precedence as the Python provider:
 | `AZUREAI_API_KEY` | API key (fallback when `AZURE_API_KEY` is unset — a set-but-empty `AZURE_API_KEY` is taken as-is, see fidelity note 15) |
 | `AZURE_ENDPOINT_URL`, `AZUREAI_ENDPOINT_URL`, `AZUREAI_BASE_URL` | endpoint, consulted in that order (e.g. `https://your-url.azure.com/models`) |
 | `INSPECT_EVAL_MODEL_BASE_URL` | last-resort endpoint fallback |
-| `AZUREAI_AUDIENCE` | Entra ID token scope for managed identity (default `https://cognitiveservices.azure.com/.default`) |
+| `AZUREAI_AUDIENCE` | Entra ID token scope (default `https://cognitiveservices.azure.com/.default`) |
+| `AZUREAI_CREDENTIAL` | *(port only)* which Azure.Identity credential to use: `default` (`DefaultAzureCredential`, includes `az login`), `cli`, `developer-cli`, `managed-identity`, `environment`, `interactive` |
+| `AZURE_TENANT_ID`, `AZURE_CLIENT_ID` | *(Azure.Identity standard)* tenant pin for the default / cli credentials; client id of a user-assigned managed identity |
 
 Resolution order for the key: explicit constructor argument → api-key override hook → `AZURE_API_KEY` →
-`AZUREAI_API_KEY` → `DefaultAzureCredential` (Entra ID). The resulting key or token is sent both as
-`Authorization: Bearer …` and `api-key: …`, exactly as the Python SDK does. Missing prerequisites raise
-`PrerequisiteError` with the Python messages (Rich markup included).
+`AZUREAI_API_KEY` → Entra ID. An API key is sent both as `Authorization: Bearer …` and `api-key: …`,
+exactly as the Python SDK does; an Entra ID token is sent only as `Authorization: Bearer …` (fidelity
+note 17). Missing prerequisites raise `PrerequisiteError` with the Python messages (Rich markup included).
+
+### Signing in with `az login`
+
+Leave both API-key variables unset and the provider authenticates with Entra ID through
+`DefaultAzureCredential`, whose chain includes the Azure CLI:
+
+```bash
+az login                                   # or: az login --tenant <tenant-id>
+az account set --subscription <name|id>    # the subscription that owns the endpoint
+export AZUREAI_BASE_URL=https://your-resource.services.ai.azure.com/models
+
+dotnet run --project src/InspectAzureAI.Sample -- token      # who does the credential resolve to?
+dotnet run --project src/InspectAzureAI.Sample -- chat "hello"
+```
+
+`token` acquires a token for `AZUREAI_AUDIENCE` and prints the identity, tenant, audience and expiry
+from its claims (never the token itself), so a wrong tenant or an expired login shows up before the
+first model call. On a developer machine `DefaultAzureCredential` probes managed identity first, which
+can add a few seconds; `--auth cli` (or `AZUREAI_CREDENTIAL=cli`) goes straight to `az login`. The
+identity needs a data-plane role on the resource, typically **Cognitive Services User** (or
+**Cognitive Services OpenAI User** for Azure OpenAI deployments); missing roles surface as HTTP 401/403
+from the model call, not from `token`.
 
 The sample additionally reads `INSPECT_AZUREAI_MODEL` for the default model name.
 
@@ -153,6 +178,7 @@ export INSPECT_AZUREAI_MODEL=Llama-3.3-70B-Instruct
 S="dotnet run --project src/InspectAzureAI.Sample --"
 $S --help                          # list everything
 $S config                          # resolved endpoint / auth mode / names, no call made
+$S token                           # Entra ID only: acquire a token via az login / managed identity and print its identity
 $S naming gpt-4o moonshotai/kimi-k2.5 custom-org/llama-3-70b
 $S chat "What are you?"            # non-streaming completion
 $S stream "Tell me a joke"         # streaming: deltas printed as they arrive
@@ -280,3 +306,12 @@ Places where the port deliberately deviates from the Python implementation, and 
     `getattr`, and azure.ai.inference's dict-backed `ChatResponseMessage` exposes no such attribute, so
     for this provider Python never produces a `refusal` explanation; the port reproduces that by not
     reading the raw `refusal` key (a refusal with no filtered category yields no stop details).
+17. **Entra ID tokens are sent as `Authorization: Bearer` only.** Python feeds the Entra token into
+    `AzureKeyCredential`, so azure-ai-inference sends it in both `Authorization` and `api-key`. Azure AI
+    Services and Azure OpenAI gateways validate `api-key` first when it is present and reject the JWT with
+    401, which is why `az login` can look broken. The port hands the credential to the SDK's
+    `TokenCredential` constructor instead: only the bearer header is sent and the SDK caches and refreshes
+    the token. `AudienceTokenCredential` keeps the Python `AZUREAI_AUDIENCE` semantics (default
+    `https://cognitiveservices.azure.com/.default`) because that constructor would otherwise request
+    `https://ml.azure.com/.default`. `AZUREAI_CREDENTIAL`, `--auth` and the `token` command are additions
+    with no Python counterpart; the default remains `DefaultAzureCredential`, as in Python.
