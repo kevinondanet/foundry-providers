@@ -1,0 +1,43 @@
+namespace InspectAzureAI.Provider.Core;
+
+/// <summary>
+/// Base of the content union (port of <c>ContentBase</c> in
+/// <c>src/inspect_ai/_util/content.py</c>). Only the members the azureai provider
+/// touches are carried over: text, image, audio and video.
+/// </summary>
+public abstract record Content
+{
+    /// <summary>Discriminator carried in the Python <c>type</c> field.</summary>
+    public abstract string Type { get; }
+}
+
+/// <summary>Text content (port of <c>ContentText</c>, <c>content.py</c>).</summary>
+public sealed record ContentText(string Text) : Content
+{
+    public override string Type => "text";
+
+    /// <summary>Whether the text is a refusal (ignored by the azureai provider).</summary>
+    public bool? Refusal { get; init; }
+}
+
+/// <summary>
+/// Image content (port of <c>ContentImage</c>, <c>content.py</c>). <see cref="Image"/> must be an
+/// inline base64 data URI by the time it reaches the provider; <see cref="Detail"/> is one of
+/// <c>auto</c>, <c>low</c>, <c>high</c> or <c>original</c> and is passed to the wire verbatim.
+/// </summary>
+public sealed record ContentImage(string Image, string Detail = "auto") : Content
+{
+    public override string Type => "image";
+}
+
+/// <summary>Audio content (port of <c>ContentAudio</c>, <c>content.py</c>); rejected by azureai.</summary>
+public sealed record ContentAudio(string Audio, string Format) : Content
+{
+    public override string Type => "audio";
+}
+
+/// <summary>Video content (port of <c>ContentVideo</c>, <c>content.py</c>); rejected by azureai.</summary>
+public sealed record ContentVideo(string Video, string Format) : Content
+{
+    public override string Type => "video";
+}

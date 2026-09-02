@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>InspectAzureAI.Sample</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\InspectAzureAI.Provider\InspectAzureAI.Provider.csproj" />
+  </ItemGroup>
+
+</Project>
