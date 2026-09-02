@@ -179,6 +179,7 @@ S="dotnet run --project src/InspectAzureAI.Sample --"
 $S --help                          # list everything
 $S config                          # resolved endpoint / auth mode / names, no call made
 $S token                           # Entra ID only: acquire a token via az login / managed identity and print its identity
+$S chat --model gpt-5.4-mini --temperature 0 "hello"   # temperature is optional; gpt-5 deployments accept only 1
 $S naming gpt-4o moonshotai/kimi-k2.5 custom-org/llama-3-70b
 $S chat "What are you?"            # non-streaming completion
 $S stream "Tell me a joke"         # streaming: deltas printed as they arrive
@@ -212,6 +213,37 @@ other Azure failure is recorded on the `ModelCall` and **thrown** — already no
 `ShouldRetry(ex)` / `IsAuthFailure(ex)`; the sample's `retry-demo` shows the classification table.
 Non-Azure failures (an empty stream, a malformed SSE chunk, caller cancellation) propagate unrecorded
 and unretried, exactly as non-`AzureError` exceptions do in Python.
+
+## Verified against a live Foundry resource
+
+Checked on 2 September 2026 against an Azure AI Foundry resource (kind `AIServices`, eastus2) using
+`az login` only, no API key, endpoint `https://<resource>.services.ai.azure.com/models`:
+
+| Command | Deployment | Result |
+|---|---|---|
+| `token` (default and `--auth cli`) | — | token for `https://cognitiveservices.azure.com/.default`, identity and tenant printed |
+| `chat` | gpt-5.4-mini, gpt-5.6-sol, DeepSeek-V4-Pro, DeepSeek-V4-Flash, model-router | 200, usage reported; model-router answered from `grok-4-1-fast-reasoning` |
+| `stream` | gpt-5.4-mini | deltas delivered; usage not reported by the endpoint in stream mode (same as Python) |
+| `tools` (native) | DeepSeek-V4-Flash | two-turn loop: `tool_calls` → tool result → final answer |
+| `emulate-tools` (Llama prompt format) | DeepSeek-V4-Flash | two-turn loop succeeded |
+| `emulate-tools` | gpt-5.4-mini | turn 1 parsed the `<tool_call>`; turn 2 rejected with HTTP 400 because OpenAI-format deployments require a `tool` message to follow an assistant `tool_calls` message. Python sends the same shape (`ToolMessage` at `azureai.py:713-716`, `Llama31Handler.tool_message`), so this is inherent to emulation, which targets Llama-style endpoints |
+| `image` | gpt-5.4-mini | data-URI image accepted, description returned |
+
+Two things to know before your first call:
+
+- **A data-plane role is required.** Owner or Contributor on the subscription is not enough; the
+  endpoint answers `401 ... lacks the required data action
+  Microsoft.CognitiveServices/accounts/MaaS/chat/completions/action`. Assign **Cognitive Services User**
+  (data actions `Microsoft.CognitiveServices/*`) on the resource, then allow several minutes for
+  propagation (six minutes in this test):
+
+  ```bash
+  az role assignment create --role "Cognitive Services User" \
+    --assignee-object-id "$(az ad signed-in-user show --query id -o tsv)" --assignee-principal-type User \
+    --scope "$(az cognitiveservices account show -n <resource> -g <rg> --query id -o tsv)"
+  ```
+- **Do not send `temperature` to gpt-5 deployments** unless it is 1; the sample leaves it unset by
+  default and `--temperature <n>` sets it explicitly.
 
 ## Intentionally out of scope
 

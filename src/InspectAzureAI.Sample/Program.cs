@@ -16,6 +16,17 @@ var streamingArg = TakeOption(arguments, "--streaming");
 var emulateArg = TakeOption(arguments, "--emulate-tools");
 var modelArg = TakeOption(arguments, "--model");
 var authArg = TakeOption(arguments, "--auth");
+var temperatureArg = TakeOption(arguments, "--temperature");
+if (temperatureArg is not null)
+{
+    if (!double.TryParse(temperatureArg, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var temperature))
+    {
+        Console.Error.WriteLine($"--temperature expects a number, got '{temperatureArg}'\n\n{Cli.Help}");
+        return 2;
+    }
+
+    Cli.Temperature = temperature;
+}
 
 if (arguments.Count == 0 || arguments[0] is "--help" or "-h" or "help")
 {
@@ -116,6 +127,7 @@ namespace InspectAzureAI.Sample
               --streaming auto|true|false   the `streaming` model arg (default auto)
               --emulate-tools true|false    the `emulate_tools` model arg
               --fake                    answer from a canned in-memory transport (no network, no keys)
+              --temperature <n>         sampling temperature (default: not sent; gpt-5 deployments accept only 1)
               --auth <selector>         Entra ID credential: default (DefaultAzureCredential, includes az login),
                                         cli, developer-cli, managed-identity, environment, interactive
 
@@ -403,8 +415,11 @@ namespace InspectAzureAI.Sample
             return 2;
         }
 
+        /// <summary>Sampling temperature for every command; null leaves the deployment default (gpt-5 models reject anything but 1).</summary>
+        public static double? Temperature { get; set; }
+
         private static GenerateConfig DefaultConfig(AzureAIModelApi api) =>
-            new() { MaxTokens = api.MaxTokens(), Temperature = 0.0 };
+            new() { MaxTokens = api.MaxTokens(), Temperature = Temperature };
 
         private static string Prompt(string prompt, string fallback = "This is a test string. What are you?") =>
             string.IsNullOrWhiteSpace(prompt) ? fallback : prompt;
