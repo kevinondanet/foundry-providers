@@ -82,6 +82,7 @@ flowchart LR
 | `AzureAIAPI.max_tokens` / `should_retry` / `is_auth_failure` / `collapse_user_messages` / `connection_key` | same-named methods on `AzureAIModelApi` |
 | `AzureAIAPI.service_model_name` / `canonical_name` / `is_llama` / `is_mistral` / `is_openai_model` | same-named methods |
 | `AzureAIAPI.handle_azure_error` | `AzureAIModelApi.HandleAzureError` |
+| `except AzureError` in `AzureAIAPI.generate` (azure-core's `HttpResponseError` / `ServiceRequestError` / `ServiceResponseError`) | `AzureAIModelApi.AsAzureError` (normalises what Azure.Core throws, see fidelity note 3) |
 | `_is_llama_model` / `_is_llama3_model` / `_is_mistral_model` / `_is_openai_model` | `AzureAIModelApi.IsLlamaModel` / `IsLlama3Model` / `IsMistralModel` / `IsOpenAIModelName` |
 | `_StreamChoice` / `azureai_completion_from_stream` | `StreamChoice` / `AzureAIStreamAccumulator.CompletionFromStreamAsync` |
 | `chat_request_messages` / `chat_request_message` / `chat_content_item` | `Tools/AzureMessageConversion` |
@@ -111,7 +112,7 @@ flowchart LR
 | `_generate_config.py` `GenerateConfig` (subset) | `Core/GenerateConfig.cs` |
 | `_stream.py` `Stream*Event`, `StreamHandler`, `ModelStreamObserver`, `model_stream_requested`, `report_model_stream_*` | `Core/Streaming.cs` |
 | `_util/error.py` `PrerequisiteError`; `azure.core.exceptions.ServiceResponseError` | `Core/Errors.cs` (`PrerequisiteError`, `ServiceResponseException`) |
-| `textwrap.dedent`, `json.dumps`, `shortuuid.uuid`, Python truthiness | `Util/TextWrap.cs`, `Util/PythonJson.cs`, `Util/ShortUuid.cs`, `Util/PythonSemantics.cs` |
+| `textwrap.dedent`, `json.dumps` / `json.loads`, `shortuuid.uuid`, Python truthiness | `Util/TextWrap.cs`, `Util/PythonJson.cs` (`Dumps` / `Loads`), `Util/ShortUuid.cs`, `Util/PythonSemantics.cs` |
 | `tests/model/providers/test_azureai.py`, `tests/model/test_canonical_names.py::TestAzureAICanonicalName`, `tests/model/test_parse_tool_call.py` | `tests/InspectAzureAI.Tests` (`StreamingTests`, `EnvPrecedenceTests`, `NamingTests`, `ParseToolCallTests`, ...) — tests keep the Python test names |
 
 ## Environment variables
@@ -121,7 +122,7 @@ Same names and precedence as the Python provider:
 | Variable | Meaning |
 |---|---|
 | `AZURE_API_KEY` | API key (legacy name, **preferred**: checked first) |
-| `AZUREAI_API_KEY` | API key (fallback when `AZURE_API_KEY` is unset) |
+| `AZUREAI_API_KEY` | API key (fallback when `AZURE_API_KEY` is unset — a set-but-empty `AZURE_API_KEY` is taken as-is, see fidelity note 15) |
 | `AZURE_ENDPOINT_URL`, `AZUREAI_ENDPOINT_URL`, `AZUREAI_BASE_URL` | endpoint, consulted in that order (e.g. `https://your-url.azure.com/models`) |
 | `INSPECT_EVAL_MODEL_BASE_URL` | last-resort endpoint fallback |
 | `AZUREAI_AUDIENCE` | Entra ID token scope for managed identity (default `https://cognitiveservices.azure.com/.default`) |
@@ -180,8 +181,11 @@ var output = result.OutputOrThrow();        // ModelOutput; result.Call is the M
 
 `GenerateAsync` mirrors the Python return contract: a `GenerateResult` carrying either the
 `ModelOutput` or, for a terminal HTTP 400, the exception (which Inspect wraps without retrying); every
-other Azure failure is **thrown** so the caller can consult `ShouldRetry(ex)` /
-`IsAuthFailure(ex)` — the sample's `retry-demo` shows the classification table.
+other Azure failure is recorded on the `ModelCall` and **thrown** — already normalised to
+`RequestFailedException` / `ServiceResponseException` (fidelity note 3) — so the caller can consult
+`ShouldRetry(ex)` / `IsAuthFailure(ex)`; the sample's `retry-demo` shows the classification table.
+Non-Azure failures (an empty stream, a malformed SSE chunk, caller cancellation) propagate unrecorded
+and unretried, exactly as non-`AzureError` exceptions do in Python.
 
 ## Intentionally out of scope
 
@@ -213,19 +217,36 @@ Places where the port deliberately deviates from the Python implementation, and 
    so for gpt-5 / o-series families Python effectively sends no limit. The port sends it as a
    pass-through extra (`AdditionalProperties`), which is the evident intent; this adds the
    `extra-parameters: pass-through` header on those requests.
-3. **Azure error types.** `azure.core.HttpResponseError` ↔ `RequestFailedException` with `Status > 0`;
-   `ServiceRequestError` (connection failure, not retried) ↔ `RequestFailedException` with `Status == 0`;
-   `ServiceResponseError` (response could not be read, retried as transient) ↔ the provider's
-   `ServiceResponseException`, which wraps `IOException` / non-caller timeouts raised while consuming the
-   body. `str(ex.message)` ↔ the leading line of `RequestFailedException.Message` (Azure.Core appends a
+3. **Azure error types.** Python catches the whole `AzureError` family; the .NET SDK throws a wider
+   mix, which `AzureAIModelApi.AsAzureError` normalises on both the streaming and the non-streaming
+   path before the `ModelCall` is error-marked and `HandleAzureError` runs:
+   - `azure.core.HttpResponseError` ↔ `RequestFailedException` with `Status > 0`;
+   - `ServiceRequestError` (connection failure, not retried) ↔ `RequestFailedException` with
+     `Status == 0` (Azure.Core wraps `HttpRequestException` this way);
+   - `ServiceResponseError` (response could not be read, retried as transient) ↔ the provider's
+     `ServiceResponseException`, into which the port wraps the raw `IOException` and the
+     `TaskCanceledException` Azure.Core's network timeout (`ClientOptions.Retry.NetworkTimeout`, 100 s)
+     raises — Azure.Core does not wrap either — while an `OperationCanceledException` caused by the
+     caller's own token propagates untouched;
+   - anything else (`JsonException` from a malformed SSE chunk ↔ the SDK's `json.JSONDecodeError`,
+     the empty-stream `InvalidOperationException`) is not an Azure error and propagates unrecorded and
+     unretried, like Python.
+   `str(ex.message)` ↔ the leading line of `RequestFailedException.Message` (Azure.Core appends a
    status/content/header dump).
 4. **SDK-level retries stay on.** Both SDK pipelines retry underneath Inspect's `should_retry` loop; the
-   defaults differ (azure-core: 10 attempts, Azure.Core: 3). `AzureAIClientSettings.ConfigureClientOptions`
-   can change or disable it (the tests disable it).
+   defaults differ (azure-core: 10 attempts, Azure.Core: 3). When Azure.Core exhausts its attempts on
+   thrown failures it raises an `AggregateException` ("Retry failed after N tries"); `AsAzureError`
+   unwraps it to the *last* attempt's exception (azure-core re-raises the last `AzureError`) and maps
+   that by the rules in note 3. `AzureAIClientSettings.ConfigureClientOptions` can change or disable the
+   SDK retries (the tests run with 0, and with 2 for the exhaustion case).
 5. **JSON parse-error text.** `ToolCall.ParseError` embeds `System.Text.Json` messages rather than
    Python's `json` messages (e.g. `Expecting value: line 1 column 1 (char 0)`); the surrounding
    `Error parsing the following tool call arguments: … Error details: …` framing, middle-truncation at
-   16 KiB, trailing-quote recovery and the depth-100 limit are identical.
+   16 KiB (decoding split multibyte sequences with `errors="ignore"` semantics), trailing-quote recovery
+   and the depth-100 limit are identical. Tool-call JSON is parsed with `PythonJson.Loads`, which keeps
+   `json.loads`' last-wins handling of duplicated object keys (`JsonNode.Parse` would throw). The one
+   acceptance difference: the non-standard `NaN` / `Infinity` / `-Infinity` tokens `json.loads` accepts
+   are reported as a parse error (a `JsonNode` cannot hold them; models essentially never emit them).
 6. **YAML fallback is an approximation.** `yaml.safe_load` for non-JSON tool arguments is replaced by
    `YamlScalar`: YAML 1.1 scalars (including `yes/no/on/off`, `1_000`, `0x10`), quoted strings, flow
    collections and a single-line `key: value` mapping. Block collections, anchors/aliases and
@@ -249,3 +270,13 @@ Places where the port deliberately deviates from the Python implementation, and 
 14. **Managed identity** uses `DefaultAzureCredential` from Azure.Identity, a hard dependency, so the
     Python `ImportError` → `PrerequisiteError` branch cannot occur; credential construction failures
     surface with the same message.
+15. **Empty `AZURE_API_KEY`.** Like `os.environ.get(AZURE_API_KEY, os.environ.get(AZUREAI_API_KEY))`,
+    a set-but-empty `AZURE_API_KEY` is taken as-is (`ApiKey == ""`, `AZUREAI_API_KEY` never consulted)
+    and the constructor falls through to managed identity. Python's `generate` then still builds
+    `AzureKeyCredential("")` (its check is `is not None`) and sends an empty key; .NET's
+    `AzureKeyCredential` rejects an empty key, so the port uses the resolved token provider instead —
+    the evident intent of the fall-through.
+16. **Refusal text is not a stop detail.** `openai_stop_details` reads `message.refusal` with
+    `getattr`, and azure.ai.inference's dict-backed `ChatResponseMessage` exposes no such attribute, so
+    for this provider Python never produces a `refusal` explanation; the port reproduces that by not
+    reading the raw `refusal` key (a refusal with no filtered category yields no stop details).

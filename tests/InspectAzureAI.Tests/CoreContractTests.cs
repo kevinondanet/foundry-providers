@@ -8,17 +8,20 @@ namespace InspectAzureAI.Tests;
 public class CoreContractTests
 {
     [Fact]
-    public void openai_stop_details_ignores_detected_but_not_filtered()
+    public void openai_stop_details_ignores_detected_but_not_filtered_and_raw_refusal_text()
     {
         var choice = JsonNode.Parse("""{"finish_reason":"stop","content_filter_results":{"jailbreak":{"filtered":false,"detected":true}}}""")!.AsObject();
         Assert.Null(OpenAIUtil.OpenAIStopDetails(choice));
 
+        // azure.ai.inference's dict-backed message has no `refusal` attribute, so Python yields None here
         var refusal = JsonNode.Parse("""{"finish_reason":"stop","message":{"refusal":"nope"}}""")!.AsObject();
-        var details = OpenAIUtil.OpenAIStopDetails(refusal)!;
+        Assert.Null(OpenAIUtil.OpenAIStopDetails(refusal));
+
+        var filteredOnStop = JsonNode.Parse("""{"finish_reason":"stop","message":{"refusal":"nope"},"content_filter_results":{"hate":{"filtered":true}}}""")!.AsObject();
+        var details = OpenAIUtil.OpenAIStopDetails(filteredOnStop)!;
         Assert.Equal("refusal", details.Type);
-        Assert.Equal("nope", details.Explanation);
-        Assert.Empty(details.Categories);
-        Assert.Null(details.Category);
+        Assert.Null(details.Explanation);
+        Assert.Equal([new StopCategory("hate", null)], details.Categories);
 
         var filtered = JsonNode.Parse("""{"finish_reason":"content_filter","content_filter_results":{"hate":{"filtered":true},"self_harm":{"filtered":true,"severity":"medium"}}}""")!.AsObject();
         var collected = ModelOutputUtil.CollectStopDetails("azureai", () => OpenAIUtil.OpenAIStopDetails(filtered));

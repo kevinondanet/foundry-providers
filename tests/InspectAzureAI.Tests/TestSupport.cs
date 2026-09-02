@@ -102,9 +102,19 @@ internal static class Fixtures
         object? streaming = null,
         IReadOnlyDictionary<string, object?>? modelArgs = null,
         CannedTransport? transport = null,
-        string? apiKey = "test") =>
+        string? apiKey = "test",
+        int sdkRetries = 0) =>
         new(modelName, BaseUrl, apiKey, streaming: streaming, modelArgs: modelArgs,
-            settings: new AzureAIClientSettings { Transport = transport, ConfigureClientOptions = o => o.Retry.MaxRetries = 0 });
+            settings: new AzureAIClientSettings
+            {
+                Transport = transport,
+                ConfigureClientOptions = o =>
+                {
+                    o.Retry.MaxRetries = sdkRetries;
+                    o.Retry.Delay = TimeSpan.Zero;
+                    o.Retry.MaxDelay = TimeSpan.Zero;
+                },
+            });
 
     public static string Completion(string content, string finishReason = "stop", string? extraChoiceJson = null, string model = "test-model") =>
         "{\"id\":\"cmpl-1\",\"created\":123,\"model\":\"" + model + "\",\"choices\":[{\"index\":0,\"finish_reason\":\"" + finishReason

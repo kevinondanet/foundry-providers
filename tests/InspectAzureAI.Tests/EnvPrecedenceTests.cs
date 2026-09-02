@@ -1,5 +1,6 @@
 using InspectAzureAI.Provider;
 using InspectAzureAI.Provider.Core;
+using InspectAzureAI.Provider.Testing;
 using InspectAzureAI.Provider.Util;
 
 namespace InspectAzureAI.Tests;
@@ -72,6 +73,57 @@ public class EnvPrecedenceTests
 
         env.Set(AzureAIModelApi.AzureApiKeyVar, null);
         Assert.Equal("b", new AzureAIModelApi("m", Fixtures.BaseUrl).ApiKey);
+    }
+
+    [Fact]
+    public void empty_azure_api_key_is_taken_as_is_and_falls_through_to_managed_identity()
+    {
+        using var env = EnvScope.Clean()
+            .Set(AzureAIModelApi.AzureApiKeyVar, "")
+            .Set(AzureAIModelApi.AzureAIApiKeyVar, "b");
+        var credential = new FakeTokenCredential("entra-token");
+        var api = new AzureAIModelApi("m", Fixtures.BaseUrl, settings: new AzureAIClientSettings { TokenCredential = credential });
+
+        // os.environ.get(AZURE_API_KEY, os.environ.get(AZUREAI_API_KEY)) returns "" here, never "b"
+        Assert.Equal("", api.ApiKey);
+        Assert.NotNull(api.TokenProvider);
+
+        env.Set(AzureAIModelApi.AzureApiKeyVar, null);
+        Assert.Equal("b", new AzureAIModelApi("m", Fixtures.BaseUrl).ApiKey);
+    }
+
+    [Fact]
+    public async Task empty_api_key_generates_with_the_entra_token()
+    {
+        using var env = EnvScope.Clean().Set(AzureAIModelApi.AzureApiKeyVar, "");
+        var transport = new CannedTransport { Responder = _ => CannedResponse.Json(200, Fixtures.Completion("ok")) };
+        var api = new AzureAIModelApi("m", Fixtures.BaseUrl, settings: new AzureAIClientSettings
+        {
+            Transport = transport, TokenCredential = new FakeTokenCredential("entra-token"), ConfigureClientOptions = o => o.Retry.MaxRetries = 0,
+        });
+
+        var result = await api.GenerateAsync([new ChatMessageUser("hi")], [], ToolChoice.Auto, new GenerateConfig());
+
+        Assert.Equal("ok", result.OutputOrThrow().Completion);
+        Assert.Equal("Bearer entra-token", transport.LastRequest!.Headers["Authorization"]);
+    }
+
+    [Fact]
+    public void has_api_key_override_without_a_hook_function_is_a_no_op()
+    {
+        using var env = EnvScope.Clean();
+        ModelApiHooks.HasApiKeyOverride = true;
+        ModelApiHooks.OverrideApiKey = null;
+        try
+        {
+            var api = new AzureAIModelApi("m", Fixtures.BaseUrl, settings: new AzureAIClientSettings { TokenCredential = new FakeTokenCredential("t") });
+            Assert.Null(api.ApiKey);
+            Assert.NotNull(api.TokenProvider);
+        }
+        finally
+        {
+            ModelApiHooks.HasApiKeyOverride = false;
+        }
     }
 
     [Fact]

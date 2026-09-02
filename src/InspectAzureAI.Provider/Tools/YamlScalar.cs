@@ -3,6 +3,7 @@ using System.Numerics;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
+using InspectAzureAI.Provider.Util;
 
 namespace InspectAzureAI.Provider.Tools;
 
@@ -63,7 +64,7 @@ public static partial class YamlScalar
         {
             try
             {
-                return JsonNode.Parse(s, null, new JsonDocumentOptions { MaxDepth = ToolCallParsing.ParserMaxDepth });
+                return PythonJson.Loads(s, ToolCallParsing.ParserMaxDepth);
             }
             catch (JsonException ex) when (ToolCallParsing.IsDepthExceeded(ex))
             {

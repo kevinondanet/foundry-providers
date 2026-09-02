@@ -35,13 +35,16 @@ public static partial class OpenAIUtil
     public static bool NeedsMaxCompletionTokens(string modelName) => IsGpt5Model(modelName) || IsOSeriesModel(modelName);
 
     /// <summary>
-    /// Port of <c>openai_stop_details</c> over the raw JSON of a choice: <c>message.refusal</c> becomes
-    /// the explanation and every <c>content_filter_results</c> entry with <c>filtered: true</c> becomes a
-    /// category (detected-only entries are ignored).
+    /// Port of <c>openai_stop_details</c> over the raw JSON of a choice: every
+    /// <c>content_filter_results</c> entry with <c>filtered: true</c> becomes a category (detected-only
+    /// entries are ignored). Python reads <c>message.refusal</c> with <c>getattr</c>, and the
+    /// azure.ai.inference <c>ChatResponseMessage</c> is dict-backed with no <c>refusal</c> field, so for
+    /// this provider the explanation is always <c>None</c> — a refusal without filtered categories
+    /// yields no stop details, which the port reproduces by not reading the raw <c>refusal</c> key.
     /// </summary>
     public static StopDetails? OpenAIStopDetails(JsonObject choice)
     {
-        var explanation = choice["message"]?["refusal"]?.GetValue<string>();
+        string? explanation = null;
         var categories = new List<StopCategory>();
         if (choice["content_filter_results"] is JsonObject filterResults)
         {

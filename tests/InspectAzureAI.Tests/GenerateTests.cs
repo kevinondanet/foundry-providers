@@ -266,6 +266,103 @@ public class GenerateTests
         Assert.False(api.ShouldRetry(ex).Retry);
     }
 
+    [Theory]
+    [InlineData(false, "timeout")]
+    [InlineData(false, "io")]
+    [InlineData(true, "timeout")]
+    [InlineData(true, "io")]
+    public async Task network_timeouts_and_read_failures_are_transient_on_both_paths(bool streaming, string failure)
+    {
+        var transport = new CannedTransport
+        {
+            Responder = _ => failure == "timeout"
+                ? throw new TaskCanceledException("The operation was cancelled because it exceeded the configured timeout of 0:01:40.")
+                : throw new IOException("socket reset"),
+        };
+        var api = Fixtures.Api("gpt-4o", streaming: streaming, transport: transport);
+
+        var ex = await Assert.ThrowsAsync<ServiceResponseException>(() => Generate(api, transport));
+
+        Assert.Equal(failure == "timeout" ? "The operation was cancelled because it exceeded the configured timeout of 0:01:40." : "socket reset", ex.Message);
+        Assert.IsType(failure == "timeout" ? typeof(TaskCanceledException) : typeof(IOException), ex.InnerException);
+        Assert.Equal(RetryDecision.Transient(), api.ShouldRetry(ex));
+        Assert.Single(transport.Requests);
+    }
+
+    [Fact]
+    public async Task exhausted_sdk_retries_surface_as_the_last_failure()
+    {
+        var timeouts = new CannedTransport { Responder = _ => throw new TaskCanceledException("The operation was cancelled because it exceeded the configured timeout of 0:01:40.") };
+        var api = Fixtures.Api("gpt-4o", transport: timeouts, sdkRetries: 2);
+        var ex = await Assert.ThrowsAsync<ServiceResponseException>(() => Generate(api, timeouts));
+        Assert.Equal(3, timeouts.Requests.Count);
+        Assert.IsType<TaskCanceledException>(ex.InnerException);
+        Assert.Equal(RetryDecision.Transient(), api.ShouldRetry(ex));
+
+        var refused = new CannedTransport { Responder = _ => throw new RequestFailedException("connection refused") };
+        api = Fixtures.Api("gpt-4o", transport: refused, sdkRetries: 2);
+        var connection = await Assert.ThrowsAsync<RequestFailedException>(() => Generate(api, refused));
+        Assert.Equal(3, refused.Requests.Count);
+        Assert.Equal(0, connection.Status);
+        Assert.Equal("connection refused", connection.Message);
+        Assert.Equal(RetryDecision.No(), api.ShouldRetry(connection));
+    }
+
+    [Fact]
+    public async Task caller_cancellation_propagates_unwrapped()
+    {
+        using var cts = new CancellationTokenSource();
+        var transport = new CannedTransport
+        {
+            Responder = _ =>
+            {
+                cts.Cancel();
+                throw new OperationCanceledException(cts.Token);
+            },
+        };
+        var api = Fixtures.Api("gpt-4o", transport: transport);
+        var ex = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => api.GenerateAsync([new ChatMessageUser("hi")], [], ToolChoice.Auto, Config, cts.Token));
+        Assert.IsNotType<ServiceResponseException>(ex);
+        Assert.False(api.ShouldRetry(ex).Retry);
+    }
+
+    [Fact]
+    public async Task azure_error_is_recorded_on_the_model_call_before_rethrow()
+    {
+        var api = Fixtures.Api("gpt-4o");
+        var call = ModelCall.Create(new JsonObject());
+        var error = AzureAIModelApi.AsAzureError(new IOException("socket reset"))!;
+        Assert.Throws<ServiceResponseException>(() => api.HandleAzureError(error, call));
+        Assert.Null(call.Error);
+
+        var transport = new CannedTransport { Responder = _ => CannedResponse.Error(400, "This model's maximum context length is 4096 tokens.") };
+        var (result, _) = await Generate(Fixtures.Api("gpt-4o", transport: transport), transport);
+        Assert.True(result.Call.Error);
+        Assert.Equal("This model's maximum context length is 4096 tokens.", result.Call.Response!["error"]!["message"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task malformed_stream_chunk_is_not_an_azure_error()
+    {
+        var transport = new CannedTransport { Responder = _ => new CannedResponse(200, "data: {\"id\":\"1\",\n\ndata: [DONE]\n\n", "text/event-stream") };
+        var api = Fixtures.Api("gpt-4o", streaming: true, transport: transport);
+        var ex = await Assert.ThrowsAnyAsync<System.Text.Json.JsonException>(() => Generate(api, transport));
+        Assert.False(api.ShouldRetry(ex).Retry);
+        Assert.Null(AzureAIModelApi.AsAzureError(ex));
+    }
+
+    [Fact]
+    public async Task native_tool_call_with_duplicate_keys_keeps_the_last_value()
+    {
+        var transport = Transport(Fixtures.ToolCallCompletion("call_1", "get_weather", "{\"city\": \"Paris\", \"city\": \"Lyon\"}"));
+        var api = Fixtures.Api("gpt-4o", transport: transport);
+        var (result, _) = await Generate(api, transport, tools: [Fixtures.WeatherTool]);
+        var call = Assert.Single(result.OutputOrThrow().Message.ToolCalls!);
+        Assert.Equal("""{"city":"Lyon"}""", call.Arguments.ToJsonString());
+        Assert.Null(call.ParseError);
+    }
+
     [Fact]
     public async Task streaming_generate_assembles_output_reports_events_and_records_stream_flag()
     {

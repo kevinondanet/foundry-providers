@@ -5,10 +5,11 @@ public sealed class PrerequisiteError(string message) : Exception(message);
 
 /// <summary>
 /// Stand-in for <c>azure.core.exceptions.ServiceResponseError</c> (the response could not be read,
-/// e.g. a read timeout or a connection dropped mid-body). The .NET SDK surfaces these as
-/// <see cref="IOException"/> / <see cref="TaskCanceledException"/> while consuming the body, which the
-/// provider wraps in this type so <see cref="AzureAIModelApi.ShouldRetry"/> can classify them as
-/// transient exactly like Python does.
+/// e.g. a network timeout or a connection dropped mid-body). The .NET SDK surfaces these as
+/// <see cref="IOException"/> / <see cref="TaskCanceledException"/> (possibly inside the
+/// <see cref="AggregateException"/> its retry policy throws), which
+/// <see cref="AzureAIModelApi.AsAzureError"/> wraps in this type so
+/// <see cref="AzureAIModelApi.ShouldRetry"/> can classify them as transient exactly like Python does.
 /// </summary>
 public sealed class ServiceResponseException(string message, Exception? inner = null) : Exception(message, inner);
 

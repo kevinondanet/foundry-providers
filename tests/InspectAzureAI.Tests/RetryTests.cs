@@ -1,4 +1,5 @@
 using Azure;
+using InspectAzureAI.Provider;
 using InspectAzureAI.Provider.Core;
 using InspectAzureAI.Provider.Util;
 
@@ -25,6 +26,39 @@ public class RetryTests
         Assert.True(api.IsAuthFailure(Fixtures.Http(401, "unauthorized")));
         Assert.False(api.IsAuthFailure(Fixtures.Http(403, "forbidden")));
         Assert.False(api.IsAuthFailure(new ArgumentException("x")));
+    }
+
+    [Fact]
+    public void as_azure_error_normalises_sdk_transport_failures()
+    {
+        var http = Fixtures.Http(503, "x");
+        Assert.Same(http, AzureAIModelApi.AsAzureError(http));
+        var connection = new RequestFailedException("connection refused");
+        Assert.Same(connection, AzureAIModelApi.AsAzureError(connection));
+        var response = new ServiceResponseException("read timeout");
+        Assert.Same(response, AzureAIModelApi.AsAzureError(response));
+
+        var io = new IOException("socket reset");
+        var mapped = Assert.IsType<ServiceResponseException>(AzureAIModelApi.AsAzureError(io));
+        Assert.Same(io, mapped.InnerException);
+        Assert.Equal("socket reset", mapped.Message);
+
+        var timeout = new TaskCanceledException("The operation was cancelled because it exceeded the configured timeout of 0:01:40.");
+        Assert.IsType<ServiceResponseException>(AzureAIModelApi.AsAzureError(timeout, CancellationToken.None));
+
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        Assert.Null(AzureAIModelApi.AsAzureError(new OperationCanceledException(cts.Token), cts.Token));
+
+        var exhausted = new AggregateException("Retry failed after 3 tries.", [connection, io, timeout]);
+        Assert.IsType<ServiceResponseException>(AzureAIModelApi.AsAzureError(exhausted));
+        Assert.Same(connection, AzureAIModelApi.AsAzureError(new AggregateException([io, connection])));
+        Assert.Null(AzureAIModelApi.AsAzureError(new AggregateException([new ArgumentException("x")])));
+        Assert.Null(AzureAIModelApi.AsAzureError(new AggregateException()));
+
+        Assert.Null(AzureAIModelApi.AsAzureError(new ArgumentException("x")));
+        Assert.Null(AzureAIModelApi.AsAzureError(new InvalidOperationException("Streaming response ended without delivering any chunks.")));
+        Assert.Null(AzureAIModelApi.AsAzureError(new System.Text.Json.JsonException("bad chunk")));
     }
 
     [Fact]

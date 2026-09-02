@@ -77,6 +77,46 @@ public class ParseToolCallTests
     }
 
     [Fact]
+    public void test_parse_duplicate_keys_keep_the_last_value_like_json_loads()
+    {
+        var call = Parse("{\"param1\": \"first\", \"param1\": \"second\"}");
+        Assert.Equal("""{"param1":"second"}""", call.Arguments.ToJsonString());
+        Assert.Null(call.ParseError);
+
+        var nested = Parse("{\"param1\": {\"a\": [1, {\"b\": 1, \"b\": 2}], \"a\": 3}, \"param1\": {\"a\": 3, \"a\": {\"c\": 1, \"c\": 4}}}\"");
+        Assert.Equal("""{"param1":{"a":{"c":4}}}""", nested.Arguments.ToJsonString());
+        Assert.Null(nested.ParseError);
+    }
+
+    [Theory]
+    [InlineData("{\"param1\": NaN}")]
+    [InlineData("{\"param1\": Infinity}")]
+    [InlineData("{\"param1\": -Infinity}")]
+    public void non_standard_float_tokens_are_a_parse_error_unlike_json_loads(string arguments)
+    {
+        var call = Parse(arguments);
+        Assert.Equal("{}", call.Arguments.ToJsonString());
+        Assert.NotNull(call.ParseError);
+        Assert.Contains(arguments, call.ParseError);
+    }
+
+    [Fact]
+    public void test_parse_error_truncation_drops_split_multibyte_sequences()
+    {
+        // 3-byte characters so that both cut points fall inside a sequence
+        var arguments = "{\"param1\": \"" + new string('\u20ac', 10_000) + "\",}invalid";
+        var call = Parse(arguments);
+        Assert.NotNull(call.ParseError);
+        Assert.DoesNotContain('\uFFFD', call.ParseError);
+        Assert.Contains("{\"param1\": \"" + new string('\u20ac', 2726 + 2727) + "\",}invalid", call.ParseError);
+        Assert.Contains($"(arguments middle-truncated from {System.Text.Encoding.UTF8.GetByteCount(arguments)} bytes)", call.ParseError);
+
+        var truncated = ToolCallParsing.TruncateStringToBytes("a\u00e9", 2)!;
+        Assert.Equal("a", truncated.Output);
+        Assert.Equal(3, truncated.OriginalBytes);
+    }
+
+    [Fact]
     public void test_parse_error_on_truncated_object()
     {
         var call = Parse("{\"param1\": \"value\"");

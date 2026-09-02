@@ -11,9 +11,59 @@ namespace InspectAzureAI.Provider.Util;
 /// <c>\uXXXX</c>), insertion key order, and the <c>indent=N</c> layout. The azureai provider relies on
 /// these exact bytes for tool-call arguments (<c>chat_tool_call</c>), the Llama 3.1 prompt
 /// (<c>json.dumps(..., indent=2)</c>) and the <c>&lt;tool_call&gt;</c> history rendering.
+/// <see cref="Loads(string, int)"/> is the matching <c>json.loads</c> stand-in.
 /// </summary>
 public static class PythonJson
 {
+    /// <summary>
+    /// Port of <c>json.loads</c> for the tool-call paths: parses with <see cref="JsonDocument"/> (which,
+    /// like Python, keeps the <em>last</em> value of a duplicated object key) and materialises a
+    /// <see cref="JsonNode"/> tree by assignment, because <see cref="JsonNode.Parse(string, JsonNodeOptions?, JsonDocumentOptions)"/>
+    /// builds a dictionary-backed <see cref="JsonObject"/> that throws <see cref="ArgumentException"/> on
+    /// the first access when a key repeats. Nesting is bounded by <paramref name="maxDepth"/> (a
+    /// <see cref="JsonException"/> mentioning the configured depth stands in for <c>RecursionError</c>).
+    /// Python's acceptance of the non-standard <c>NaN</c> / <c>Infinity</c> tokens is not reproduced.
+    /// </summary>
+    public static JsonNode? Loads(string json, int maxDepth = 64)
+    {
+        using var document = JsonDocument.Parse(json, new JsonDocumentOptions { MaxDepth = maxDepth });
+        return ToNode(document.RootElement);
+    }
+
+    /// <inheritdoc cref="Loads(string, int)"/>
+    public static JsonNode? Loads(ReadOnlyMemory<byte> utf8Json, int maxDepth = 64)
+    {
+        using var document = JsonDocument.Parse(utf8Json, new JsonDocumentOptions { MaxDepth = maxDepth });
+        return ToNode(document.RootElement);
+    }
+
+    private static JsonNode? ToNode(JsonElement element)
+    {
+        switch (element.ValueKind)
+        {
+            case JsonValueKind.Object:
+                var obj = new JsonObject();
+                foreach (var property in element.EnumerateObject())
+                {
+                    obj[property.Name] = ToNode(property.Value);
+                }
+
+                return obj;
+            case JsonValueKind.Array:
+                var array = new JsonArray();
+                foreach (var item in element.EnumerateArray())
+                {
+                    array.Add(ToNode(item));
+                }
+
+                return array;
+            case JsonValueKind.Null:
+                return null;
+            default:
+                return JsonValue.Create(element.Clone());
+        }
+    }
+
     /// <summary>Port of <c>json.dumps(value, indent=indent)</c>.</summary>
     public static string Dumps(JsonNode? value, int? indent = null)
     {

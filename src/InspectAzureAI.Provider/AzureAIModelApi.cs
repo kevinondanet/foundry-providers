@@ -82,7 +82,9 @@ public sealed class AzureAIModelApi
 
         if (string.IsNullOrEmpty(ApiKey))
         {
-            ApiKey = Env(AzureApiKeyVar) ?? Env(AzureAIApiKeyVar);
+            // os.environ.get(AZURE_API_KEY, os.environ.get(AZUREAI_API_KEY)): a set-but-empty
+            // AZURE_API_KEY is taken as-is and falls through to managed identity below.
+            ApiKey = Environment.GetEnvironmentVariable(AzureApiKeyVar) ?? Environment.GetEnvironmentVariable(AzureAIApiKeyVar);
         }
 
         if (string.IsNullOrEmpty(ApiKey))
@@ -216,7 +218,9 @@ public sealed class AzureAIModelApi
     /// <summary>
     /// Port of <c>should_retry</c>: HTTP 408/429/5xx retry (429 as rate-limit, with Retry-After parsing),
     /// other HTTP statuses do not; a <see cref="ServiceResponseException"/> is transient; anything else
-    /// (including transport-level failures, Python's <c>ServiceRequestError</c>) is not retried.
+    /// (including connection failures, Python's <c>ServiceRequestError</c>) is not retried. Expects the
+    /// exception as thrown by <see cref="GenerateAsync(IReadOnlyList{ChatMessage}, IReadOnlyList{ToolInfo}, ToolChoice, GenerateConfig, CancellationToken)"/>,
+    /// which has already normalised the SDK's transport failures via <see cref="AsAzureError"/>.
     /// </summary>
     public RetryDecision ShouldRetry(Exception ex)
     {
@@ -373,7 +377,7 @@ public sealed class AzureAIModelApi
         }
 
         AzureKeyCredential credential;
-        if (ApiKey is not null)
+        if (!string.IsNullOrEmpty(ApiKey))
         {
             credential = new AzureKeyCredential(ApiKey);
         }
@@ -426,17 +430,50 @@ public sealed class AzureAIModelApi
             };
             return new GenerateResult(output, null, modelCall);
         }
-        catch (Exception ex) when (ex is RequestFailedException or ServiceResponseException)
+        catch (Exception ex) when (AsAzureError(ex, cancellationToken) is { } azureError)
         {
-            modelCall.SetError(new JsonObject { ["error"] = new JsonObject { ["message"] = AzureErrorMessage(ex) } });
-            return HandleAzureError(ex, modelCall);
+            modelCall.SetError(new JsonObject { ["error"] = new JsonObject { ["message"] = AzureErrorMessage(azureError) } });
+            return HandleAzureError(azureError, modelCall);
+        }
+    }
+
+    /// <summary>
+    /// Maps what the .NET SDK throws onto the <c>AzureError</c> family the Python <c>except AzureError</c>
+    /// clause catches, or returns null for anything that is not an Azure error (which then propagates
+    /// unrecorded and unretried, like a Python non-<c>AzureError</c>):
+    /// <list type="bullet">
+    /// <item><see cref="RequestFailedException"/> (HTTP error, or <c>Status == 0</c> for a connection
+    /// failure ↔ <c>ServiceRequestError</c>) and <see cref="ServiceResponseException"/> pass through;</item>
+    /// <item><see cref="IOException"/> and a timeout <see cref="OperationCanceledException"/> (one not
+    /// caused by <paramref name="cancellationToken"/> — Azure.Core's network timeout surfaces as a
+    /// <see cref="TaskCanceledException"/>) become <see cref="ServiceResponseException"/>, Python's
+    /// <c>ServiceResponseError</c>, on both the streaming and the non-streaming path;</item>
+    /// <item>the <see cref="AggregateException"/> Azure.Core's retry policy throws once its own attempts
+    /// are exhausted is unwrapped to its last inner exception (azure-core re-raises the last
+    /// <c>AzureError</c>), which is then mapped by the same rules.</item>
+    /// </list>
+    /// </summary>
+    public static Exception? AsAzureError(Exception ex, CancellationToken cancellationToken = default)
+    {
+        switch (ex)
+        {
+            case RequestFailedException or ServiceResponseException:
+                return ex;
+            case IOException:
+                return new ServiceResponseException(ex.Message, ex);
+            case OperationCanceledException when !cancellationToken.IsCancellationRequested:
+                return new ServiceResponseException(ex.Message, ex);
+            case AggregateException { InnerExceptions.Count: > 0 } aggregate:
+                return AsAzureError(aggregate.InnerExceptions[^1], cancellationToken);
+            default:
+                return null;
         }
     }
 
     /// <summary>
     /// Port of <c>handle_azure_error</c>: an HTTP error mentioning "maximum context length" becomes a
     /// <c>model_length</c> output, an HTTP 400 is returned as the terminal error, everything else is
-    /// re-thrown for retry classification.
+    /// re-thrown for retry classification. Expects an exception already normalised by <see cref="AsAzureError"/>.
     /// </summary>
     public GenerateResult HandleAzureError(Exception ex, ModelCall modelCall)
     {
@@ -610,26 +647,14 @@ public sealed class AzureAIModelApi
         return clientOptions;
     }
 
-    private static async Task<AzureChatCompletions> ReadStreamAsync(Stream contentStream, CancellationToken cancellationToken)
-    {
-        try
-        {
-            return await AzureAIStreamAccumulator.CompletionFromStreamAsync(
-                SseParser.ReadUpdatesAsync(contentStream, cancellationToken), cancellationToken).ConfigureAwait(false);
-        }
-        catch (IOException ex)
-        {
-            throw new ServiceResponseException(ex.Message, ex);
-        }
-        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
-        {
-            throw new ServiceResponseException(ex.Message, ex);
-        }
-        catch (JsonException ex)
-        {
-            throw new ServiceResponseException($"Malformed streaming response: {ex.Message}", ex);
-        }
-    }
+    /// <summary>
+    /// Consumes the SSE body. Transport failures while reading are normalised by the caller's
+    /// <see cref="AsAzureError"/>; a malformed chunk raises <see cref="JsonException"/>, which — like the
+    /// <c>json.JSONDecodeError</c> the Python SDK raises — is not an Azure error and is neither recorded
+    /// on the <see cref="ModelCall"/> nor retried.
+    /// </summary>
+    private static Task<AzureChatCompletions> ReadStreamAsync(Stream contentStream, CancellationToken cancellationToken) =>
+        AzureAIStreamAccumulator.CompletionFromStreamAsync(SseParser.ReadUpdatesAsync(contentStream, cancellationToken), cancellationToken);
 
     private object? CollectModelArg(string name)
     {
@@ -669,7 +694,7 @@ public sealed class AzureAIModelApi
                 }
                 else if (ModelApiHooks.HasApiKeyOverride)
                 {
-                    var overrideValue = ModelApiHooks.OverrideApiKey!(key, "");
+                    var overrideValue = ModelApiHooks.OverrideApiKey?.Invoke(key, "");
                     if (overrideValue is not null)
                     {
                         apiKey = overrideValue;
@@ -680,9 +705,6 @@ public sealed class AzureAIModelApi
 
         ApiKey = apiKey;
     }
-
-    private static string? Env(string name) =>
-        Environment.GetEnvironmentVariable(name) is { Length: > 0 } value ? value : null;
 
     private static string ReplaceFirst(string text, string search, string replacement)
     {

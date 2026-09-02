@@ -1,6 +1,7 @@
 using System.Text.Json.Nodes;
 using InspectAzureAI.Provider;
 using InspectAzureAI.Provider.Core;
+using InspectAzureAI.Provider.Util;
 
 namespace InspectAzureAI.Tests;
 
@@ -190,6 +191,7 @@ public class StreamingTests
     [Fact]
     public async Task on_stream_handler_exception_detaches_the_callback()
     {
+        ProviderLogger.Reset();
         var calls = 0;
         var observer = new ModelStreamObserver("test", _ =>
         {
@@ -211,6 +213,9 @@ public class StreamingTests
         Assert.Equal(1, calls);
         Assert.Null(observer.OnStream);
         Assert.Equal("ab", response.Choices[0].Message.Content);
+        var warning = Assert.Single(ProviderLogger.Warnings);
+        Assert.StartsWith("on_stream handler raised an exception; streaming callbacks are disabled for the remainder of this test generate call", warning);
+        Assert.Contains("boom", warning);
     }
 
     [Fact]

@@ -111,7 +111,7 @@ public sealed partial class Llama31Handler(string model) : ChatApiHandler(model)
     {
         try
         {
-            JsonNode? toolCallData = JsonNode.Parse(content, null, new JsonDocumentOptions { MaxDepth = ToolCallParsing.ParserMaxDepth });
+            var toolCallData = PythonJson.Loads(content, ToolCallParsing.ParserMaxDepth);
             if (toolCallData is not JsonObject data)
             {
                 throw new ArgumentException("The provided arguments are not a JSON dictionary.");

@@ -50,6 +50,17 @@ public class Llama31HandlerTests
     }
 
     [Fact]
+    public void parse_tool_call_with_duplicate_keys_keeps_the_last_value()
+    {
+        var message = Handler.ParseAssistantResponse(
+            "<tool_call>{\"name\": \"nope\", \"name\": \"get_weather\", \"arguments\": {\"city\": \"Paris\", \"city\": \"Lyon\"}}</tool_call>", Tools);
+        var call = Assert.Single(message.ToolCalls!);
+        Assert.Equal("get_weather", call.Function);
+        Assert.Equal("""{"city":"Lyon"}""", call.Arguments.ToJsonString());
+        Assert.Null(call.ParseError);
+    }
+
+    [Fact]
     public void parse_plural_tag_and_multiple_calls()
     {
         var message = Handler.ParseAssistantResponse(

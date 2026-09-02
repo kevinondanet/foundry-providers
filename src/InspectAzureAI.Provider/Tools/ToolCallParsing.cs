@@ -20,11 +20,17 @@ public static class ToolCallParsing
 
     private const int MaxShownArgumentBytes = 16 * 1024;
 
+    /// <summary>UTF-8 decoding with <c>errors="ignore"</c>: bytes of a sequence split at a cut point are dropped.</summary>
+    private static readonly Encoding Utf8IgnoringInvalid =
+        Encoding.GetEncoding("utf-8", EncoderFallback.ReplacementFallback, new DecoderReplacementFallback(string.Empty));
+
     /// <summary>
     /// Parses a provider tool call into a <see cref="ToolCall"/>. Arguments starting with <c>{</c> are
-    /// parsed as JSON (recovering an object trailed only by stray double quotes, bounding nesting at
-    /// <see cref="MaxToolCallArgumentsDepth"/>, recording <see cref="ToolCall.ParseError"/> on failure);
-    /// otherwise the raw string is YAML-parsed into the first declared parameter of the named tool.
+    /// parsed as JSON with <c>json.loads</c> semantics (duplicate keys: last wins; recovering an object
+    /// trailed only by stray double quotes; bounding nesting at <see cref="MaxToolCallArgumentsDepth"/>;
+    /// recording <see cref="ToolCall.ParseError"/> on failure — including for the non-standard
+    /// <c>NaN</c>/<c>Infinity</c> tokens Python would accept); otherwise the raw string is YAML-parsed into
+    /// the first declared parameter of the named tool.
     /// </summary>
     public static ToolCall ParseToolCall(string id, string function, string? arguments, IReadOnlyList<ToolInfo>? tools = null, string type = "function")
     {
@@ -129,7 +135,7 @@ public static class ToolCallParsing
 
     private static JsonObject ParseObject(string json)
     {
-        var node = JsonNode.Parse(json, null, new JsonDocumentOptions { MaxDepth = ParserMaxDepth });
+        var node = PythonJson.Loads(json, ParserMaxDepth);
         return node as JsonObject ?? throw new JsonException("The provided arguments are not a JSON object.");
     }
 
@@ -161,7 +167,7 @@ public static class ToolCallParsing
 
         try
         {
-            return JsonNode.Parse(bytes.AsSpan(0, (int)consumed).ToArray(), null, new JsonDocumentOptions { MaxDepth = ParserMaxDepth }) as JsonObject;
+            return PythonJson.Loads(bytes.AsMemory(0, (int)consumed), ParserMaxDepth) as JsonObject;
         }
         catch (JsonException)
         {
@@ -245,9 +251,8 @@ public static class ToolCallParsing
         }
 
         var halfBytes = maxBytes / 2;
-        var lenient = new UTF8Encoding(false, false);
-        var start = lenient.GetString(encoded, 0, halfBytes);
-        var end = lenient.GetString(encoded, encoded.Length - (maxBytes - halfBytes), maxBytes - halfBytes);
+        var start = Utf8IgnoringInvalid.GetString(encoded, 0, halfBytes);
+        var end = Utf8IgnoringInvalid.GetString(encoded, encoded.Length - (maxBytes - halfBytes), maxBytes - halfBytes);
         return new TruncatedOutput(start + end, encoded.Length);
     }
 }

@@ -36,6 +36,11 @@ try
         _ => Cli.Unknown(command),
     };
 }
+catch (UsageError ex)
+{
+    Console.Error.WriteLine($"{ex.Message}\n\n{Cli.Help}");
+    return 2;
+}
 catch (PrerequisiteError ex)
 {
     Console.Error.WriteLine(ex.Message);
@@ -44,6 +49,16 @@ catch (PrerequisiteError ex)
 catch (RequestFailedException ex)
 {
     Console.Error.WriteLine($"Azure request failed (HTTP {ex.Status}): {AzureAIModelApi.AzureErrorMessage(ex)}");
+    return 3;
+}
+catch (ServiceResponseException ex)
+{
+    Console.Error.WriteLine($"Azure response could not be read (retryable): {ex.Message}");
+    return 3;
+}
+catch (InvalidOperationException ex)
+{
+    Console.Error.WriteLine($"Generation failed: {ex.Message}");
     return 3;
 }
 
@@ -62,6 +77,9 @@ static string? TakeOption(List<string> arguments, string name)
 
 namespace InspectAzureAI.Sample
 {
+    /// <summary>An invalid command-line option value (reported as a usage error, exit code 2).</summary>
+    internal sealed class UsageError(string message) : Exception(message);
+
     /// <summary>Subcommand implementations for the sample console app.</summary>
     internal static class Cli
     {
@@ -114,16 +132,29 @@ namespace InspectAzureAI.Sample
             var modelArgs = new Dictionary<string, object?>();
             if (emulateTools is not null)
             {
-                modelArgs["emulate_tools"] = bool.Parse(emulateTools);
+                if (!bool.TryParse(emulateTools, out var emulate))
+                {
+                    throw new UsageError($"--emulate-tools expects true or false, got '{emulateTools}'");
+                }
+
+                modelArgs["emulate_tools"] = emulate;
             }
 
-            if (fake)
+            try
             {
-                return new AzureAIModelApi(model, "https://fake.local/models", "fake-key", streaming: streaming, modelArgs: modelArgs,
-                    settings: new AzureAIClientSettings { Transport = FakeAzure.Transport() });
-            }
+                if (fake)
+                {
+                    return new AzureAIModelApi(model, "https://fake.local/models", "fake-key", streaming: streaming, modelArgs: modelArgs,
+                        settings: new AzureAIClientSettings { Transport = FakeAzure.Transport() });
+                }
 
-            return new AzureAIModelApi(model, streaming: streaming, modelArgs: modelArgs);
+                return new AzureAIModelApi(model, streaming: streaming, modelArgs: modelArgs);
+            }
+            catch (ArgumentException ex)
+            {
+                // NormalizeStreamArg rejects anything but auto/true/false with the Python message.
+                throw new UsageError($"--streaming: {ex.Message}");
+            }
         }
 
         public static int Config(AzureAIModelApi api)
@@ -233,6 +264,8 @@ namespace InspectAzureAI.Sample
                 ("HTTP 404", new RequestFailedException(CannedResponse.Error(404, "Not found"))),
                 ("transport failure (status 0, ~ServiceRequestError)", new RequestFailedException("connection refused")),
                 ("response read failure (~ServiceResponseError)", new ServiceResponseException("read timeout")),
+                ("network timeout, normalised by AsAzureError", AzureAIModelApi.AsAzureError(new TaskCanceledException("The operation was cancelled because it exceeded the configured timeout of 0:01:40."))!),
+                ("SDK retries exhausted, normalised (last: IOException)", AzureAIModelApi.AsAzureError(new AggregateException("Retry failed after 3 tries.", new RequestFailedException("connection refused"), new IOException("socket reset")))!),
                 ("non-Azure exception", new InvalidOperationException("Streaming response ended without delivering any chunks.")),
             };
 
