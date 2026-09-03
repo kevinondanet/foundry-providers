@@ -80,6 +80,15 @@ public sealed class AzureAIModelApi
         var emulateTools = CollectModelArg("emulate_tools");
         EmulateTools = emulateTools is not null ? PythonSemantics.Truthy(emulateTools) : null;
 
+        // Port-only model arg: -M max_completion_tokens=true sends config.MaxTokens as max_completion_tokens
+        // for any model family (reasoning models such as MAI-Thinking-1 reject max_tokens). Python decides by
+        // name only (gpt-5 / o-series); a non-boolean value is left in model_extras as a body field.
+        if (_modelArgs.TryGetValue("max_completion_tokens", out var forceMct) && forceMct is bool force)
+        {
+            _modelArgs.Remove("max_completion_tokens");
+            ForceMaxCompletionTokens = force;
+        }
+
         if (string.IsNullOrEmpty(ApiKey))
         {
             // os.environ.get(AZURE_API_KEY, os.environ.get(AZUREAI_API_KEY)): a set-but-empty
@@ -143,6 +152,9 @@ public sealed class AzureAIModelApi
     /// By default it is a <c>DefaultAzureCredential</c>, which picks up <c>az login</c>.
     /// </summary>
     public AudienceTokenCredential? Credential { get; }
+
+    /// <summary>Port-only: <c>max_completion_tokens=true</c> model arg, forcing <c>max_completion_tokens</c> for every family (README fidelity note 18).</summary>
+    public bool ForceMaxCompletionTokens { get; }
 
     /// <summary>Tool emulation setting: null (auto), true, or false. Flips to true on the first generate for Llama models.</summary>
     public bool? EmulateTools { get; private set; }
@@ -257,7 +269,8 @@ public sealed class AzureAIModelApi
 
     /// <summary>
     /// Port of <c>completion_params</c>: the forwarded <see cref="GenerateConfig"/> fields in Python order.
-    /// <c>max_tokens</c> is emitted as <c>max_completion_tokens</c> for gpt-5 / o-series families.
+    /// <c>max_tokens</c> is emitted as <c>max_completion_tokens</c> for gpt-5 / o-series families, or when
+    /// <see cref="ForceMaxCompletionTokens"/> is set.
     /// Every other config field is silently ignored.
     /// </summary>
     public JsonObject CompletionParams(GenerateConfig config)
@@ -285,7 +298,7 @@ public sealed class AzureAIModelApi
 
         if (config.MaxTokens is not null)
         {
-            parameters[OpenAIUtil.NeedsMaxCompletionTokens(ModelFamily()) ? "max_completion_tokens" : "max_tokens"] = config.MaxTokens;
+            parameters[ForceMaxCompletionTokens || OpenAIUtil.NeedsMaxCompletionTokens(ModelFamily()) ? "max_completion_tokens" : "max_tokens"] = config.MaxTokens;
         }
 
         if (config.StopSeqs is not null)

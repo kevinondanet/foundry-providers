@@ -24,6 +24,7 @@ InspectAzureAI.sln
 │   ├── Util/                       ports of util/util.py, azure_hosting.py, _util/http.py, _openai.py helpers, images.py
 │   ├── Tools/                      ChatAPIHandler + Llama31Handler, parse_tool_call, tool/message conversion
 │   ├── Testing/                    CannedTransport — an offline HttpPipelineTransport
+│   ├── Foundry/                    FoundryCatalog — deployment discovery through Azure Resource Manager (port-only)
 │   ├── AzureAIModelApi.cs          port of AzureAIAPI
 │   ├── AzureAIStreamAccumulator.cs port of azureai_completion_from_stream
 │   ├── AzureChatCompletions.cs     dict-backed response view (raw JSON)
@@ -98,6 +99,7 @@ flowchart LR
 | `util/util.py` `normalize_stream_arg`, `model_base_url`, `environment_prerequisite_error` | `Util/ProviderUtil.cs` |
 | `util/azure_hosting.py` `resolve_azure_token_provider`, `DEFAULT_AZURE_AUDIENCE` | `Util/AzureHosting.cs` (`ResolveAzureCredential`, `CreateCredential`, `AudienceTokenCredential`) |
 | *(none)* Entra token diagnostics for the `token` command | `Util/EntraTokenInfo.cs` |
+| *(none)* deployment discovery for `models` / `test-all` | `Foundry/FoundryCatalog.cs` |
 | `_util/http.py` `is_retryable_http_status`, `parse_retry_after(_from_exception)`, `status_code_of` | `Util/HttpRetryUtil.cs` |
 | `_openai.py` `needs_max_completion_tokens`, `openai_stop_details`, `openai_media_filter` | `Util/OpenAIUtil.cs` |
 | `_model_output.py` `collect_stop_details` | `Util/ModelOutputUtil.cs` |
@@ -128,6 +130,7 @@ Same names and precedence as the Python provider:
 | `INSPECT_EVAL_MODEL_BASE_URL` | last-resort endpoint fallback |
 | `AZUREAI_AUDIENCE` | Entra ID token scope (default `https://cognitiveservices.azure.com/.default`) |
 | `AZUREAI_CREDENTIAL` | *(port only)* which Azure.Identity credential to use: `default` (`DefaultAzureCredential`, includes `az login`), `cli`, `developer-cli`, `managed-identity`, `environment`, `interactive` |
+| `AZUREAI_RESOURCE_ID`, `AZURE_SUBSCRIPTION_ID` | *(port only)* `models` / `test-all`: the Foundry resource id (skips discovery) or the subscription to search; otherwise every readable subscription is searched for the account whose endpoints include the `AZUREAI_BASE_URL` host |
 | `AZURE_TENANT_ID`, `AZURE_CLIENT_ID` | *(Azure.Identity standard)* tenant pin for the default / cli credentials; client id of a user-assigned managed identity |
 
 Resolution order for the key: explicit constructor argument → api-key override hook → `AZURE_API_KEY` →
@@ -167,8 +170,9 @@ dotnet test  InspectAzureAI.sln
 ```
 
 The sample app has one subcommand per feature. Every command accepts `--model <name>`,
-`--streaming auto|true|false`, `--emulate-tools true|false` and `--fake` (answer from an in-memory canned
-endpoint — no network, no keys — handy for seeing the request/response shapes).
+`--streaming auto|true|false`, `--emulate-tools true|false`, `--temperature <n>`, `--max-tokens <n|none>`,
+`--model-arg key=value` (repeatable, the Python `-M` args), `--auth <selector>` and `--fake` (answer from an
+in-memory canned endpoint — no network, no keys — handy for seeing the request/response shapes).
 
 ```bash
 export AZUREAI_API_KEY=...            # or rely on DefaultAzureCredential
@@ -179,6 +183,11 @@ S="dotnet run --project src/InspectAzureAI.Sample --"
 $S --help                          # list everything
 $S config                          # resolved endpoint / auth mode / names, no call made
 $S token                           # Entra ID only: acquire a token via az login / managed identity and print its identity
+$S models                          # discover the resource behind AZUREAI_BASE_URL via ARM and list its deployments
+$S test-all                        # chat + stream + native tools against every healthy deployment; exit 1 on a chat failure
+$S test-all --only gpt-5.4-mini,DeepSeek-V4-Flash --skip-tools --json
+scripts/test-all-models.sh myfoundry0406 rg-mfa-foundry   # same, with the deployment list taken from the Azure CLI
+$S chat --model MAI-Thinking-1 --model-arg max_completion_tokens=true "hello"   # reasoning models reject max_tokens
 $S chat --model gpt-5.4-mini --temperature 0 "hello"   # temperature is optional; gpt-5 deployments accept only 1
 $S naming gpt-4o moonshotai/kimi-k2.5 custom-org/llama-3-70b
 $S chat "What are you?"            # non-streaming completion
@@ -217,17 +226,26 @@ and unretried, exactly as non-`AzureError` exceptions do in Python.
 ## Verified against a live Foundry resource
 
 Checked on 2 September 2026 against an Azure AI Foundry resource (kind `AIServices`, eastus2) using
-`az login` only, no API key, endpoint `https://<resource>.services.ai.azure.com/models`:
+`az login` only, no API key, endpoint `https://<resource>.services.ai.azure.com/models`. `models`
+discovered the resource through Azure Resource Manager with the same identity and listed twelve
+deployments; `test-all` then ran chat, streaming and a native tool call against each:
 
-| Command | Deployment | Result |
-|---|---|---|
-| `token` (default and `--auth cli`) | — | token for `https://cognitiveservices.azure.com/.default`, identity and tenant printed |
-| `chat` | gpt-5.4-mini, gpt-5.6-sol, DeepSeek-V4-Pro, DeepSeek-V4-Flash, model-router | 200, usage reported; model-router answered from `grok-4-1-fast-reasoning` |
-| `stream` | gpt-5.4-mini | deltas delivered; usage not reported by the endpoint in stream mode (same as Python) |
-| `tools` (native) | DeepSeek-V4-Flash | two-turn loop: `tool_calls` → tool result → final answer |
-| `emulate-tools` (Llama prompt format) | DeepSeek-V4-Flash | two-turn loop succeeded |
-| `emulate-tools` | gpt-5.4-mini | turn 1 parsed the `<tool_call>`; turn 2 rejected with HTTP 400 because OpenAI-format deployments require a `tool` message to follow an assistant `tool_calls` message. Python sends the same shape (`ToolMessage` at `azureai.py:713-716`, `Llama31Handler.tool_message`), so this is inherent to emulation, which targets Llama-style endpoints |
-| `image` | gpt-5.4-mini | data-URI image accepted, description returned |
+| Deployment | Format | chat | stream | tools | Note |
+|---|---|---|---|---|---|
+| gpt-5.6-sol, gpt-5.6-luna, gpt-5.4-mini | OpenAI | ok | ok | ok | usage not reported in stream mode (as in Python) |
+| model-router | OpenAI | ok | ok | ok | answered from a routed model (`grok-4-1-fast-reasoning` in one run) |
+| DeepSeek-V4-Pro, DeepSeek-V4-Flash | DeepSeek | ok | ok | ok | emulated (`<tool_call>`) tool calling also works on DeepSeek-V4-Flash |
+| Mistral-Large-3 | Mistral AI | ok | ok | ok | Mistral naming rules apply (`max_tokens()` is null) |
+| MAI-Thinking-1 | Microsoft | ok | ok | ok | rejects `max_tokens`; `test-all` retried with `max_completion_tokens=true` automatically (fidelity note 18) |
+| Kimi-K2.7-Code | MoonshotAI | ok | ok | ok | |
+| Cohere-command-a-plus-05-2026 | Cohere | ok | ok | ok | |
+| grok-4.6 | xAI | ok | ok | ok | slowest of the set (~20 s for the three checks) |
+| claude-sonnet-4-6 | Anthropic | skipped | skipped | skipped | the model-inference route answers `Requested API is currently not supported`; the deployment works on `/anthropic/v1/messages` with the same bearer token (Inspect's `anthropic/azure` provider), so `test-all` skips Anthropic-format deployments unless `--include-failed` |
+
+Earlier the same day, before the extra deployments existed: `image` (gpt-5.4-mini) accepted a data-URI
+image; `emulate-tools` against gpt-5.4-mini failed on turn 2 with HTTP 400 because OpenAI-format
+deployments require a `tool` message to follow an assistant `tool_calls` message, the same shape Python
+sends (`azureai.py:713-716`, `Llama31Handler.tool_message`).
 
 Two things to know before your first call:
 
@@ -338,6 +356,16 @@ Places where the port deliberately deviates from the Python implementation, and 
     `getattr`, and azure.ai.inference's dict-backed `ChatResponseMessage` exposes no such attribute, so
     for this provider Python never produces a `refusal` explanation; the port reproduces that by not
     reading the raw `refusal` key (a refusal with no filtered category yields no stop details).
+18. **`max_completion_tokens=true` model arg (port-only).** Python emits `max_completion_tokens` only for
+    gpt-5 and o-series names; reasoning models under other names (MAI-Thinking-1) reject `max_tokens`. The
+    port pops a boolean `max_completion_tokens` model arg and, when true, sends `config.MaxTokens` as
+    `max_completion_tokens` for any family. A non-boolean value is left in `model_extras` as a body field,
+    exactly as Python would forward it. `test-all` applies the arg automatically when a deployment answers
+    400 asking for it.
+19. **Deployment discovery (`Foundry/FoundryCatalog.cs`) is port-only.** Inspect takes the model name from
+    the CLI; the sample's `models` and `test-all` commands resolve the account behind the endpoint through
+    Azure Resource Manager (`https://management.azure.com/.default` scope on the same credential) and list
+    its deployments. Cognitive Services User includes the read actions this needs.
 17. **Entra ID tokens are sent as `Authorization: Bearer` only.** Python feeds the Entra token into
     `AzureKeyCredential`, so azure-ai-inference sends it in both `Authorization` and `api-key`. Azure AI
     Services and Azure OpenAI gateways validate `api-key` first when it is present and reject the JWT with

@@ -5,7 +5,9 @@ using Azure;
 using Azure.Core;
 using Azure.Identity;
 using InspectAzureAI.Provider;
+using System.Diagnostics;
 using InspectAzureAI.Provider.Core;
+using InspectAzureAI.Provider.Foundry;
 using InspectAzureAI.Provider.Testing;
 using InspectAzureAI.Provider.Util;
 using InspectAzureAI.Sample;
@@ -16,6 +18,41 @@ var streamingArg = TakeOption(arguments, "--streaming");
 var emulateArg = TakeOption(arguments, "--emulate-tools");
 var modelArg = TakeOption(arguments, "--model");
 var authArg = TakeOption(arguments, "--auth");
+var jsonFlag = arguments.Remove("--json");
+var includeFailed = arguments.Remove("--include-failed");
+var skipTools = arguments.Remove("--skip-tools");
+var onlyArg = TakeOption(arguments, "--only");
+var maxTokensArg = TakeOption(arguments, "--max-tokens");
+if (maxTokensArg is not null)
+{
+    if (maxTokensArg.Equals("none", StringComparison.OrdinalIgnoreCase))
+    {
+        Cli.MaxTokens = null;
+    }
+    else if (int.TryParse(maxTokensArg, out var maxTokens))
+    {
+        Cli.MaxTokens = maxTokens;
+    }
+    else
+    {
+        Console.Error.WriteLine($"--max-tokens expects a number or 'none', got '{maxTokensArg}'\n\n{Cli.Help}");
+        return 2;
+    }
+
+    Cli.MaxTokensSet = true;
+}
+
+for (string? pair; (pair = TakeOption(arguments, "--model-arg")) is not null;)
+{
+    var eq = pair.IndexOf('=');
+    if (eq <= 0)
+    {
+        Console.Error.WriteLine($"--model-arg expects key=value, got '{pair}'\n\n{Cli.Help}");
+        return 2;
+    }
+
+    Cli.ExtraModelArgs[pair[..eq]] = Cli.ParseModelArgValue(pair[(eq + 1)..]);
+}
 var temperatureArg = TakeOption(arguments, "--temperature");
 if (temperatureArg is not null)
 {
@@ -49,6 +86,8 @@ try
         "image" => await Cli.Image(Cli.CreateApi(modelArg, streamingArg, emulateArg, fake, authArg), rest),
         "retry-demo" => Cli.RetryDemo(Cli.CreateApi(modelArg, streamingArg, emulateArg, fake, authArg)),
         "token" => await Cli.Token(Cli.CreateApi(modelArg, streamingArg, emulateArg, fake, authArg)),
+        "models" => await Cli.Models(Cli.CreateApi(modelArg, streamingArg, emulateArg, fake, authArg), authArg, fake, jsonFlag),
+        "test-all" => await Cli.TestAll(Cli.CreateApi(modelArg, streamingArg, emulateArg, fake, authArg), authArg, fake, onlyArg, includeFailed, skipTools, jsonFlag),
         _ => Cli.Unknown(command),
     };
 }
@@ -120,6 +159,10 @@ namespace InspectAzureAI.Sample
               retry-demo                show ShouldRetry / IsAuthFailure / HandleAzureError decisions
               token                     acquire an Entra ID token with the resolved credential and print
                                         who it belongs to (verifies that `az login` is picked up; no model call)
+              models                    discover the Foundry resource behind AZUREAI_BASE_URL through Azure
+                                        Resource Manager and list its model deployments (--json for machines)
+              test-all                  smoke-test every healthy chat deployment: chat, stream, native tools
+                                        (--only a,b  --include-failed  --skip-tools  --json); exit 1 on any chat failure
               --help                    this text
 
             options:
@@ -128,6 +171,9 @@ namespace InspectAzureAI.Sample
               --emulate-tools true|false    the `emulate_tools` model arg
               --fake                    answer from a canned in-memory transport (no network, no keys)
               --temperature <n>         sampling temperature (default: not sent; gpt-5 deployments accept only 1)
+              --max-tokens <n|none>     max_tokens sent (default: the provider's max_tokens(), 2048 for most models)
+              --model-arg key=value     repeatable; the Python -M model args (emulate_tools, max_completion_tokens,
+                                        streaming, or any pass-through body field such as safe_mode=true)
               --auth <selector>         Entra ID credential: default (DefaultAzureCredential, includes az login),
                                         cli, developer-cli, managed-identity, environment, interactive
 
@@ -138,6 +184,7 @@ namespace InspectAzureAI.Sample
               AZUREAI_AUDIENCE                                      Entra ID token scope (default https://cognitiveservices.azure.com/.default)
               AZUREAI_CREDENTIAL                                    same values as --auth (default: default)
               AZURE_TENANT_ID / AZURE_CLIENT_ID                     tenant pin / user-assigned managed identity
+              AZUREAI_RESOURCE_ID / AZURE_SUBSCRIPTION_ID           models/test-all: skip or narrow the ARM search
 
             Entra ID is used whenever no API key is set: sign in with `az login` (and `az account set`),
             then run `token` to confirm which identity the credential resolves to.
@@ -192,7 +239,7 @@ namespace InspectAzureAI.Sample
             }
 
             model ??= Environment.GetEnvironmentVariable("INSPECT_AZUREAI_MODEL") ?? "Llama-3.3-70B-Instruct";
-            var modelArgs = new Dictionary<string, object?>();
+            var modelArgs = new Dictionary<string, object?>(ExtraModelArgs);
             if (emulateTools is not null)
             {
                 if (!bool.TryParse(emulateTools, out var emulate))
@@ -409,6 +456,218 @@ namespace InspectAzureAI.Sample
             return 0;
         }
 
+        private static readonly (string Check, string Prompt)[] SmokeChecks =
+        [
+            ("chat", "Reply with exactly: ok"),
+            ("stream", "Count from 1 to 3 on one line."),
+            ("tools", "What is the weather in Oslo right now? Use the get_weather tool."),
+        ];
+
+        private static TokenCredential ArmCredential(AzureAIModelApi api, string? auth) =>
+            api.Credential?.Inner ?? api.Settings.TokenCredential ?? AzureHosting.CreateCredential(auth);
+
+        /// <summary>Discovers the resource behind the endpoint and prints its deployments.</summary>
+        public static async Task<int> Models(AzureAIModelApi api, string? auth, bool fake, bool json)
+        {
+            if (fake)
+            {
+                Console.Error.WriteLine("models needs Azure Resource Manager; it is not available with --fake.");
+                return 2;
+            }
+
+            using var catalog = new FoundryCatalog(ArmCredential(api, auth));
+            var (resource, deployments) = await catalog.DiscoverAsync(api.EndpointUrl);
+            if (json)
+            {
+                Console.WriteLine(JsonSerializer.Serialize(new { resource, deployments }, Pretty));
+                return 0;
+            }
+
+            PrintResource(resource, api.EndpointUrl);
+            Console.WriteLine();
+            Console.WriteLine($"{"deployment",-30} {"model",-30} {"format",-11} {"version",-11} {"sku",-15} {"capacity",8}  {"state",-10} chat");
+            foreach (var d in deployments)
+            {
+                Console.WriteLine($"{d.Name,-30} {d.Model,-30} {d.Format,-11} {d.Version ?? "-",-11} {d.Sku ?? "-",-15} {d.Capacity?.ToString() ?? "-",8}  {d.State,-10} {(d.SupportsChat ? "yes" : "no")}");
+            }
+
+            Console.WriteLine();
+            Console.WriteLine($"{deployments.Count(d => d.IsSucceeded && d.SupportsChat)} of {deployments.Count} deployments are healthy chat deployments; run test-all to exercise them.");
+            return 0;
+        }
+
+        /// <summary>Runs chat, stream and native-tool smoke tests against every healthy chat deployment.</summary>
+        public static async Task<int> TestAll(AzureAIModelApi api, string? auth, bool fake, string? only, bool includeFailed, bool skipTools, bool json)
+        {
+            if (fake)
+            {
+                Console.Error.WriteLine("test-all needs Azure Resource Manager; it is not available with --fake.");
+                return 2;
+            }
+
+            using var catalog = new FoundryCatalog(ArmCredential(api, auth));
+            var (resource, deployments) = await catalog.DiscoverAsync(api.EndpointUrl);
+            var wanted = only?.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var shared = api.Settings with { TokenCredential = api.Credential?.Inner ?? api.Settings.TokenCredential };   // one credential, one token cache
+            var rows = new List<SmokeRow>();
+
+            if (!json)
+            {
+                PrintResource(resource, api.EndpointUrl);
+                Console.WriteLine();
+            }
+
+            foreach (var deployment in deployments)
+            {
+                if (wanted is not null && !wanted.Contains(deployment.Name))
+                {
+                    continue;
+                }
+
+                var row = new SmokeRow(deployment);
+                rows.Add(row);
+                if (!includeFailed && (!deployment.IsSucceeded || !deployment.SupportsChat || IsAnthropicFormat(deployment)))
+                {
+                    row.Skipped = !deployment.IsSucceeded ? $"provisioningState={deployment.State}"
+                        : !deployment.SupportsChat ? "chatCompletion=false"
+                        : "Anthropic Messages API route (/anthropic/v1/messages), served by Inspect's anthropic/azure provider, not the model-inference route";
+                    if (!json) Console.WriteLine($"{deployment.Name,-22} skipped ({row.Skipped})");
+                    continue;
+                }
+
+                var target = new AzureAIModelApi(deployment.Name, api.EndpointUrl, streaming: api.Streaming, modelArgs: ExtraModelArgs, settings: shared);
+                foreach (var (check, prompt) in SmokeChecks)
+                {
+                    if (check == "tools" && skipTools)
+                    {
+                        row.Results[check] = "skipped";
+                        continue;
+                    }
+
+                    var status = await SmokeAsync(target, check, prompt, row);
+                    if (status == "fail" && !target.ForceMaxCompletionTokens
+                        && row.Errors.GetValueOrDefault(check, "").Contains("max_completion_tokens", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Reasoning models (e.g. MAI-Thinking-1) reject max_tokens; Python's name rule does not know them.
+                        var args = new Dictionary<string, object?>(ExtraModelArgs) { ["max_completion_tokens"] = true };
+                        target = new AzureAIModelApi(deployment.Name, api.EndpointUrl, streaming: api.Streaming, modelArgs: args, settings: shared);
+                        row.Notes.Add("needs --model-arg max_completion_tokens=true");
+                        row.Errors.Remove(check);
+                        status = await SmokeAsync(target, check, prompt, row);
+                    }
+
+                    row.Results[check] = status;
+                }
+
+                if (!json)
+                {
+                    Console.WriteLine($"{deployment.Name,-22} chat={row.Results.GetValueOrDefault("chat")} stream={row.Results.GetValueOrDefault("stream")} tools={row.Results.GetValueOrDefault("tools")} tokens={row.Tokens} ms={row.Milliseconds}{(row.Notes.Count > 0 ? "  " + string.Join("; ", row.Notes) : "")}");
+                }
+            }
+
+            var tested = rows.Where(r => r.Skipped is null).ToList();
+            var failedChat = tested.Where(r => r.Results.GetValueOrDefault("chat") != "ok").ToList();
+            if (json)
+            {
+                Console.WriteLine(JsonSerializer.Serialize(new
+                {
+                    resource, endpoint = api.EndpointUrl,
+                    results = rows.Select(r => new { deployment = r.Deployment.Name, format = r.Deployment.Format, state = r.Deployment.State, skipped = r.Skipped, checks = r.Results, tokens = r.Tokens, ms = r.Milliseconds, notes = r.Notes, errors = r.Errors }),
+                    ok = failedChat.Count == 0,
+                }, Pretty));
+                return failedChat.Count == 0 ? 0 : 1;
+            }
+
+            Console.WriteLine();
+            Console.WriteLine($"{"deployment",-30} {"format",-11} {"state",-10} {"chat",-8} {"stream",-8} {"tools",-8} {"tokens",7} {"ms",7}  note");
+            foreach (var r in rows)
+            {
+                Console.WriteLine(r.Skipped is not null
+                    ? $"{r.Deployment.Name,-30} {r.Deployment.Format,-11} {r.Deployment.State,-10} skipped: {r.Skipped}"
+                    : $"{r.Deployment.Name,-30} {r.Deployment.Format,-11} {r.Deployment.State,-10} {Cell(r.Results, "chat"),-8} {Cell(r.Results, "stream"),-8} {Cell(r.Results, "tools"),-8} {r.Tokens,7} {r.Milliseconds,7}  {string.Join("; ", r.Notes)}");
+            }
+
+            foreach (var r in rows.Where(r => r.Errors.Count > 0))
+            {
+                foreach (var (check, error) in r.Errors)
+                {
+                    Console.WriteLine($"  {r.Deployment.Name}/{check}: {error}");
+                }
+            }
+
+            Console.WriteLine();
+            Console.WriteLine($"{tested.Count - failedChat.Count}/{tested.Count} tested deployments answered chat; {rows.Count - tested.Count} skipped.");
+            return failedChat.Count == 0 ? 0 : 1;
+        }
+
+        private static bool IsAnthropicFormat(FoundryDeployment deployment) =>
+            string.Equals(deployment.Format, "Anthropic", StringComparison.OrdinalIgnoreCase);
+
+        private static string Cell(Dictionary<string, string> results, string check) =>
+            results.TryGetValue(check, out var v) ? (v.StartsWith("fail", StringComparison.Ordinal) ? "FAIL" : v) : "-";
+
+        private static async Task<string> SmokeAsync(AzureAIModelApi target, string check, string prompt, SmokeRow row)
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
+            var watch = Stopwatch.StartNew();
+            try
+            {
+                var input = new List<ChatMessage> { new ChatMessageUser(prompt) };
+                var config = DefaultConfig(target);
+                GenerateResult result = check switch
+                {
+                    "stream" => await target.GenerateAsync(input, [], ToolChoice.Auto, config, _ => Task.CompletedTask, cts.Token),
+                    "tools" => await target.GenerateAsync(input, [WeatherTool], ToolChoice.Auto, config, cts.Token),
+                    _ => await target.GenerateAsync(input, [], ToolChoice.Auto, config, cts.Token),
+                };
+                watch.Stop();
+                row.Milliseconds += watch.ElapsedMilliseconds;
+                if (result.Output is not { } output)
+                {
+                    row.Errors[check] = AzureAIModelApi.AzureErrorMessage(result.Error!);
+                    return "fail";
+                }
+
+                row.Tokens += output.Usage?.TotalTokens ?? 0;
+                if (check == "tools")
+                {
+                    var call = output.Message.ToolCalls?.FirstOrDefault();
+                    if (call is null) return "no-call";
+                    if (call.ParseError is not null) { row.Errors[check] = call.ParseError; return "fail"; }
+                    return call.Function == WeatherTool.Name ? "ok" : "wrong-tool";
+                }
+
+                return output.Completion.Length > 0 || output.StopReason != StopReason.Unknown ? "ok" : "empty";
+            }
+            catch (OperationCanceledException)
+            {
+                row.Errors[check] = "timed out after 120s";
+                return "fail";
+            }
+            catch (Exception ex) when (ex is RequestFailedException or ServiceResponseException or InvalidOperationException)
+            {
+                row.Errors[check] = AzureAIModelApi.AzureErrorMessage(ex);
+                return "fail";
+            }
+        }
+
+        private static void PrintResource(FoundryResource resource, string endpoint)
+        {
+            Console.WriteLine($"resource   : {resource.Name} ({resource.Kind}, {resource.Location})  resource group {resource.ResourceGroup}  subscription {resource.SubscriptionId}");
+            Console.WriteLine($"endpoint   : {endpoint}{(resource.InferenceEndpoint is not null && !string.Equals(resource.InferenceEndpoint.TrimEnd('/'), endpoint.TrimEnd('/'), StringComparison.OrdinalIgnoreCase) ? $"  (ARM advertises {resource.InferenceEndpoint})" : "")}");
+        }
+
+        private sealed class SmokeRow(FoundryDeployment deployment)
+        {
+            public FoundryDeployment Deployment { get; } = deployment;
+            public string? Skipped { get; set; }
+            public Dictionary<string, string> Results { get; } = new();
+            public Dictionary<string, string> Errors { get; } = new();
+            public List<string> Notes { get; } = [];
+            public int Tokens { get; set; }
+            public long Milliseconds { get; set; }
+        }
+
         public static int Unknown(string command)
         {
             Console.Error.WriteLine($"unknown command '{command}'\n\n{Help}");
@@ -418,8 +677,23 @@ namespace InspectAzureAI.Sample
         /// <summary>Sampling temperature for every command; null leaves the deployment default (gpt-5 models reject anything but 1).</summary>
         public static double? Temperature { get; set; }
 
+        /// <summary>--max-tokens override (set when <see cref="MaxTokensSet"/> is true; null means do not send max_tokens).</summary>
+        public static int? MaxTokens { get; set; }
+
+        public static bool MaxTokensSet { get; set; }
+
+        /// <summary>--model-arg key=value pairs merged into every created provider (the Python -M args).</summary>
+        public static Dictionary<string, object?> ExtraModelArgs { get; } = new();
+
+        /// <summary>Parses a -M value the way YAML would: true/false, integers, decimals, else a string.</summary>
+        public static object? ParseModelArgValue(string value) =>
+            bool.TryParse(value, out var b) ? b
+            : int.TryParse(value, out var i) ? i
+            : double.TryParse(value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var d) ? d
+            : value;
+
         private static GenerateConfig DefaultConfig(AzureAIModelApi api) =>
-            new() { MaxTokens = api.MaxTokens(), Temperature = Temperature };
+            new() { MaxTokens = MaxTokensSet ? MaxTokens : api.MaxTokens(), Temperature = Temperature };
 
         private static string Prompt(string prompt, string fallback = "This is a test string. What are you?") =>
             string.IsNullOrWhiteSpace(prompt) ? fallback : prompt;
