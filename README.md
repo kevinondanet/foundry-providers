@@ -25,6 +25,7 @@ InspectAzureAI.sln
 │   ├── Tools/                      ChatAPIHandler + Llama31Handler, parse_tool_call, tool/message conversion
 │   ├── Testing/                    CannedTransport — an offline HttpPipelineTransport
 │   ├── Foundry/                    FoundryCatalog — deployment discovery through Azure Resource Manager (port-only)
+│   ├── Anthropic/                  AnthropicFoundryModelApi — Claude deployments on the Anthropic Messages route (companion)
 │   ├── AzureAIModelApi.cs          port of AzureAIAPI
 │   ├── AzureAIStreamAccumulator.cs port of azureai_completion_from_stream
 │   ├── AzureChatCompletions.cs     dict-backed response view (raw JSON)
@@ -100,6 +101,7 @@ flowchart LR
 | `util/azure_hosting.py` `resolve_azure_token_provider`, `DEFAULT_AZURE_AUDIENCE` | `Util/AzureHosting.cs` (`ResolveAzureCredential`, `CreateCredential`, `AudienceTokenCredential`) |
 | *(none)* Entra token diagnostics for the `token` command | `Util/EntraTokenInfo.cs` |
 | *(none)* deployment discovery for `models` / `test-all` | `Foundry/FoundryCatalog.cs` |
+| `_providers/anthropic.py` (Azure path only: client, `max_tokens`, `message_stop_reason`, usage, tools, streaming) | `Anthropic/AnthropicFoundryModelApi.cs` (companion) |
 | `_util/http.py` `is_retryable_http_status`, `parse_retry_after(_from_exception)`, `status_code_of` | `Util/HttpRetryUtil.cs` |
 | `_openai.py` `needs_max_completion_tokens`, `openai_stop_details`, `openai_media_filter` | `Util/OpenAIUtil.cs` |
 | `_model_output.py` `collect_stop_details` | `Util/ModelOutputUtil.cs` |
@@ -130,6 +132,7 @@ Same names and precedence as the Python provider:
 | `INSPECT_EVAL_MODEL_BASE_URL` | last-resort endpoint fallback |
 | `AZUREAI_AUDIENCE` | Entra ID token scope (default `https://cognitiveservices.azure.com/.default`) |
 | `AZUREAI_CREDENTIAL` | *(port only)* which Azure.Identity credential to use: `default` (`DefaultAzureCredential`, includes `az login`), `cli`, `developer-cli`, `managed-identity`, `environment`, `interactive` |
+| `AZUREAI_ANTHROPIC_API_KEY`, `AZURE_ANTHROPIC_API_KEY`, `AZUREAI_ANTHROPIC_BASE_URL`, `AZURE_ANTHROPIC_BASE_URL` | Inspect's variables for `anthropic/azure/<deployment>`, used by the Anthropic companion (`--route anthropic`, and `test-all` for Anthropic-format deployments). With no key Entra ID is used; with no base URL it is derived from `AZUREAI_BASE_URL` (`…/models` → `…/anthropic`) |
 | `AZUREAI_RESOURCE_ID`, `AZURE_SUBSCRIPTION_ID` | *(port only)* `models` / `test-all`: the Foundry resource id (skips discovery) or the subscription to search; otherwise every readable subscription is searched for the account whose endpoints include the `AZUREAI_BASE_URL` host |
 | `AZURE_TENANT_ID`, `AZURE_CLIENT_ID` | *(Azure.Identity standard)* tenant pin for the default / cli credentials; client id of a user-assigned managed identity |
 
@@ -188,6 +191,8 @@ $S test-all                        # chat + stream + native tools against every 
 $S test-all --only gpt-5.4-mini,DeepSeek-V4-Flash --skip-tools --json
 scripts/test-all-models.sh myfoundry0406 rg-mfa-foundry   # same, with the deployment list taken from the Azure CLI
 $S chat --model MAI-Thinking-1 --model-arg max_completion_tokens=true "hello"   # reasoning models reject max_tokens
+$S chat --route anthropic --model claude-sonnet-4-6 "hello"                   # Claude: Anthropic Messages route
+$S tools --route anthropic --model claude-sonnet-4-6 "Weather in Oslo?"
 $S chat --model gpt-5.4-mini --temperature 0 "hello"   # temperature is optional; gpt-5 deployments accept only 1
 $S naming gpt-4o moonshotai/kimi-k2.5 custom-org/llama-3-70b
 $S chat "What are you?"            # non-streaming completion
@@ -240,7 +245,7 @@ deployments; `test-all` then ran chat, streaming and a native tool call against 
 | Kimi-K2.7-Code | MoonshotAI | ok | ok | ok | |
 | Cohere-command-a-plus-05-2026 | Cohere | ok | ok | ok | |
 | grok-4.6 | xAI | ok | ok | ok | slowest of the set (~20 s for the three checks) |
-| claude-sonnet-4-6 | Anthropic | skipped | skipped | skipped | the model-inference route answers `Requested API is currently not supported`; the deployment works on `/anthropic/v1/messages` with the same bearer token (Inspect's `anthropic/azure` provider), so `test-all` skips Anthropic-format deployments unless `--include-failed` |
+| claude-sonnet-4-6 | Anthropic | ok | ok | ok | the model-inference route answers `Requested API is currently not supported` for Anthropic deployments; `test-all` sends them through the Anthropic Messages route (`/anthropic/v1/messages`, same bearer token) via the companion provider. `image` on this route also described a test picture correctly |
 
 Earlier the same day, before the extra deployments existed: `image` (gpt-5.4-mini) accepted a data-URI
 image; `emulate-tools` against gpt-5.4-mini failed on turn 2 with HTTP 400 because OpenAI-format
@@ -262,6 +267,19 @@ Two things to know before your first call:
   ```
 - **Do not send `temperature` to gpt-5 deployments** unless it is 1; the sample leaves it unset by
   default and `--temperature <n>` sets it explicitly.
+
+## Claude deployments: the Anthropic Messages route
+
+Anthropic models on Foundry are not served on the model-inference route; Inspect reaches them with its
+`anthropic` provider (`anthropic/azure/<deployment>`, Messages API). `Anthropic/AnthropicFoundryModelApi.cs`
+is a companion, not part of the `azureai` port: it follows the Azure path of that provider (same
+environment variables, `max_tokens` rule, stop-reason and usage mapping, `input_schema` tools,
+`tool_result` blocks, base64 image sources, SSE streaming with `text_delta` and `input_json_delta`)
+behind the same `IModelApi` contract, sends `anthropic-version: 2023-06-01`, and adds two things Inspect's
+Azure path does not have: Entra ID bearer auth when no key is set, and a base URL derived from the
+inference endpoint. Not ported: extended thinking, prompt caching, citations, batch mode, server-side
+tools, the Python client's retry policy. Errors follow the same contract as the main provider (400 returned,
+408/429/5xx thrown for `ShouldRetry`, 401 as `IsAuthFailure`).
 
 ## Intentionally out of scope
 
@@ -366,6 +384,12 @@ Places where the port deliberately deviates from the Python implementation, and 
     the CLI; the sample's `models` and `test-all` commands resolve the account behind the endpoint through
     Azure Resource Manager (`https://management.azure.com/.default` scope on the same credential) and list
     its deployments. Cognitive Services User includes the read actions this needs.
+20. **Anthropic companion (`Anthropic/AnthropicFoundryModelApi.cs`) is a separate provider, not part of the
+    `azureai` port.** It exists so `test-all` can cover every deployment on the resource. It mirrors
+    Inspect's `anthropic/azure` path where the sample needs it (see the section above) and diverges by
+    accepting Entra ID and deriving the base URL; Python requires `AZUREAI_ANTHROPIC_API_KEY` and
+    `AZUREAI_ANTHROPIC_BASE_URL`. An API key is sent as both `x-api-key` and `api-key`; a token only as
+    `Authorization: Bearer`.
 17. **Entra ID tokens are sent as `Authorization: Bearer` only.** Python feeds the Entra token into
     `AzureKeyCredential`, so azure-ai-inference sends it in both `Authorization` and `api-key`. Azure AI
     Services and Azure OpenAI gateways validate `api-key` first when it is present and reject the JWT with

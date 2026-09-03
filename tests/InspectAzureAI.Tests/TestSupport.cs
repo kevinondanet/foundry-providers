@@ -19,6 +19,7 @@ internal sealed class EnvScope : IDisposable
         AzureAIModelApi.AzureAIEndpointUrlVar, AzureAIModelApi.AzureAIBaseUrlVar, "INSPECT_EVAL_MODEL_BASE_URL",
         AzureAIModelApi.AzureAIAudienceVar, AzureHosting.AzureAICredential, AzureHosting.AzureTenantId, AzureHosting.AzureClientId,
         InspectAzureAI.Provider.Foundry.FoundryCatalog.ResourceIdVar, InspectAzureAI.Provider.Foundry.FoundryCatalog.SubscriptionIdVar,
+        "AZUREAI_ANTHROPIC_API_KEY", "AZURE_ANTHROPIC_API_KEY", "AZUREAI_ANTHROPIC_BASE_URL", "AZURE_ANTHROPIC_BASE_URL",
     ];
 
     private readonly Dictionary<string, string?> _saved = new();

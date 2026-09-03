@@ -7,6 +7,7 @@ using Azure.Identity;
 using InspectAzureAI.Provider;
 using System.Diagnostics;
 using InspectAzureAI.Provider.Core;
+using InspectAzureAI.Provider.Anthropic;
 using InspectAzureAI.Provider.Foundry;
 using InspectAzureAI.Provider.Testing;
 using InspectAzureAI.Provider.Util;
@@ -18,6 +19,7 @@ var streamingArg = TakeOption(arguments, "--streaming");
 var emulateArg = TakeOption(arguments, "--emulate-tools");
 var modelArg = TakeOption(arguments, "--model");
 var authArg = TakeOption(arguments, "--auth");
+var routeArg = TakeOption(arguments, "--route");
 var jsonFlag = arguments.Remove("--json");
 var includeFailed = arguments.Remove("--include-failed");
 var skipTools = arguments.Remove("--skip-tools");
@@ -79,11 +81,11 @@ try
     {
         "config" => Cli.Config(Cli.CreateApi(modelArg, streamingArg, emulateArg, fake, authArg)),
         "naming" => Cli.Naming(rest),
-        "chat" => await Cli.Chat(Cli.CreateApi(modelArg, streamingArg, emulateArg, fake, authArg), string.Join(" ", rest)),
-        "stream" => await Cli.Stream(Cli.CreateApi(modelArg, streamingArg, emulateArg, fake, authArg), string.Join(" ", rest)),
-        "tools" => await Cli.ToolLoop(Cli.CreateApi(modelArg, streamingArg, emulateArg ?? "false", fake, authArg), string.Join(" ", rest)),
-        "emulate-tools" => await Cli.ToolLoop(Cli.CreateApi(modelArg, streamingArg, emulateArg ?? "true", fake, authArg), string.Join(" ", rest)),
-        "image" => await Cli.Image(Cli.CreateApi(modelArg, streamingArg, emulateArg, fake, authArg), rest),
+        "chat" => await Cli.Chat(Cli.CreateModelApi(routeArg, modelArg, streamingArg, emulateArg, fake, authArg), string.Join(" ", rest)),
+        "stream" => await Cli.Stream(Cli.CreateModelApi(routeArg, modelArg, streamingArg, emulateArg, fake, authArg), string.Join(" ", rest)),
+        "tools" => await Cli.ToolLoop(Cli.CreateModelApi(routeArg, modelArg, streamingArg, emulateArg ?? "false", fake, authArg), string.Join(" ", rest)),
+        "emulate-tools" => await Cli.ToolLoop(Cli.CreateModelApi(routeArg, modelArg, streamingArg, emulateArg ?? "true", fake, authArg), string.Join(" ", rest)),
+        "image" => await Cli.Image(Cli.CreateModelApi(routeArg, modelArg, streamingArg, emulateArg, fake, authArg), rest),
         "retry-demo" => Cli.RetryDemo(Cli.CreateApi(modelArg, streamingArg, emulateArg, fake, authArg)),
         "token" => await Cli.Token(Cli.CreateApi(modelArg, streamingArg, emulateArg, fake, authArg)),
         "models" => await Cli.Models(Cli.CreateApi(modelArg, streamingArg, emulateArg, fake, authArg), authArg, fake, jsonFlag),
@@ -161,7 +163,8 @@ namespace InspectAzureAI.Sample
                                         who it belongs to (verifies that `az login` is picked up; no model call)
               models                    discover the Foundry resource behind AZUREAI_BASE_URL through Azure
                                         Resource Manager and list its model deployments (--json for machines)
-              test-all                  smoke-test every healthy chat deployment: chat, stream, native tools
+              test-all                  smoke-test every healthy chat deployment: chat, stream, native tools; Anthropic
+                                        deployments go through the Messages route automatically
                                         (--only a,b  --include-failed  --skip-tools  --json); exit 1 on any chat failure
               --help                    this text
 
@@ -176,6 +179,8 @@ namespace InspectAzureAI.Sample
                                         streaming, or any pass-through body field such as safe_mode=true)
               --auth <selector>         Entra ID credential: default (DefaultAzureCredential, includes az login),
                                         cli, developer-cli, managed-identity, environment, interactive
+              --route models|anthropic  chat/stream/tools/image: the model-inference route (default) or the
+                                        Anthropic Messages route (/anthropic/v1/messages) for Claude deployments
 
             environment (same names and precedence as the Python provider):
               AZURE_API_KEY / AZUREAI_API_KEY                       api key (legacy name wins)
@@ -185,6 +190,8 @@ namespace InspectAzureAI.Sample
               AZUREAI_CREDENTIAL                                    same values as --auth (default: default)
               AZURE_TENANT_ID / AZURE_CLIENT_ID                     tenant pin / user-assigned managed identity
               AZUREAI_RESOURCE_ID / AZURE_SUBSCRIPTION_ID           models/test-all: skip or narrow the ARM search
+              AZUREAI_ANTHROPIC_API_KEY / AZUREAI_ANTHROPIC_BASE_URL  Anthropic route (Inspect's names); the base URL is
+                                                            derived from AZUREAI_BASE_URL when unset
 
             Entra ID is used whenever no API key is set: sign in with `az login` (and `az account set`),
             then run `token` to confirm which identity the credential resolves to.
@@ -267,6 +274,47 @@ namespace InspectAzureAI.Sample
             }
         }
 
+        /// <summary>Creates the provider for the selected route: model-inference (default) or the Anthropic Messages route.</summary>
+        public static IModelApi CreateModelApi(string? route, string? model, string? streaming, string? emulateTools, bool fake, string? auth)
+        {
+            if (route is null || route.Equals("models", StringComparison.OrdinalIgnoreCase))
+            {
+                return CreateApi(model, streaming, emulateTools, fake, auth);
+            }
+
+            if (!route.Equals("anthropic", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new UsageError($"--route expects models or anthropic, got '{route}'");
+            }
+
+            if (fake)
+            {
+                throw new UsageError("--route anthropic has no --fake endpoint");
+            }
+
+            var settings = new AzureAIClientSettings();
+            if (auth is not null)
+            {
+                try
+                {
+                    settings = settings with { TokenCredential = AzureHosting.CreateCredential(auth) };
+                }
+                catch (PrerequisiteError ex)
+                {
+                    throw new UsageError($"--auth: {ex.Message}");
+                }
+            }
+
+            try
+            {
+                return new AnthropicFoundryModelApi(model ?? Environment.GetEnvironmentVariable("INSPECT_AZUREAI_MODEL") ?? "claude-sonnet-4-6", streaming: streaming, settings: settings);
+            }
+            catch (ArgumentException ex)
+            {
+                throw new UsageError($"--streaming: {ex.Message}");
+            }
+        }
+
         public static int Config(AzureAIModelApi api)
         {
             Console.WriteLine($"endpoint            : {api.EndpointUrl}");
@@ -306,14 +354,14 @@ namespace InspectAzureAI.Sample
             return 0;
         }
 
-        public static async Task<int> Chat(AzureAIModelApi api, string prompt)
+        public static async Task<int> Chat(IModelApi api, string prompt)
         {
             var input = new List<ChatMessage> { new ChatMessageUser(Prompt(prompt)) };
             var result = await api.GenerateAsync(input, [], ToolChoice.Auto, DefaultConfig(api));
             return Report(result);
         }
 
-        public static async Task<int> Stream(AzureAIModelApi api, string prompt)
+        public static async Task<int> Stream(IModelApi api, string prompt)
         {
             var input = new List<ChatMessage> { new ChatMessageUser(Prompt(prompt)) };
             Console.WriteLine("-- stream events --");
@@ -322,12 +370,12 @@ namespace InspectAzureAI.Sample
             return Report(result);
         }
 
-        public static async Task<int> ToolLoop(AzureAIModelApi api, string prompt)
+        public static async Task<int> ToolLoop(IModelApi api, string prompt)
         {
             var input = new List<ChatMessage> { new ChatMessageUser(Prompt(prompt, "What is the weather like in Paris right now? Use the get_weather tool.")) };
             for (var turn = 0; turn < 5; turn++)
             {
-                Console.WriteLine($"== turn {turn + 1} (emulate_tools={api.EmulateTools?.ToString() ?? "auto"}) ==");
+                Console.WriteLine($"== turn {turn + 1} ({(api is AzureAIModelApi azure ? $"emulate_tools={azure.EmulateTools?.ToString() ?? "auto"}" : "Anthropic Messages route")}) ==");
                 var result = await api.GenerateAsync(input, [WeatherTool], ToolChoice.Auto, DefaultConfig(api));
                 Report(result);
                 var output = result.OutputOrThrow();
@@ -348,7 +396,7 @@ namespace InspectAzureAI.Sample
             return 1;
         }
 
-        public static async Task<int> Image(AzureAIModelApi api, List<string> rest)
+        public static async Task<int> Image(IModelApi api, List<string> rest)
         {
             if (rest.Count == 0)
             {
@@ -526,16 +574,23 @@ namespace InspectAzureAI.Sample
 
                 var row = new SmokeRow(deployment);
                 rows.Add(row);
-                if (!includeFailed && (!deployment.IsSucceeded || !deployment.SupportsChat || IsAnthropicFormat(deployment)))
+                if (!includeFailed && (!deployment.IsSucceeded || !deployment.SupportsChat))
                 {
-                    row.Skipped = !deployment.IsSucceeded ? $"provisioningState={deployment.State}"
-                        : !deployment.SupportsChat ? "chatCompletion=false"
-                        : "Anthropic Messages API route (/anthropic/v1/messages), served by Inspect's anthropic/azure provider, not the model-inference route";
+                    row.Skipped = !deployment.IsSucceeded ? $"provisioningState={deployment.State}" : "chatCompletion=false";
                     if (!json) Console.WriteLine($"{deployment.Name,-22} skipped ({row.Skipped})");
                     continue;
                 }
 
-                var target = new AzureAIModelApi(deployment.Name, api.EndpointUrl, streaming: api.Streaming, modelArgs: ExtraModelArgs, settings: shared);
+                var anthropic = IsAnthropicFormat(deployment);
+                IModelApi target = anthropic
+                    ? new AnthropicFoundryModelApi(deployment.Name, AnthropicFoundryModelApi.DeriveBaseUrl(api.EndpointUrl), streaming: api.Streaming, settings: shared)
+                    : new AzureAIModelApi(deployment.Name, api.EndpointUrl, streaming: api.Streaming, modelArgs: ExtraModelArgs, settings: shared);
+                if (anthropic)
+                {
+                    row.Notes.Add("Anthropic Messages route (/anthropic/v1/messages)");
+                }
+
+                var forcedMaxCompletionTokens = false;
                 foreach (var (check, prompt) in SmokeChecks)
                 {
                     if (check == "tools" && skipTools)
@@ -545,12 +600,13 @@ namespace InspectAzureAI.Sample
                     }
 
                     var status = await SmokeAsync(target, check, prompt, row);
-                    if (status == "fail" && !target.ForceMaxCompletionTokens
+                    if (status == "fail" && !anthropic && !forcedMaxCompletionTokens
                         && row.Errors.GetValueOrDefault(check, "").Contains("max_completion_tokens", StringComparison.OrdinalIgnoreCase))
                     {
                         // Reasoning models (e.g. MAI-Thinking-1) reject max_tokens; Python's name rule does not know them.
                         var args = new Dictionary<string, object?>(ExtraModelArgs) { ["max_completion_tokens"] = true };
                         target = new AzureAIModelApi(deployment.Name, api.EndpointUrl, streaming: api.Streaming, modelArgs: args, settings: shared);
+                        forcedMaxCompletionTokens = true;
                         row.Notes.Add("needs --model-arg max_completion_tokens=true");
                         row.Errors.Remove(check);
                         status = await SmokeAsync(target, check, prompt, row);
@@ -606,7 +662,7 @@ namespace InspectAzureAI.Sample
         private static string Cell(Dictionary<string, string> results, string check) =>
             results.TryGetValue(check, out var v) ? (v.StartsWith("fail", StringComparison.Ordinal) ? "FAIL" : v) : "-";
 
-        private static async Task<string> SmokeAsync(AzureAIModelApi target, string check, string prompt, SmokeRow row)
+        private static async Task<string> SmokeAsync(IModelApi target, string check, string prompt, SmokeRow row)
         {
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
             var watch = Stopwatch.StartNew();
@@ -692,7 +748,7 @@ namespace InspectAzureAI.Sample
             : double.TryParse(value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var d) ? d
             : value;
 
-        private static GenerateConfig DefaultConfig(AzureAIModelApi api) =>
+        private static GenerateConfig DefaultConfig(IModelApi api) =>
             new() { MaxTokens = MaxTokensSet ? MaxTokens : api.MaxTokens(), Temperature = Temperature };
 
         private static string Prompt(string prompt, string fallback = "This is a test string. What are you?") =>

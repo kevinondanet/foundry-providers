@@ -173,9 +173,13 @@ internal sealed class FakeArmHandler(Func<HttpRequestMessage, HttpResponseMessag
 {
     public List<HttpRequestMessage> Requests { get; } = [];
 
-    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    /// <summary>Request bodies captured at send time (the provider disposes the request afterwards).</summary>
+    public List<string?> Bodies { get; } = [];
+
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         Requests.Add(request);
-        return Task.FromResult(responder(request));
+        Bodies.Add(request.Content is null ? null : await request.Content.ReadAsStringAsync(cancellationToken));
+        return responder(request);
     }
 }

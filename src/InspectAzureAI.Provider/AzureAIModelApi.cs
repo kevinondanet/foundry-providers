@@ -20,7 +20,7 @@ namespace InspectAzureAI.Provider;
 /// <see cref="IsAuthFailure"/>, <see cref="CollapseUserMessages"/>, <see cref="ConnectionKey"/>,
 /// <see cref="CanonicalName"/>, <see cref="ServiceModelName"/>) are exposed as methods.
 /// </summary>
-public sealed class AzureAIModelApi
+public sealed class AzureAIModelApi : IModelApi
 {
     public const string AzureAIApiKeyVar = "AZUREAI_API_KEY";
 
