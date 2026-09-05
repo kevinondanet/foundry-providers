@@ -62,7 +62,7 @@ public sealed class EvalRunnerTests : IDisposable
         Assert.Equal("capitals", log.Eval.Dataset.Name);
         Assert.Equal([1, 2], log.Eval.Dataset.SampleIds!.Select(id => (int)id));
         Assert.Equal(1, log.Eval.Config.Epochs);
-        Assert.True(log.Eval.Config.FailOnError);
+        Assert.Equal(FailOnError.Always, log.Eval.Config.FailOnError);
 
         var results = log.Results!;
         Assert.Equal(2, results.TotalSamples);

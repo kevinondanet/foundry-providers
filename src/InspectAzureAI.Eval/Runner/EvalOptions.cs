@@ -30,7 +30,14 @@ public sealed record EvalOptions
     /// <summary>Port of the eval-level <c>adaptive_connections</c>; null inherits the model's own setting.</summary>
     public AdaptiveConnections? AdaptiveConnections { get; init; }
 
-    public bool? FailOnError { get; init; }
+    /// <summary>Port of <c>fail_on_error</c>: a bool, a fraction of the sample runs (below 1) or an absolute count; unset defers to the task.</summary>
+    public FailOnError? FailOnError { get; init; }
+
+    /// <summary>Port of <c>continue_on_fail</c>: keep running when the <see cref="FailOnError"/> condition is met and only fail the log at the end.</summary>
+    public bool? ContinueOnFail { get; init; }
+
+    /// <summary>Port of <c>retry_on_error</c>: how many times a sample that errors is re-run (from scratch, same uuid) before its error counts.</summary>
+    public int? RetryOnError { get; init; }
 
     public string LogDir { get; init; } = "logs";
 
@@ -47,6 +54,11 @@ public sealed record EvalOptions
 
     /// <summary>Port of <c>model_cost_config</c>: a JSON file of model prices applied before the eval runs (see <c>ModelCostConfig</c>).</summary>
     public string? ModelCostConfig { get; init; }
+    /// <summary>Port of <c>turn_limit</c>: maximum turns (model generations) per sample.</summary>
+    public int? TurnLimit { get; init; }
+
+    /// <summary>Port of <c>working_limit</c>: maximum working time (wall clock minus waiting) per sample.</summary>
+    public TimeSpan? WorkingLimit { get; init; }
 
     public IEvalReporter? Reporter { get; init; }
 

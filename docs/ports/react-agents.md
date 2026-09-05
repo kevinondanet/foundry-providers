@@ -27,11 +27,11 @@ Target: `src/InspectAzureAI.Eval/Agents/` (new files `AgentTypes.cs`, `AgentComp
 | `score(AgentState)` | `Agents.ScoreAsync(AgentState, ct)` |
 | `content_only`, `remove_tools`, `last_message`, `MessageFilter` | `MessageFilters.ContentOnly/RemoveTools/LastMessage/Identity`, `MessageFilter` delegate |
 | `trim_messages`, `partition_messages` | `MessageFilters.TrimMessages` (filter) / `TrimMessagesTo`, `PartitionMessages` |
-| `apply_limits([message_limit, token_limit, time_limit])` | `AgentLimits` record + `LimitScope.Apply` (ambient AsyncLocal stack) |
+| `apply_limits([message_limit, token_limit, time_limit])` | `AgentLimits` record + `AgentLimitScope.Apply` (ambient AsyncLocal stack) |
 | `sanitize_tool_name`, `agent_tool_name` | `Agents.SanitizeToolName`, `Agents.AgentToolName` |
 
-Hooks into existing code (all additive): `Model.GenerateAsync` calls `LimitScope.CheckMessageLimit` /
-`LimitScope.RecordUsage` after the sample-level checks; `ToolExecutor` recognises `ToolDef.Handoff`, wraps the
+Hooks into existing code (all additive): `Model.GenerateAsync` calls `AgentLimitScope.CheckMessageLimit` /
+`AgentLimitScope.RecordUsage` after the sample-level checks; `ToolExecutor` recognises `ToolDef.Handoff`, wraps the
 tool span in a `handoff` span, appends the agent's messages after the tool message, returns the agent's output
 as `ExecuteToolsResult.Output` and stamps `ToolEvent.Agent` (written/read as `agent` in the log JSON);
 `LimitExceededException.LimitSource` identifies the scope that raised (Python `source`).

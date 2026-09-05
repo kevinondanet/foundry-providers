@@ -672,7 +672,7 @@ public class AgentHandoffTests
     public async Task run_does_not_catch_a_parent_scopes_limit()
     {
         using var scope = new SampleContextScope(Hello());
-        using var outer = LimitScope.Apply(new AgentLimits(TokenLimit: 10));
+        using var outer = AgentLimitScope.Apply(new AgentLimits(TokenLimit: 10));
 
         var ex = await Assert.ThrowsAsync<LimitExceededException>(() => Agents.RunAsync(LoopingAgent, "This is the input", new AgentLimits(TokenLimit: 100)));
 
@@ -691,7 +691,7 @@ public class AgentHandoffTests
         var ex = await Assert.ThrowsAsync<LimitExceededException>(() => Agents.RunAsync(LoopingAgent, "This is the input", new AgentLimits(MessageLimit: 100)));
 
         Assert.Equal("message", ex.Type);
-        Assert.Null(ex.LimitSource);
+        Assert.Null(ex.SourceLimit);
     }
 
     [Fact]
@@ -730,33 +730,33 @@ public class AgentHandoffTests
     [Fact]
     public void limit_scopes_validate_and_nest()
     {
-        Assert.Throws<ArgumentOutOfRangeException>(() => LimitScope.Apply(new AgentLimits(MessageLimit: -1)));
-        Assert.Throws<ArgumentOutOfRangeException>(() => LimitScope.Apply(new AgentLimits(TokenLimit: -1)));
-        Assert.Null(LimitScope.Current);
+        Assert.Throws<ArgumentOutOfRangeException>(() => AgentLimitScope.Apply(new AgentLimits(MessageLimit: -1)));
+        Assert.Throws<ArgumentOutOfRangeException>(() => AgentLimitScope.Apply(new AgentLimits(TokenLimit: -1)));
+        Assert.Null(AgentLimitScope.Current);
 
-        using (var outer = LimitScope.Apply(new AgentLimits(TokenLimit: 3)))
+        using (var outer = AgentLimitScope.Apply(new AgentLimits(TokenLimit: 3)))
         {
-            Assert.Same(outer, LimitScope.Current);
-            using (var inner = LimitScope.Apply(new AgentLimits(TokenLimit: 2, MessageLimit: 4)))
+            Assert.Same(outer, AgentLimitScope.Current);
+            using (var inner = AgentLimitScope.Apply(new AgentLimits(TokenLimit: 2, MessageLimit: 4)))
             {
-                Assert.Same(inner, LimitScope.Current);
-                LimitScope.RecordUsage(new ModelUsage(TotalTokens: 2));
-                LimitScope.CheckMessageLimit(3);
+                Assert.Same(inner, AgentLimitScope.Current);
+                AgentLimitScope.RecordUsage(new ModelUsage(TotalTokens: 2));
+                AgentLimitScope.CheckMessageLimit(3);
                 Assert.Equal(2, outer.Usage.TotalTokens);
                 // Both limits are exceeded; the outermost wins.
-                var ex = Assert.Throws<LimitExceededException>(() => LimitScope.RecordUsage(new ModelUsage(TotalTokens: 2)));
+                var ex = Assert.Throws<LimitExceededException>(() => AgentLimitScope.RecordUsage(new ModelUsage(TotalTokens: 2)));
                 Assert.True(outer.Owns(ex));
                 Assert.Equal("3", ex.LimitStr);
-                var messages = Assert.Throws<LimitExceededException>(() => LimitScope.CheckMessageLimit(4));
+                var messages = Assert.Throws<LimitExceededException>(() => AgentLimitScope.CheckMessageLimit(4));
                 Assert.True(inner.Owns(messages));
                 Assert.Contains("reached", messages.Message);
             }
 
-            Assert.Same(outer, LimitScope.Current);
-            LimitScope.CheckMessageLimit(1000);
+            Assert.Same(outer, AgentLimitScope.Current);
+            AgentLimitScope.CheckMessageLimit(1000);
         }
 
-        Assert.Null(LimitScope.Current);
+        Assert.Null(AgentLimitScope.Current);
     }
 
     [Fact]

@@ -2,6 +2,7 @@ using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using InspectAzureAI.Eval.Context;
 using InspectAzureAI.Eval.Log.Json;
+using InspectAzureAI.Eval.Runner;
 using InspectAzureAI.Eval.Sandbox;
 using InspectAzureAI.Eval.Scorers;
 using InspectAzureAI.Eval.Solvers;
@@ -164,7 +165,7 @@ public sealed record EvalDataset
 /// <summary>
 /// Port of <c>log/_log.py</c> <c>EvalConfig</c>; <see cref="TimeLimit"/> and <see cref="WorkingLimit"/> are seconds.
 /// Python's union-typed options are split: <c>limit</c> is <see cref="Limit"/> or <see cref="LimitRange"/>,
-/// <c>fail_on_error</c> is <see cref="FailOnError"/> or <see cref="FailOnErrorThreshold"/>, <c>sample_shuffle</c> is
+/// <c>fail_on_error</c> is <see cref="FailOnError"/> (a bool or a number), <c>sample_shuffle</c> is
 /// <see cref="SampleShuffle"/> or <see cref="SampleShuffleSeed"/> (the specific form wins when both are set).
 /// </summary>
 public sealed record EvalConfig
@@ -191,10 +192,8 @@ public sealed record EvalConfig
     /// <summary>A bool or a notification target string.</summary>
     public object? Notification { get; init; }
 
-    public bool? FailOnError { get; init; }
-
-    /// <summary>The numeric form of <c>fail_on_error</c>: a count (≥ 1) or proportion (&lt; 1) of failed samples tolerated.</summary>
-    public double? FailOnErrorThreshold { get; init; }
+    /// <summary>Port of <c>fail_on_error</c>: <c>True</c> fails on the first sample error, <c>False</c> never, a number is a fraction (below 1) or count of failed samples.</summary>
+    public FailOnError? FailOnError { get; init; }
 
     public bool? ContinueOnFail { get; init; }
 
@@ -208,6 +207,7 @@ public sealed record EvalConfig
 
     public string? TokenLimitType { get; init; }
 
+    /// <summary>Port of <c>turn_limit</c>: maximum turns (model generations) per sample.</summary>
     public int? TurnLimit { get; init; }
 
     public int? TimeLimit { get; init; }

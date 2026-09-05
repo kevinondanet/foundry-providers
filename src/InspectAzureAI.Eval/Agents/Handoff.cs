@@ -97,7 +97,7 @@ public static partial class Agents
 
         LimitExceededException? limitError = null;
         var agentState = new AgentState(agentConversation);
-        using (var scope = LimitScope.Apply(handoff.Limits, cancellationToken))
+        using (var scope = AgentLimitScope.Apply(handoff.Limits, cancellationToken))
         using (SampleContext.Current?.Transcript.Span(agentName, "agent"))
         {
             try

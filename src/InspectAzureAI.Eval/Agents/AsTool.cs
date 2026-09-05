@@ -36,7 +36,7 @@ public static partial class Agents
             }
 
             var state = new AgentState([new ChatMessageUser(input) { Source = "input" }]);
-            using var scope = LimitScope.Apply(limits, cancellationToken);
+            using var scope = AgentLimitScope.Apply(limits, cancellationToken);
             using var span = SampleContext.Current?.Transcript.Span(agent.Name, "agent");
             try
             {

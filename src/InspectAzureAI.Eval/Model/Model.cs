@@ -1,7 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.ExceptionServices;
 using InspectAzureAI.Eval.Concurrency;
-using InspectAzureAI.Eval.Agents;
 using InspectAzureAI.Eval.Context;
 using InspectAzureAI.Eval.Model.Cache;
 using InspectAzureAI.Eval.Model.Compaction;
@@ -138,7 +137,7 @@ public sealed class Model
 
         // Python counts the caller's conversation, before its own config.system_message is inserted.
         context?.Limits.CheckMessageLimit(input.Count);
-        LimitScope.CheckMessageLimit(input.Count);
+        MessageLimit.CheckMessageLimit(input.Count, raiseForEqual: true);
 
         var messages = input;
         if (resolvedConfig.SystemMessage is { } systemMessage)
@@ -229,7 +228,8 @@ public sealed class Model
                     }
 
                     context?.Limits.AddUsage(usage, Name);
-                    LimitScope.RecordUsage(usage);
+                    TokenLimit.RecordModelUsage(usage);
+                    TokenLimit.CheckTokenLimit();
                 }
 
                 NotifyCleanSuccess(request.Request);
@@ -238,6 +238,7 @@ public sealed class Model
                     await PromptCache.StoreAsync(cacheEntry, output, cancellationToken).ConfigureAwait(false);
                 }
 
+                TurnLimit.RecordTurn();
                 return output;
             }
 
@@ -272,7 +273,9 @@ public sealed class Model
             retries++;
             await NotifyRetryAsync(onStream, retries).ConfigureAwait(false);
             Throughput.RecordRetryWait(Name, wait.TotalSeconds, waiter: context);
+            var waitStarted = Stopwatch.GetTimestamp();
             await (Retry.Delay ?? SleepDelay)(wait, cancellationToken).ConfigureAwait(false);
+            WorkingLimit.ReportSampleWaitingTime(Stopwatch.GetElapsedTime(waitStarted));
         }
     }
 

@@ -3,6 +3,7 @@ using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using InspectAzureAI.Eval.Context;
 using InspectAzureAI.Eval.Dataset;
+using InspectAzureAI.Eval.Runner;
 using InspectAzureAI.Eval.Sandbox;
 using InspectAzureAI.Eval.Scorers;
 using InspectAzureAI.Eval.Solvers;
@@ -171,8 +172,7 @@ internal sealed class EvalConfigConverter : JsonConverter<EvalConfig>
             EpochsReducer = JsonIo.Get<List<string>>(e, "epochs_reducer", options),
             Approval = JsonIo.Object(e, "approval"),
             Notification = JsonIo.Prop(e, "notification") is { } notification ? PlainJson.ToObject(notification) : null,
-            FailOnError = failOnError is { ValueKind: JsonValueKind.True or JsonValueKind.False } failFlag ? failFlag.GetBoolean() : null,
-            FailOnErrorThreshold = failOnError is { ValueKind: JsonValueKind.Number } failThreshold ? failThreshold.GetDouble() : null,
+            FailOnError = failOnError is { ValueKind: not JsonValueKind.Null } failValue ? failValue.Deserialize<FailOnError>(options) : null,
             ContinueOnFail = JsonIo.Bool(e, "continue_on_fail"),
             RetryOnError = JsonIo.Int(e, "retry_on_error"),
             ScoreOnError = JsonIo.Bool(e, "score_on_error"),
@@ -232,13 +232,10 @@ internal sealed class EvalConfigConverter : JsonConverter<EvalConfig>
         JsonIo.Obj(writer, "epochs_reducer", value.EpochsReducer, options);
         JsonIo.Node(writer, "approval", value.Approval);
         JsonIo.Obj(writer, "notification", value.Notification, options);
-        if (value.FailOnErrorThreshold is { } threshold)
+        if (value.FailOnError is { } failOnError)
         {
-            JsonIo.Dbl(writer, "fail_on_error", threshold);
-        }
-        else
-        {
-            JsonIo.Bool(writer, "fail_on_error", value.FailOnError);
+            writer.WritePropertyName("fail_on_error");
+            JsonSerializer.Serialize(writer, failOnError, options);
         }
 
         JsonIo.Bool(writer, "continue_on_fail", value.ContinueOnFail);

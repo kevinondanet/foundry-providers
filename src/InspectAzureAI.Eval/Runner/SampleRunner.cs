@@ -13,13 +13,42 @@ namespace InspectAzureAI.Eval.Runner;
 
 using Model = InspectAzureAI.Eval.Model.Model;
 
-/// <summary>The outcome of one (sample, epoch) run: the logged sample, its scorer scores keyed by unique scorer name, the exception (if any) and whether it ended by cancellation.</summary>
-internal sealed record SampleResult(EvalSample Sample, IReadOnlyDictionary<string, SampleScore> Scores, Exception? Exception, bool Cancelled);
+/// <summary>
+/// The outcome of one (sample, epoch) attempt: the logged sample, its scorer scores keyed by unique scorer name,
+/// the exception (if any) and whether it ended by cancellation. <see cref="Retry"/> is set when the attempt
+/// errored with retries remaining: nothing is logged and the run re-enters with a fresh attempt.
+/// </summary>
+internal sealed record SampleResult(EvalSample Sample, IReadOnlyDictionary<string, SampleScore> Scores, Exception? Exception, bool Cancelled)
+{
+    public EvalRetryError? Retry { get; init; }
+}
 
 /// <summary>
-/// Port of <c>_eval/task/run.py</c> <c>task_run_sample</c> for one (sample, epoch): sandbox init (files, setup),
-/// task state and ambient <see cref="SampleContext"/>, setup + solver under the sample limits (a limit ends the
-/// solver but the sample is still scored), scoring, the <see cref="EvalSample"/> record, sandbox cleanup.
+/// Port of <c>_eval/task/run.py</c> <c>SampleAttempt</c>: the retry state one sample run carries across its
+/// attempts. The budget is invariant and the remaining retries derive from the errors accrued, so budget and
+/// history cannot drift apart; the sample uuid minted by the first attempt is reused by the retries.
+/// </summary>
+internal sealed record SampleAttempt(int RetryLimit, IReadOnlyList<EvalRetryError> Errors, string? SampleUuid)
+{
+    public static SampleAttempt First(int retryLimit) => new(retryLimit, [], null);
+
+    /// <summary>1-based attempt number.</summary>
+    public int Number => Errors.Count + 1;
+
+    public bool IsFirst => Errors.Count == 0;
+
+    public int RetriesRemaining => RetryLimit - Errors.Count;
+
+    /// <summary>The next attempt's state after an error-retry: the error appended, the uuid carried.</summary>
+    public SampleAttempt Advance(EvalRetryError error, string sampleUuid) => new(RetryLimit, [.. Errors, error], sampleUuid);
+}
+
+/// <summary>
+/// Port of <c>_eval/task/run.py</c> <c>_task_run_sample_attempt</c> for one (sample, epoch) attempt: sandbox init
+/// (files, setup), task state and ambient <see cref="SampleContext"/>, setup + solver inside the sample-level
+/// scoped limits (token, message, turn, time, working — a limit ends the solver but the sample is still scored),
+/// scoring, the <see cref="EvalSample"/> record, sandbox cleanup. An attempt that errors with retries remaining
+/// hands back a <see cref="SampleResult.Retry"/> for <c>Eval</c>'s attempt loop.
 /// </summary>
 internal sealed class SampleRunner(
     EvalTask task,
@@ -29,15 +58,24 @@ internal sealed class SampleRunner(
     int? tokenLimit,
     TimeSpan? timeLimit,
     bool cleanup,
-    double? costLimit = null)
+    double? costLimit = null,
+    int? turnLimit = null,
+    TimeSpan? workingLimit = null)
 {
-    public async Task<SampleResult> RunAsync(Sample sample, SandboxSpec? sandbox, int epoch, CancellationToken cancellationToken)
+    public Task<SampleResult> RunAsync(Sample sample, SandboxSpec? sandbox, int epoch, CancellationToken cancellationToken) =>
+        RunAsync(sample, sandbox, epoch, SampleAttempt.First(0), cancellationToken);
+
+    public async Task<SampleResult> RunAsync(Sample sample, SandboxSpec? sandbox, int epoch, SampleAttempt attempt, CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(sample);
+        ArgumentNullException.ThrowIfNull(attempt);
+        SampleLimits.ResetSnapshot();
         var startedAt = DateTimeOffset.UtcNow;
-        var stopwatch = Stopwatch.StartNew();
         var store = new Store();
         var transcript = new Transcript();
-        var limits = new Limits { MessageLimit = messageLimit, TokenLimit = tokenLimit, TimeLimit = timeLimit, CostLimit = costLimit, StartedAt = startedAt };
+        // usage, waiting-time and cost accounting: message/token/time enforcement is the scoped stack entered around
+        // the solvers, while the cost limit is still enforced by this flat class
+        var limits = new Limits { CostLimit = costLimit, StartedAt = startedAt };
         var state = new TaskState(
             model.Name,
             sample.Id!,
@@ -49,13 +87,23 @@ internal sealed class SampleRunner(
             messageLimit: messageLimit,
             tokenLimit: tokenLimit,
             metadata: sample.Metadata?.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal),
-            store: store);
+            store: store,
+            sampleUuid: attempt.SampleUuid);
+        var tokenNode = new TokenLimit(tokenLimit);
+        var messageNode = new MessageLimit(messageLimit);
+        var turnNode = new TurnLimit(turnLimit);
+        var timeNode = new TimeLimit(timeLimit);
+        var workingNode = new WorkingLimit(workingLimit);
+        state.AttachLimits(messageNode, tokenNode);
         var scores = new OrderedDictionary<string, SampleScore>(StringComparer.Ordinal);
         EvalError? error = null;
         Exception? exception = null;
         EvalSampleLimit? limit = null;
+        EvalRetryError? retry = null;
         var cancelled = false;
         SandboxEnvironments? sandboxes = null;
+        // Python's start_time is taken once the init span closes, so sandbox setup is outside total_time
+        long? workStarted = null;
 
         try
         {
@@ -80,30 +128,52 @@ internal sealed class SampleRunner(
             using var scope = SampleContext.Begin(context);
             using var modelAccumulators = SampleModelAccumulators.Begin();
             var generate = GenerateLoop.Create(model);
+            workStarted = Stopwatch.GetTimestamp();
 
-            using var solverCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            if (timeLimit is { } solverLimit)
+            LimitExceededException? workingError = null;
+            using (Limit.Apply(tokenNode, messageNode, turnNode, timeNode, workingNode))
             {
-                solverCts.CancelAfter(solverLimit);
-            }
-
-            try
-            {
-                using var solversSpan = transcript.Span("solvers");
-                if (task.Setup is { } setup)
+                using var solverCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeNode.Token);
+                using var monitorStop = new CancellationTokenSource();
+                var monitor = MonitorWorkingLimitAsync(
+                    workingNode,
+                    exceeded =>
+                    {
+                        workingError = exceeded;
+                        solverCts.Cancel();
+                    },
+                    monitorStop.Token);
+                try
                 {
-                    state = await RunSolverAsync("setup", setup, state, generate, transcript, solverCts.Token).ConfigureAwait(false);
-                }
+                    using var solversSpan = transcript.Span("solvers");
+                    if (task.Setup is { } setup)
+                    {
+                        state = await RunSolverAsync("setup", setup, state, generate, transcript, solverCts.Token).ConfigureAwait(false);
+                    }
 
-                state = await RunSolverAsync("solver", task.Solver, state, generate, transcript, solverCts.Token).ConfigureAwait(false);
-            }
-            catch (LimitExceededException ex)
-            {
-                limit = SampleLimit(ex);
-            }
-            catch (OperationCanceledException) when (solverCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
-            {
-                limit = TimeLimitExceeded();
+                    state = await RunSolverAsync("solver", task.Solver, state, generate, transcript, solverCts.Token).ConfigureAwait(false);
+                }
+                catch (LimitExceededException ex)
+                {
+                    limit = SampleLimit(ex);
+                }
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && timeNode.Exceeded)
+                {
+                    limit = TimeLimitExceeded(timeNode, transcript);
+                }
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && workingError is { } exceeded)
+                {
+                    // the monitor records no event of its own, so this is its sole recorder (as in Python)
+                    transcript.Add(new SampleLimitEvent("working", exceeded.Message, exceeded.Limit));
+                    limit = SampleLimit(exceeded);
+                }
+                finally
+                {
+                    await monitorStop.CancelAsync().ConfigureAwait(false);
+                    await monitor.ConfigureAwait(false);
+                    // Python snapshots the sample limits while their scopes are still open, for the scorers
+                    SampleLimits.RecordSnapshot(state.Messages.Count);
+                }
             }
 
             state.Completed = true;
@@ -145,7 +215,15 @@ internal sealed class SampleRunner(
         {
             exception = ex;
             error = EvalError.FromException(ex);
-            transcript.Add(new ErrorEvent(error.Message, error.Traceback));
+            if (attempt.RetriesRemaining > 0)
+            {
+                // Python: with retries left the error is neither counted nor logged; the run re-enters
+                retry = RetryError(error, transcript.Events);
+            }
+            else
+            {
+                transcript.Add(new ErrorEvent(error.Message, error.Traceback));
+            }
         }
         finally
         {
@@ -162,7 +240,7 @@ internal sealed class SampleRunner(
             }
         }
 
-        var totalTime = Math.Round(stopwatch.Elapsed.TotalSeconds, 3);
+        var elapsed = workStarted is { } started ? Stopwatch.GetElapsedTime(started) : (TimeSpan?)null;
         var evalSample = new EvalSample
         {
             Id = sample.Id!,
@@ -182,13 +260,14 @@ internal sealed class SampleRunner(
             ModelUsage = limits.UsageByModel,
             StartedAt = startedAt,
             CompletedAt = DateTimeOffset.UtcNow,
-            TotalTime = totalTime,
-            WorkingTime = totalTime,
+            TotalTime = elapsed is { } total ? Math.Round(total.TotalSeconds, 3) : null,
+            WorkingTime = elapsed is { } working ? Math.Round((working - limits.WaitingTime).TotalSeconds, 3) : null,
             Uuid = state.Uuid,
             Error = error,
+            ErrorRetries = attempt.Errors,
             Limit = limit,
         };
-        return new SampleResult(evalSample, scores, exception, cancelled);
+        return new SampleResult(evalSample, scores, exception, cancelled) { Retry = retry };
     }
 
     /// <summary>Port of <c>Plan.__call__</c>'s per-solver step: a solver span (plus the legacy <see cref="StepEvent"/> pair) around the call.</summary>
@@ -223,6 +302,36 @@ internal sealed class SampleRunner(
     }
 
     /// <summary>
+    /// Port of <c>monitor_working_limit()</c>: a background check that ends the solver when the sample's working
+    /// time is exceeded. Python polls every second; waiting time can only push the deadline later, so this sleeps
+    /// until the limit could first be exceeded and re-checks.
+    /// </summary>
+    private static async Task MonitorWorkingLimitAsync(WorkingLimit node, Action<LimitExceededException> exceeded, CancellationToken stop)
+    {
+        if (node.Limit is null)
+        {
+            return;
+        }
+
+        try
+        {
+            while (true)
+            {
+                var remaining = TimeSpan.FromSeconds(Math.Clamp(node.Remaining ?? 0, 0, TimeSpan.FromHours(1).TotalSeconds));
+                await Task.Delay(remaining + TimeSpan.FromMilliseconds(10), stop).ConfigureAwait(false);
+                if (node.Check() is { } error)
+                {
+                    exceeded(error);
+                    return;
+                }
+            }
+        }
+        catch (OperationCanceledException) when (stop.IsCancellationRequested)
+        {
+        }
+    }
+
+    /// <summary>
     /// Port of <c>score(state)</c>: the task scorers over the sample's state. A state an agent built itself
     /// contributes only its messages and output — Python copies <c>sample_state()</c> and swaps those in, so
     /// the sample's target, metadata and identity always come from the runner.
@@ -244,14 +353,33 @@ internal sealed class SampleRunner(
         return result;
     }
 
+    /// <summary>Port of <c>_eval_retry_error</c>: the error plus the events from the attempt's last <see cref="ModelEvent"/> onward (all of them when there is none).</summary>
+    private static EvalRetryError RetryError(EvalError error, IReadOnlyList<TranscriptEvent> events)
+    {
+        var start = 0;
+        for (var i = events.Count - 1; i >= 0; i--)
+        {
+            if (events[i] is ModelEvent)
+            {
+                start = i;
+                break;
+            }
+        }
+
+        return new EvalRetryError(error.Message, error.Traceback, error.TracebackAnsi) { Events = events.Skip(start).ToArray() };
+    }
+
+    /// <summary>Port of the <c>except LimitExceededError</c> branch: the limit applied, or the configured value for errors built without one, or -1.</summary>
     private EvalSampleLimit SampleLimit(LimitExceededException ex)
     {
-        double? configured = ex.Type switch
+        double? configured = ex.Limit ?? ex.Type switch
         {
             "message" => messageLimit,
             "token" => tokenLimit,
+            "turn" => turnLimit,
             "time" => timeLimit?.TotalSeconds,
             "cost" => costLimit,
+            "working" => workingLimit?.TotalSeconds,
             _ => null,
         };
         var value = configured
@@ -259,9 +387,11 @@ internal sealed class SampleRunner(
         return new EvalSampleLimit(ex.Type, value, ex.Message);
     }
 
-    private EvalSampleLimit TimeLimitExceeded()
+    /// <summary>Port of <c>_TimeLimit.__exit__</c> for the sample's deadline: the event is recorded here since the exception never surfaces through a scope exit.</summary>
+    private static EvalSampleLimit TimeLimitExceeded(TimeLimit timeNode, Transcript transcript)
     {
-        var seconds = timeLimit!.Value.TotalSeconds;
-        return new EvalSampleLimit("time", seconds, $"Time limit exceeded. limit: {LimitExceededException.FormatLimit(seconds)} seconds");
+        var error = timeNode.ExceededError()!;
+        transcript.Add(new SampleLimitEvent("time", error.Message, error.Limit));
+        return new EvalSampleLimit("time", error.Limit!.Value, error.Message);
     }
 }

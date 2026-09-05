@@ -8,6 +8,7 @@ using InspectAzureAI.Eval.Log;
 using InspectAzureAI.Eval.Log.Json;
 using InspectAzureAI.Eval.Model;
 using InspectAzureAI.Eval.Model.Cache;
+using InspectAzureAI.Eval.Runner;
 using InspectAzureAI.Eval.Sandbox;
 using InspectAzureAI.Eval.Scorers;
 using InspectAzureAI.Provider.Core;
@@ -266,7 +267,7 @@ public class LogSchemaTests
                 ModelBaseUrl = "https://example.invalid",
                 ModelArgs = new Dictionary<string, object?> { ["k"] = "v" },
                 ModelRoles = new Dictionary<string, IReadOnlyList<ModelConfig>> { ["grader"] = [new ModelConfig("gpt-mini")], ["pair"] = [new ModelConfig("a"), new ModelConfig("b")] },
-                Config = new EvalConfig { LimitRange = new SampleRange(0, 2), Epochs = 2, EpochsReducer = ["mean"], MaxSamples = 4, MessageLimit = 10, TokenLimit = 1000, TimeLimit = 300, FailOnErrorThreshold = 0.5, SandboxCleanup = true, SampleShuffleSeed = 42, Notification = "slack", AcpServer = 8080 },
+                Config = new EvalConfig { LimitRange = new SampleRange(0, 2), Epochs = 2, EpochsReducer = ["mean"], MaxSamples = 4, MessageLimit = 10, TokenLimit = 1000, TimeLimit = 300, FailOnError = 0.5, SandboxCleanup = true, SampleShuffleSeed = 42, Notification = "slack", AcpServer = 8080 },
                 Revision = new EvalRevision("git", "https://example.invalid/repo.git", "abc123") { Dirty = false },
                 Packages = new Dictionary<string, string> { ["inspect_ai"] = "0.3.262" },
                 Metadata = new Dictionary<string, object?> { ["owner"] = "kev" },
@@ -454,7 +455,7 @@ public class LogSchemaTests
             Assert.Equal("eval-1", read.Eval.EvalId);
             Assert.Equal(new SampleRange(0, 2), read.Eval.Config.LimitRange);
             Assert.Null(read.Eval.Config.Limit);
-            Assert.Equal(0.5, read.Eval.Config.FailOnErrorThreshold);
+            Assert.Equal(FailOnError.Threshold(0.5), read.Eval.Config.FailOnError);
             Assert.Equal(42, read.Eval.Config.SampleShuffleSeed);
             Assert.Equal("slack", read.Eval.Config.Notification);
             Assert.Equal(8080, read.Eval.Config.AcpServer);
@@ -562,7 +563,7 @@ public class LogSchemaTests
         Assert.Equal(new SandboxSpec("docker", "Dockerfile"), log.Eval.Sandbox);
         Assert.Equal(100, log.Eval.ModelGenerateConfig.MaxTokens);
         Assert.Equal(300, log.Eval.Config.TimeLimit);
-        Assert.False(log.Eval.Config.FailOnError);
+        Assert.Equal(FailOnError.Never, log.Eval.Config.FailOnError);
         Assert.Equal("abc123", log.Eval.Revision!.Commit);
         Assert.Equal(["needs_qa", "demo"], log.Eval.Tags);
         Assert.Equal(["demo", "qa_passed"], log.Tags);
@@ -878,8 +879,7 @@ public class LogSchemaTests
 
         Assert.Equal(3, config.Limit);
         Assert.Equal(["s1"], config.SampleId);
-        Assert.True(config.FailOnError);
-        Assert.Null(config.FailOnErrorThreshold);
+        Assert.Equal(FailOnError.Always, config.FailOnError);
         Assert.False(config.SampleShuffle);
         Assert.Equal("{\"limit\":3,\"sample_id\":[\"s1\"],\"sample_shuffle\":false,\"fail_on_error\":true}", Json(config).Replace(" ", "").Replace("\n", ""));
     }

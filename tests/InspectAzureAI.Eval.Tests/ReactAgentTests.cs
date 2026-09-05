@@ -822,7 +822,7 @@ public class ReactAgentTests
 
         Assert.Equal("message", ex.Type);
         Assert.Equal("6", ex.LimitStr);
-        Assert.Null(ex.LimitSource);
+        Assert.Null(ex.SourceLimit);
     }
 
     [Fact]
