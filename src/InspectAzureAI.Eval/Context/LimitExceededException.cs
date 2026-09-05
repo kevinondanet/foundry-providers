@@ -2,7 +2,7 @@ using System.Globalization;
 
 namespace InspectAzureAI.Eval.Context;
 
-/// <summary>Port of <c>util/_limit.py</c> <c>LimitExceededError</c>; <see cref="Type"/> is "message", "token" or "time".</summary>
+/// <summary>Port of <c>util/_limit.py</c> <c>LimitExceededError</c>; <see cref="Type"/> is "message", "token", "time" or "cost".</summary>
 public sealed class LimitExceededException(string type, string limitStr, double value, string? message = null)
     : Exception(message ?? $"Exceeded {type} limit: {limitStr}")
 {

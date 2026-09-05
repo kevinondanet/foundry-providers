@@ -3,6 +3,7 @@ using System.Runtime.ExceptionServices;
 using InspectAzureAI.Eval.Concurrency;
 using InspectAzureAI.Eval.Context;
 using InspectAzureAI.Eval.Model.Cache;
+using InspectAzureAI.Eval.Model.Cost;
 using InspectAzureAI.Eval.Tools;
 using InspectAzureAI.Provider.Core;
 
@@ -160,7 +161,7 @@ public sealed class Model
 
             if (result?.Output is { } output)
             {
-                output = WithGenerateSource(output);
+                output = ModelCosts.PriceOutput(Name, WithGenerateSource(output));
                 Record(messages, resolvedTools, resolvedChoice, resolvedConfig, output, result.Call, retries, null, attemptStarted, elapsed, cacheMode);
                 if (output.Usage is { } usage)
                 {
