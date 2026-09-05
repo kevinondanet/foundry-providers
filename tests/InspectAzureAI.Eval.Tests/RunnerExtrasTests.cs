@@ -1288,6 +1288,11 @@ public sealed class RunnerExtrasTests : IDisposable
         Assert.Equal("4", sample.Output.Completion);
         Assert.InRange(sample.TotalTime!.Value, 0.25, 10);
         Assert.True(sample.WorkingTime!.Value <= sample.TotalTime.Value - 0.2, $"working {sample.WorkingTime} vs total {sample.TotalTime}");
+
+        // the events recorded after the back-off stamp working_start on the same clock as working_time
+        var last = sample.Events[^1];
+        Assert.True(last.WorkingStart <= sample.WorkingTime.Value + 0.001, $"working_start {last.WorkingStart} vs working {sample.WorkingTime}");
+        Assert.True(last.WorkingStart < sample.TotalTime.Value - 0.2, $"working_start {last.WorkingStart} vs total {sample.TotalTime}");
     }
 
     [Fact]

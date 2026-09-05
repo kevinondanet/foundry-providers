@@ -50,10 +50,15 @@ public sealed class Transcript
     public string? CurrentSpanId => _currentSpanId.Value;
 
     /// <summary>
-    /// Port of <c>sample_working_time()</c> as this port measures it: seconds since the transcript was created
-    /// (waiting time is not subtracted).
+    /// Port of <c>sample_working_time()</c>: the value <see cref="WorkingTimeSource"/> reports — the runner installs the
+    /// sample's clock (seconds since Python's <c>start_time</c>, taken after sandbox init, minus the sample's reported
+    /// waiting time, the same arithmetic as the sample's <c>working_time</c>) — or, before a source is installed
+    /// (sandbox init, a bare transcript, re-scoring), seconds since the transcript was created.
     /// </summary>
-    public double WorkingTime => _working.Elapsed.TotalSeconds;
+    public double WorkingTime => WorkingTimeSource?.Invoke() ?? _working.Elapsed.TotalSeconds;
+
+    /// <summary>The working-time clock behind <see cref="WorkingTime"/> (and so every recorded event's <c>working_start</c>); null until the runner installs the sample's.</summary>
+    public Func<double>? WorkingTimeSource { get; set; }
 
     /// <summary>Port of <c>Transcript._subscribe(event_logger)</c>: called with every event once recorded or updated (the runner routes them to the sample event hooks).</summary>
     public Action<TranscriptEvent>? EventLogger { get; set; }
@@ -106,8 +111,6 @@ public sealed class Transcript
 
             _events[index] = e;
         }
-
-        EventLogger?.Invoke(e);
 
         EventLogger?.Invoke(e);
     }

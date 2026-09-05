@@ -140,7 +140,9 @@ internal sealed class SampleRunner(
             using var scope = SampleContext.Begin(context);
             using var modelAccumulators = SampleModelAccumulators.Begin();
             var generate = GenerateLoop.Create(model);
-            workStarted = Stopwatch.GetTimestamp();
+            var workingOrigin = Stopwatch.GetTimestamp();
+            workStarted = workingOrigin;
+            transcript.WorkingTimeSource = () => (Stopwatch.GetElapsedTime(workingOrigin) - limits.WaitingTime).TotalSeconds;
 
             LimitExceededException? workingError = null;
             using (Limit.Apply(tokenNode, messageNode, turnNode, timeNode, workingNode))

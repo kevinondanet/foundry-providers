@@ -289,6 +289,45 @@ public static class PythonJsonFormat
         }
     }
 
+    /// <summary>
+    /// <see cref="WriteNode"/> for a <see cref="JsonElement"/> (a raw member cloned from a sanitized parse, such as the
+    /// <c>changes</c> of a state or store event): a sentinel string comes out as the bare non-finite constant again,
+    /// everything else is written as is.
+    /// </summary>
+    public static void WriteElement(Utf8JsonWriter writer, JsonElement element)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+        switch (element.ValueKind)
+        {
+            case JsonValueKind.Object:
+                writer.WriteStartObject();
+                foreach (var property in element.EnumerateObject())
+                {
+                    writer.WritePropertyName(property.Name);
+                    WriteElement(writer, property.Value);
+                }
+
+                writer.WriteEndObject();
+                break;
+            case JsonValueKind.Array:
+                writer.WriteStartArray();
+                foreach (var item in element.EnumerateArray())
+                {
+                    WriteElement(writer, item);
+                }
+
+                writer.WriteEndArray();
+                break;
+            case JsonValueKind.String when IsSentinel(element.GetString()):
+                TryNonFinite(element.GetString(), out var nonFinite);
+                WriteDouble(writer, nonFinite);
+                break;
+            default:
+                element.WriteTo(writer);
+                break;
+        }
+    }
+
     private static void WriteValue(Utf8JsonWriter writer, JsonValue value)
     {
         if (value.TryGetValue<JsonElement>(out var element))

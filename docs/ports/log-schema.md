@@ -40,7 +40,10 @@ the inspect_ai venv, plus inspect_ai's own legacy logs under `python/`).
 - `LogAttachments.CondenseSample(sample, logImages)`, `CondenseEvent`, `ResolveSampleAttachments(sample, mode)`,
   `ResolveEventsAttachments`, `AttachmentRefs`, `IsDataUri`; `MurmurHash3.Hash(text)` produces the same keys as
   Python (verified against `log_images.json`).
-- `Transcript` stamps `uuid`, `span_id` and `working_start` on every event it records.
+- `Transcript` stamps `uuid`, `span_id` and `working_start` on every event it records. `working_start` is
+  `sample_working_time()`: seconds since the sample's `start_time` (taken after sandbox init, as Python) minus the
+  sample's reported waiting time (retry back-off, shared-resource waits) — the clock the runner installs through
+  `Transcript.WorkingTimeSource`, the same arithmetic as the sample's `working_time`.
 
 ## Deviations from Python, and why
 
@@ -64,6 +67,9 @@ the inspect_ai venv, plus inspect_ai's own legacy logs under `python/`).
 - Errors: malformed JSON is `JsonException`, a newer version `InvalidDataException`, invalid edits
   `ArgumentException` (Python `ValueError`), old+new legacy forms together `JsonException` (Python `TypeError`).
 - Python's `Event` union has 23 members, not 22; all are ported.
+- Before the runner installs the sample's working-time clock (the init span's sandbox events), on a bare
+  `Transcript`, and when re-scoring a log (`Transcript(events)`), `working_start` is seconds since the transcript
+  was created; Python's `sample_working_time()` outside an initialised sample is the raw `time.monotonic()`.
 
 ## Not ported
 
