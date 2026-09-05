@@ -106,7 +106,7 @@ public sealed class ClaudeCodeAgent
         var sandbox = context.Sandbox(Options.Sandbox);
         var tracker = new ClaudeCodeStopReasonTracker();
         var models = ClaudeCodeModels.Resolve(Options.Model ?? context.ActiveModel, Options.ModelConfig, Options.Effort, Options.ModelAliases);
-        var bridge = new AgentBridge(state, models.Served, models.Aliases, Options.RetryRefusals, forwardGenerationConfig: false, modelEventSink: tracker);
+        var bridge = new AgentBridge(state, models.Served, models.Aliases, Options.RetryRefusals, forwardGenerationConfig: false, modelEventSink: tracker, cache: Options.Cache);
 
         // The tracker is handed to the bridge and also installed ambiently before the server starts, so the
         // bridge's request handlers inherit it whichever way the bridge delivers model events.

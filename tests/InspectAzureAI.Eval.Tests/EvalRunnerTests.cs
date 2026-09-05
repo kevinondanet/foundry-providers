@@ -394,7 +394,8 @@ public sealed class EvalRunnerTests : IDisposable
         var picked = await Eval.RunAsync(task, Options(new ScriptedModelApi()) with { SampleIds = ["3"], Limit = 1 });
 
         Assert.Equal([1, 2], limited.Samples!.Select(s => (int)s.Id));
-        Assert.Equal(2, limited.Eval.Dataset.Samples);
+        Assert.Equal(3, limited.Eval.Dataset.Samples);   // the whole dataset, as Python records it; sample_ids carries the selection
+        Assert.Equal([1, 2], limited.Eval.Dataset.SampleIds!.Select(id => (int)id));
         Assert.Equal(2, limited.Eval.Config.Limit);
         Assert.Equal(3, (int)Assert.Single(picked.Samples!).Id);
         Assert.Equal(["3"], picked.Eval.Config.SampleId!.Select(id => (string)id));

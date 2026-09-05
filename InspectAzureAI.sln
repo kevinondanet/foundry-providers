@@ -31,6 +31,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "InspectAzureAI.Cli", "src\I
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "InspectAzureAI.Cli.Tests", "tests\InspectAzureAI.Cli.Tests\InspectAzureAI.Cli.Tests.csproj", "{20A95D32-809E-4455-9B4E-48B808B69B86}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "InspectAzureAI.Sample.Tests", "tests\InspectAzureAI.Sample.Tests\InspectAzureAI.Sample.Tests.csproj", "{DD807FB1-DF2B-4DC0-A5CC-396CFB79A61C}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -185,6 +187,18 @@ Global
 		{20A95D32-809E-4455-9B4E-48B808B69B86}.Release|x64.Build.0 = Release|Any CPU
 		{20A95D32-809E-4455-9B4E-48B808B69B86}.Release|x86.ActiveCfg = Release|Any CPU
 		{20A95D32-809E-4455-9B4E-48B808B69B86}.Release|x86.Build.0 = Release|Any CPU
+		{DD807FB1-DF2B-4DC0-A5CC-396CFB79A61C}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{DD807FB1-DF2B-4DC0-A5CC-396CFB79A61C}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{DD807FB1-DF2B-4DC0-A5CC-396CFB79A61C}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{DD807FB1-DF2B-4DC0-A5CC-396CFB79A61C}.Debug|x64.Build.0 = Debug|Any CPU
+		{DD807FB1-DF2B-4DC0-A5CC-396CFB79A61C}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{DD807FB1-DF2B-4DC0-A5CC-396CFB79A61C}.Debug|x86.Build.0 = Debug|Any CPU
+		{DD807FB1-DF2B-4DC0-A5CC-396CFB79A61C}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{DD807FB1-DF2B-4DC0-A5CC-396CFB79A61C}.Release|Any CPU.Build.0 = Release|Any CPU
+		{DD807FB1-DF2B-4DC0-A5CC-396CFB79A61C}.Release|x64.ActiveCfg = Release|Any CPU
+		{DD807FB1-DF2B-4DC0-A5CC-396CFB79A61C}.Release|x64.Build.0 = Release|Any CPU
+		{DD807FB1-DF2B-4DC0-A5CC-396CFB79A61C}.Release|x86.ActiveCfg = Release|Any CPU
+		{DD807FB1-DF2B-4DC0-A5CC-396CFB79A61C}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -202,5 +216,6 @@ Global
 		{74CF6FF6-8B0E-42A1-8864-6C2A1A974A1E} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 		{C1E1C6D6-CC8F-42EF-B648-542F21833E91} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{20A95D32-809E-4455-9B4E-48B808B69B86} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
+		{DD807FB1-DF2B-4DC0-A5CC-396CFB79A61C} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 	EndGlobalSection
 EndGlobal

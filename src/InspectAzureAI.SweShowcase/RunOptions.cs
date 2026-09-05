@@ -1,4 +1,8 @@
 using System.Globalization;
+using System.Text.Json;
+using InspectAzureAI.Eval.Approval;
+using InspectAzureAI.Eval.Log.EvalFormat;
+using InspectAzureAI.Eval.Model.Cache;
 using InspectAzureAI.Provider.Core;
 using InspectAzureAI.Provider.Util;
 
@@ -56,6 +60,30 @@ internal sealed record RunOptions
     public bool Fake { get; init; }
 
     public bool Debug { get; init; }
+
+    /// <summary>Port of <c>--log-format</c>: <c>eval</c> or <c>json</c>; null lets the runner pick (<c>INSPECT_LOG_FORMAT</c>, else <c>eval</c>).</summary>
+    public LogFormat? LogFormat { get; init; }
+
+    /// <summary>The <c>--approval</c> argument as given (a policy file or a registered approver name), for the header.</summary>
+    public string? ApprovalSpec { get; init; }
+
+    /// <summary>Port of <c>--approval</c>: the policies resolved from <see cref="ApprovalSpec"/> at parse time, so a bad file is a usage error.</summary>
+    public ApprovalOption? Approval { get; init; }
+
+    /// <summary>The <c>--cache</c> policy (Inspect's <c>generate(cache=...)</c>); null when caching is off.</summary>
+    public CachePolicy? Cache { get; init; }
+
+    /// <summary>The <c>--compaction</c> strategy, applied to the mini-swe and basic agent loops.</summary>
+    public CompactionChoice? Compaction { get; init; }
+
+    /// <summary>The <c>--hooks</c> entries (built-in hook names), created per run by <see cref="RunWiring.CreateHooks"/>.</summary>
+    public IReadOnlyList<HookChoice> Hooks { get; init; } = [];
+
+    /// <summary>Port of <c>--cost-limit</c>: dollars per sample; needs pricing for the model (see <see cref="ModelCostConfig"/>).</summary>
+    public double? CostLimit { get; init; }
+
+    /// <summary>Port of <c>--model-cost-config</c>: a JSON price file applied before the run.</summary>
+    public string? ModelCostConfig { get; init; }
 
     /// <summary>The generation config the flags describe; a null MaxTokens lets <c>Model</c> fall back to the provider's max_tokens().</summary>
     public GenerateConfig GenerateConfig => new() { MaxTokens = MaxTokensSet ? MaxTokens : null, ReasoningEffort = ReasoningEffort };
@@ -128,6 +156,79 @@ internal sealed record RunOptions
             }
         }
 
+        LogFormat? logFormat = null;
+        if (TakeOption(arguments, "--log-format") is { } logFormatArg)
+        {
+            try
+            {
+                logFormat = LogFormats.Parse(logFormatArg.Trim().ToLowerInvariant());
+            }
+            catch (ArgumentException)
+            {
+                throw new UsageError($"--log-format expects {string.Join("|", LogFormats.All.Select(f => f.Name()))}, got '{logFormatArg}'");
+            }
+        }
+
+        var approvalSpec = TakeOption(arguments, "--approval");
+        ApprovalOption? approval = null;
+        if (approvalSpec is not null)
+        {
+            try
+            {
+                approval = ApprovalOption.FromPolicies(ApprovalPolicies.Resolve(approvalSpec));
+            }
+            catch (Exception ex) when (ex is ArgumentException or FileNotFoundException or NotSupportedException or JsonException or IOException)
+            {
+                throw new UsageError($"--approval: {ex.Message}");
+            }
+        }
+
+        CachePolicy? cache = null;
+        if (TakeOption(arguments, "--cache") is { } cacheArg)
+        {
+            var value = cacheArg.Trim();
+            cache = value.ToLowerInvariant() switch
+            {
+                "off" or "false" or "none" => null,
+                "on" or "true" => CachePolicy.Default,
+                _ => CachePolicy.FromString(value) ?? throw new UsageError($"--cache expects on|off or an expiry such as 1W, 3D or 12h, got '{cacheArg}'"),
+            };
+        }
+
+        var compaction = TakeOption(arguments, "--compaction") is { } compactionArg ? CompactionChoice.Parse(compactionArg) : null;
+
+        var hooks = new List<HookChoice>();
+        for (string? spec; (spec = TakeOption(arguments, "--hooks")) is not null;)
+        {
+            hooks.AddRange(spec.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Select(HookChoice.Parse));
+        }
+
+        double? costLimit = null;
+        if (TakeOption(arguments, "--cost-limit") is { } costLimitArg)
+        {
+            costLimit = double.TryParse(costLimitArg, NumberStyles.Float, CultureInfo.InvariantCulture, out var dollars) && dollars >= 0 && !double.IsNaN(dollars)
+                ? dollars
+                : throw new UsageError($"--cost-limit expects a non-negative number of dollars, got '{costLimitArg}'");
+        }
+
+        var modelCostConfig = TakeOption(arguments, "--model-cost-config");
+        if (modelCostConfig is not null)
+        {
+            if (!File.Exists(modelCostConfig))
+            {
+                throw new UsageError($"--model-cost-config: {modelCostConfig} does not exist");
+            }
+
+            try
+            {
+                Eval.Model.Cost.ModelCostConfig.Parse(File.ReadAllText(modelCostConfig), modelCostConfig);
+            }
+            catch (Exception ex) when (ex is JsonException or InvalidDataException or ArgumentException or IOException)
+            {
+                throw new UsageError($"--model-cost-config: {ex.Message}");
+            }
+        }
+
         if (sandbox is not null && !SandboxTypes.Contains(sandbox, StringComparer.Ordinal))
         {
             throw new UsageError($"--sandbox expects {string.Join("|", SandboxTypes)}, got '{sandbox}'");
@@ -163,6 +264,14 @@ internal sealed record RunOptions
             ModelArgs = modelArgs,
             Fake = fake,
             Debug = debug,
+            LogFormat = logFormat,
+            ApprovalSpec = approvalSpec,
+            Approval = approval,
+            Cache = cache,
+            Compaction = compaction,
+            Hooks = hooks,
+            CostLimit = costLimit,
+            ModelCostConfig = modelCostConfig,
         };
     }
 

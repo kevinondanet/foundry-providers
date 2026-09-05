@@ -26,6 +26,8 @@ var skipTools = arguments.Remove("--skip-tools");
 var onlyArg = TakeOption(arguments, "--only");
 var outArg = TakeOption(arguments, "--out");
 var paramsArg = TakeOption(arguments, "--params");
+var cacheExpiryArg = TakeOption(arguments, "--cache-expiry");
+var costConfigArg = TakeOption(arguments, "--model-cost-config");
 var parallel = 4;
 if (TakeOption(arguments, "--parallel") is { } parallelArg)
 {
@@ -129,6 +131,9 @@ try
         "stream" => await Cli.Stream(Cli.CreateModelApi(routeArg, modelArg, streamingArg, fake), string.Join(" ", rest)),
         "tools" => await Cli.ToolLoop(Cli.CreateModelApi(routeArg, modelArg, streamingArg, fake), string.Join(" ", rest)),
         "image" => await Cli.Image(Cli.CreateModelApi(routeArg, modelArg, streamingArg, fake), rest),
+        "cache" => await Cli.CacheDemo(Cli.CreateModelApi(routeArg, modelArg, streamingArg, fake), string.Join(" ", rest), cacheExpiryArg),
+        "cost" => await Cli.CostDemo(Cli.CreateModelApi(routeArg, modelArg, streamingArg, fake), string.Join(" ", rest), costConfigArg),
+        "structured" => await Cli.Structured(Cli.CreateModelApi(routeArg, modelArg, streamingArg, fake), string.Join(" ", rest)),
         "retry-demo" => Cli.RetryDemo(Cli.CreateApi(modelArg, streamingArg, fake)),
         "token" => await Cli.Token(Cli.CreateApi(modelArg, streamingArg, fake)),
         "models" => await Cli.Models(Cli.CreateApi(modelArg, streamingArg, fake), fake, jsonFlag),
@@ -204,6 +209,14 @@ namespace InspectAzureAI.Sample
               tools [prompt]            native function-calling loop with the local get_weather tool: the model's
                                         tool_calls are executed and fed back until it answers in plain text
               image <path-or-url>       send an image (materialised as a data URI) with a question
+              cache [prompt]            the same prompt twice under Inspect's prompt cache: the first call is stored
+                                        (cache=write), the second served from disk with no provider call (cache=read)
+                                        (--cache-expiry 1W|3D|12h, default 1W; INSPECT_CACHE_DIR picks the directory)
+              cost [prompt]             what the model database knows about the model and one generation priced with
+                                        --model-cost-config <file> ({"<model>": {"input", "output", "input_cache_write",
+                                        "input_cache_read"} in $/million tokens); reports the call unpriced otherwise
+              structured [prompt]       one generation constrained to a JSON schema (GenerateConfig.ResponseSchema, sent as
+                                        response_format / output_format) and parsed back into a C# record
               retry-demo                show ShouldRetry / IsAuthFailure / HandleAzureError decisions
               token                     acquire an Entra ID token with the resolved credential and print
                                         who it belongs to (verifies that `az login` is picked up; no model call)
@@ -1238,6 +1251,11 @@ namespace InspectAzureAI.Sample
             if (hasToolResult)
             {
                 return Completion("The weather in Paris is 21C and sunny with a light breeze.", streaming);
+            }
+
+            if (body.ContainsKey("response_format"))
+            {
+                return Completion("""{"city":"Paris","country":"France","population_millions":2.1,"landmarks":["Eiffel Tower","Louvre","Notre-Dame"]}""", streaming);
             }
 
             if (nativeTools)

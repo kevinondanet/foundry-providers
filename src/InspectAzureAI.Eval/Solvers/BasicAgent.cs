@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using InspectAzureAI.Eval.Context;
+using InspectAzureAI.Eval.Model.Cache;
 using InspectAzureAI.Eval.Model.Compaction;
 using InspectAzureAI.Eval.Scorers;
 using InspectAzureAI.Eval.Tools;
@@ -43,6 +44,8 @@ public static partial class Solvers
     /// With <paramref name="compaction"/> (see <see cref="Compaction.Hook"/>) the loop compacts its input when
     /// the conversation nears the context window and, after a <c>model_length</c> stop, recovers by forced
     /// compaction before giving up, as the Python react agent does.
+    /// <paramref name="cache"/> is the prompt cache policy passed to every generation (the port's stand-in for Python's
+    /// <c>generate(cache=...)</c> solver argument, which <c>basic_agent</c> itself does not expose).
     /// </summary>
     public static Solver BasicAgent(
         Solver? init = null,
@@ -57,7 +60,8 @@ public static partial class Solvers
         Func<ScoreValue, double>? scoreValue = null,
         int? maxToolOutput = null,
         bool submitAppend = false,
-        CompactionHook? compaction = null)
+        CompactionHook? compaction = null,
+        CachePolicy? cache = null)
     {
         ArgumentException.ThrowIfNullOrEmpty(submitName);
         ArgumentNullException.ThrowIfNull(submitDescription);
@@ -113,7 +117,7 @@ public static partial class Solvers
                     }
                 }
 
-                var output = await model.GenerateAsync(input, state.Tools.ToArray(), cancellationToken: cancellationToken).ConfigureAwait(false);
+                var output = await model.GenerateAsync(input, state.Tools.ToArray(), cache: cache, cancellationToken: cancellationToken).ConfigureAwait(false);
                 GenerateLoop.CheckTokenLimit(state);
                 CheckLoopTokenLimit(tokenLimit, state.TokenUsage - loopStartTokens);
                 state.Output = output;

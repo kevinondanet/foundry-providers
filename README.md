@@ -538,6 +538,6 @@ az login && export AZUREAI_BASE_URL=https://<resource>.services.ai.azure.com/mod
 dotnet run --project src/InspectAzureAI.SweShowcase -- run --fake --sandbox local --task hello-swe --agent mini-swe   # offline smoke test
 dotnet run --project src/InspectAzureAI.SweShowcase -- run --task hello-swe --agent mini-swe                          # Docker sandbox, real model
 dotnet run --project src/InspectAzureAI.SweShowcase -- run --task pytest-fix --agent claude-code --model claude-sonnet-4-6
-dotnet run --project src/InspectAzureAI.SweShowcase -- show logs/<timestamp>_hello-swe_<id>.json
+dotnet run --project src/InspectAzureAI.SweShowcase -- show logs/<timestamp>_hello-swe_<id>.eval
 dotnet run --project src/InspectAzureAI.ModelMatrix -- --parallel 3 --markdown docs/model-matrix-results.md   # Claude Code × every deployment
 ```

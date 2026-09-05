@@ -26,6 +26,7 @@ internal static class MatrixCli
           --format OpenAI,Anthropic keep only these ARM model formats (repeatable)
           --include-non-chat        also try deployments whose capabilities say chatCompletion=false
           --parallel N              deployments evaluated at the same time (default 1)
+          --retry-attempts N        immediate eval-set retries of a deployment whose eval errors (default 2)
 
         eval (the showcase's run flags):
           --task <name>             hello-swe (default), pytest-fix or system-explorer
@@ -36,7 +37,16 @@ internal static class MatrixCli
           --max-samples N           samples in flight per deployment (default 4)
           --attempts N              submissions the agent may make (default 1)
           --sandbox docker|local    docker (default) or local (demo only; --fake defaults to local)
-          --log-dir DIR             where the per-deployment eval logs go (default logs)
+          --log-dir DIR             the matrix's log directory; each deployment is an eval set in <log-dir>/<deployment>/,
+                                    so running again with the same directory resumes: complete logs are reused (note
+                                    'reused'), incomplete ones re-run reusing their completed samples (default logs)
+          --log-format eval|json    the log format (default eval)
+          --approval <policy>       tool-call approval policy file or approver name (see the showcase)
+          --cache <expiry|off>      Inspect's prompt cache for every model call (1W, 3D, 12h, on, off)
+          --compaction <strategy>   edit|summary|trim|auto[:threshold]; mini-swe and basic only
+          --hooks <name[=file]>     lifecycle hooks (sample-log), lines prefixed with the deployment name
+          --cost-limit <dollars>    per-sample cost limit (needs pricing)
+          --model-cost-config FILE  JSON prices per deployment; the matrix then reports cost per deployment
           --no-cleanup              keep the sandbox containers / temp directories
           --max-tokens <n|none>     max_tokens sent (default: the provider's max_tokens())
           --reasoning-effort <lvl>  Inspect's reasoning_effort (none|minimal|low|medium|high|xhigh|max)
@@ -48,7 +58,8 @@ internal static class MatrixCli
           --out FILE                JSON summary (default <log-dir>/<timestamp>_matrix_<task>.json)
           --markdown FILE           also write the table as Markdown
           --resume FILE             rerun only the deployments that errored in this previous matrix JSON and carry
-                                    its other rows over (same task and agent; not with --only)
+                                    its other rows over (same task and agent; not with --only); with the same
+                                    --log-dir their incomplete logs' completed samples are reused
           --show FILE               print a saved matrix JSON (with --markdown: re-render its Markdown) without running
 
         environment:
@@ -57,8 +68,10 @@ internal static class MatrixCli
           AZURE_SUBSCRIPTION_ID                                            narrows the resource search
 
         Each deployment takes the route its ARM model format implies (Anthropic → the Messages API, everything else →
-        the model-inference route). Authentication is Entra ID only: sign in with `az login` first. Exit codes:
-        0 ok, 1 at least one deployment errored, 2 usage or missing prerequisite, 3 sign-in / Azure / runtime failure.
+        the model-inference route). Every row reports accuracy, tokens, cost (when the model is priced), throughput
+        (tokens per second of wall time) and time. Authentication is Entra ID only: sign in with `az login` first.
+        Exit codes: 0 ok, 1 at least one deployment errored, 2 usage or missing prerequisite, 3 sign-in / Azure /
+        runtime failure.
         """;
 
     public static async Task<int> RunAsync(string[] args, TextWriter output, CancellationToken cancellationToken = default)

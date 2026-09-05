@@ -2,7 +2,9 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json.Nodes;
 using InspectAzureAI.Eval.Agents;
+using InspectAzureAI.Eval.Approval;
 using InspectAzureAI.Eval.Context;
+using InspectAzureAI.Eval.Model.Compaction;
 using InspectAzureAI.Eval.Sandbox;
 using InspectAzureAI.Eval.Scorers;
 using InspectAzureAI.Eval.Solvers;
@@ -28,6 +30,14 @@ public sealed record CommandObservation(string Output, int ReturnCode, string Ex
 /// command execution of <c>environments/local.py</c>, and the attempts / resume behaviour of inspect_swe
 /// <c>mini_swe_agent.py</c> and <c>resumable_agent.py</c>. The model is the sample's <see cref="Model"/>
 /// and commands run in the sample sandbox, so no Python package is needed inside the image.
+/// <para>
+/// This is deliberately not <c>Agents.React</c>: upstream's loop has no submit tool (a command printing the submit
+/// marker ends the run), drops malformed assistant turns behind a templated format error with a consecutive-error
+/// cap, renders observations as <c>LocalEnvironment</c> JSON with <c>not_executed</c> padding, and resumes from a
+/// saved trajectory — semantics react would have to be bent around. It reuses the shared seams instead: the
+/// ambient tool approval (<see cref="ToolApproval"/>), compaction (<see cref="MiniSweAgentOptions.Compaction"/>)
+/// and the prompt cache (<see cref="MiniSweAgentOptions.Cache"/>). See <c>docs/ports/showcase-wiring.md</c>.
+/// </para>
 /// </summary>
 public sealed class MiniSweAgent
 {
@@ -176,7 +186,7 @@ public sealed class MiniSweAgent
             var command = arguments["command"] is JsonValue value && value.TryGetValue<string>(out var text)
                 ? text
                 : arguments["command"]?.ToJsonString() ?? "null";
-            actions.Add(new BashAction(command, call.Id));
+            actions.Add(new BashAction(command, call.Id, call));
         }
 
         return (actions, null);
@@ -271,8 +281,8 @@ public sealed class MiniSweAgent
     private static bool IsLineBoundary(char c) =>
         c is '\n' or '\r' or '\v' or '\f' or '\x1c' or '\x1d' or '\x1e' or '\x85' or '\u2028' or '\u2029';
 
-    /// <summary>Port of the <c>{"command", "tool_call_id"}</c> action dictionary.</summary>
-    internal sealed record BashAction(string Command, string ToolCallId);
+    /// <summary>Port of the <c>{"command", "tool_call_id"}</c> action dictionary; <paramref name="Call"/> is the model's call, for the approval gate.</summary>
+    internal sealed record BashAction(string Command, string ToolCallId, ToolCall? Call = null);
 
     private enum OutcomeKind
     {
@@ -316,6 +326,8 @@ public sealed class MiniSweAgent
 
         private ModelOutput? _output;
 
+        private ICompact? _compact;
+
         public Session(MiniSweAgentOptions options, SampleContext context, Model model, ISandboxEnvironment sandbox, string cwd)
         {
             _options = options;
@@ -349,6 +361,9 @@ public sealed class MiniSweAgent
             {
                 await StartAsync(task, cancellationToken).ConfigureAwait(false);
             }
+
+            // the compaction prefix (system + task) is derived from the conversation at the start of each run, as react does
+            _compact = _options.Compaction?.Invoke(_messages.ToArray(), Tools, _model);
 
             try
             {
@@ -440,9 +455,35 @@ public sealed class MiniSweAgent
                 return Outcome.Exit("TimeExceeded");
             }
 
+            IReadOnlyList<ChatMessage> input = _messages.ToArray();
+            if (_compact is { } compact)
+            {
+                var compacted = await compact.CompactInputAsync(input, cancellationToken: cancellationToken).ConfigureAwait(false);
+                input = compacted.Input;
+                if (compacted.Message is { } notice)
+                {
+                    _messages.Add(notice);
+                }
+            }
+
             _nCalls++;
-            var output = await _model.GenerateAsync(_messages.ToArray(), Tools, ToolChoice.Auto, cancellationToken: cancellationToken).ConfigureAwait(false);
+            var output = await _model.GenerateAsync(input, Tools, ToolChoice.Auto, cache: _options.Cache, cancellationToken: cancellationToken).ConfigureAwait(false);
             _output = output;
+            if (_compact is { } recordTo)
+            {
+                await recordTo.RecordOutputAsync(input, output, cancellationToken).ConfigureAwait(false);
+            }
+
+            // A context-window overflow is recovered by a forced compaction of the trajectory (the failed turn was
+            // never added); without compaction it falls through to the format error upstream would render.
+            if (output.StopReason == StopReason.ModelLength
+                && _compact is { } recover
+                && await Compaction.TryRecoverOverflowAsync(recover, _messages.ToArray(), cancellationToken).ConfigureAwait(false) is { } recovered)
+            {
+                _messages.Clear();
+                _messages.AddRange(recovered);
+                return Outcome.Clean;
+            }
 
             // Upstream raises FormatError before the assistant message is added, so only the format error
             // message enters the trajectory (the response itself lives in the model event).
@@ -453,18 +494,49 @@ public sealed class MiniSweAgent
             }
 
             _messages.Add(output.Message);
-            return await ExecuteActionsAsync(actions, cancellationToken).ConfigureAwait(false);
+            return await ExecuteActionsAsync(actions, output.Message.Text, cancellationToken).ConfigureAwait(false);
         }
 
-        /// <summary>Port of <c>execute_actions</c> + <c>format_toolcall_observation_messages</c>.</summary>
-        private async Task<Outcome> ExecuteActionsAsync(IReadOnlyList<BashAction> actions, CancellationToken cancellationToken)
+        /// <summary>
+        /// Port of <c>execute_actions</c> + <c>format_toolcall_observation_messages</c>, with Inspect's tool approval
+        /// applied to each call first (the ambient policies of the eval or task, as <c>execute_tools</c> applies them):
+        /// a rejected command is not run and its observation carries the rejection (the tool message records an
+        /// <c>approval</c> error), a modified call runs the approver's command, and <c>terminate</c> ends the sample.
+        /// </summary>
+        private async Task<Outcome> ExecuteActionsAsync(IReadOnlyList<BashAction> actions, string assistantText, CancellationToken cancellationToken)
         {
             var observations = new List<CommandObservation>(actions.Count);
+            var errors = new List<ToolCallError?>(actions.Count);
             string? submission = null;
             foreach (var action in actions)
             {
-                var observation = await ExecuteAsync(action.Command, cancellationToken).ConfigureAwait(false);
+                var command = action.Command;
+                if (action.Call is { } call && ToolApproval.HaveToolApproval)
+                {
+                    var (approved, approval) = await ToolApproval.ApplyAsync(assistantText, call, null, _messages, cancellationToken).ConfigureAwait(false);
+                    if (!approved)
+                    {
+                        if (approval?.Decision == ApprovalDecision.Terminate)
+                        {
+                            throw new TerminateSampleException("Tool call approver requested termination.");
+                        }
+
+                        var message = new ToolApprovalError(approval?.Explanation).Message;
+                        observations.Add(new CommandObservation("", -1, message));
+                        errors.Add(new ToolCallError("approval", message));
+                        _context.Transcript.Info(TranscriptSource, new JsonObject { ["command"] = command, ["approval"] = ApprovalDecision.Reject.ToPython() });
+                        continue;
+                    }
+
+                    if (approval?.Modified is { } modified && modified.Arguments["command"] is JsonValue value && value.TryGetValue<string>(out var text))
+                    {
+                        command = text;
+                    }
+                }
+
+                var observation = await ExecuteAsync(command, cancellationToken).ConfigureAwait(false);
                 observations.Add(observation);
+                errors.Add(null);
                 if (CheckFinished(observation) is { } submitted)
                 {
                     submission = submitted;
@@ -475,11 +547,12 @@ public sealed class MiniSweAgent
             while (observations.Count < actions.Count)
             {
                 observations.Add(CommandObservation.NotExecuted);
+                errors.Add(null);
             }
 
             for (var i = 0; i < actions.Count; i++)
             {
-                _messages.Add(new ChatMessageTool(MiniSweTemplates.RenderObservation(observations[i]), toolCallId: actions[i].ToolCallId, function: BashTool.Name));
+                _messages.Add(new ChatMessageTool(MiniSweTemplates.RenderObservation(observations[i]), toolCallId: actions[i].ToolCallId, function: BashTool.Name, error: errors[i]));
             }
 
             return submission is null ? Outcome.Clean : Outcome.Exit("Submitted", submission);

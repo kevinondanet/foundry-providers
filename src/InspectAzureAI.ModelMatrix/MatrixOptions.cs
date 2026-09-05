@@ -13,6 +13,9 @@ internal sealed record MatrixOptions
 
     public const int DefaultParallel = 1;
 
+    /// <summary>Immediate eval-set retries of a deployment whose eval errors (Python's <c>retry_attempts</c> defaults to 10; a matrix of possibly broken deployments keeps it small).</summary>
+    public const int DefaultRetryAttempts = 2;
+
     public required RunOptions Run { get; init; }
 
     /// <summary>Deployment names to run (case-insensitive); empty means every deployment.</summary>
@@ -29,6 +32,9 @@ internal sealed record MatrixOptions
 
     /// <summary>Deployments evaluated at the same time.</summary>
     public int Parallel { get; init; } = DefaultParallel;
+
+    /// <summary>Port of <c>eval_set(retry_attempts=)</c> per deployment: how many times an errored eval is re-queued, reusing its completed samples.</summary>
+    public int RetryAttempts { get; init; } = DefaultRetryAttempts;
 
     /// <summary>Where the JSON summary goes; null picks <c>&lt;log-dir&gt;/&lt;timestamp&gt;_matrix_&lt;task&gt;.json</c>.</summary>
     public string? OutPath { get; init; }
@@ -61,6 +67,7 @@ internal sealed record MatrixOptions
         var skip = TakeList(arguments, "--skip");
         var formats = TakeList(arguments, "--format");
         var parallel = TakeParallel(arguments);
+        var retryAttempts = TakeRetryAttempts(arguments);
         var outPath = RunOptions.TakeOption(arguments, "--out");
         var markdownPath = RunOptions.TakeOption(arguments, "--markdown");
         var resumePath = RunOptions.TakeOption(arguments, "--resume");
@@ -95,6 +102,7 @@ internal sealed record MatrixOptions
             Formats = formats,
             IncludeNonChat = includeNonChat,
             Parallel = parallel,
+            RetryAttempts = retryAttempts,
             OutPath = outPath,
             MarkdownPath = markdownPath,
             ResumePath = resumePath,
@@ -112,6 +120,19 @@ internal sealed record MatrixOptions
         }
 
         return items;
+    }
+
+    private static int TakeRetryAttempts(List<string> arguments)
+    {
+        var value = RunOptions.TakeOption(arguments, "--retry-attempts");
+        if (value is null)
+        {
+            return DefaultRetryAttempts;
+        }
+
+        return int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var number) && number >= 0
+            ? number
+            : throw new UsageError($"--retry-attempts expects a non-negative number, got '{value}'");
     }
 
     private static int TakeParallel(List<string> arguments)

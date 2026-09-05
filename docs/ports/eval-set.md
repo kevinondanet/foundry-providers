@@ -37,3 +37,10 @@
 ## Not ported
 
 `write_log_dir_manifest`, `bundle_dir`, `embed_viewer`, the control server / keep-alive park / launch handoff, scanners, checkpoints, `TaskSource`/`SampleSource` feeds, early task pruning and selection mode, `EvalSetOverrides`, ACP/notification/approval settings, `read_eval_log_sample_summaries`, `resolved_model_names`, `ModelList`. Hooks are a seam only (see above).
+
+## Update (showcase-wiring)
+
+The `.eval` recorder writes samples incrementally, so "writing the finished log once" no longer covers reuse: the
+runner now re-logs a reused sample (and a carried-forward errored one) into the retry's log as Python's reuse sweep
+and `carry_forward_unlogged_samples` do, and records `eval.dataset.samples` as the whole dataset size (Python's
+`len(task.dataset)`) so a `--limit` run can be resumed. See `docs/ports/showcase-wiring.md`.

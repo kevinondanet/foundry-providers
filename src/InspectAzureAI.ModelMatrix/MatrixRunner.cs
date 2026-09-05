@@ -1,8 +1,12 @@
 using System.Diagnostics;
+using System.Text;
 using Azure;
 using Azure.Core;
+using InspectAzureAI.Eval.Log;
+using InspectAzureAI.Eval.Log.EvalFormat;
 using InspectAzureAI.Eval.Model;
 using InspectAzureAI.Eval.Runner;
+using InspectAzureAI.Eval.Runner.EvalSet;
 using InspectAzureAI.Eval.Sandbox;
 using InspectAzureAI.Provider;
 using InspectAzureAI.Provider.Core;
@@ -13,13 +17,16 @@ using InspectAzureAI.SweShowcase.BuiltinTasks;
 
 namespace InspectAzureAI.ModelMatrix;
 
-using Eval = InspectAzureAI.Eval.Runner.Eval;
+using EvalSet = InspectAzureAI.Eval.Runner.EvalSet.EvalSet;
 
 /// <summary>
 /// Discovers every deployment on the Foundry resource behind <c>AZUREAI_BASE_URL</c>, runs the chosen showcase task
-/// and agent against each one (an eval and a JSON log per deployment, all through the same runner the showcase
-/// uses) and collects one <see cref="MatrixRow"/> per deployment. A deployment that fails is recorded, not fatal;
-/// only a sign-in failure or cancellation stops the matrix.
+/// and agent against each one and collects one <see cref="MatrixRow"/> per deployment. Each deployment is its own
+/// eval set (<see cref="EvalSet.RunAsync"/>) in <c>&lt;log-dir&gt;/&lt;deployment&gt;/</c>: a complete log already
+/// there is reused without running, an incomplete one is re-run reusing its completed samples, and an eval that
+/// errors is retried immediately (<see cref="MatrixOptions.RetryAttempts"/>) — so running the matrix again with the
+/// same log directory resumes it. A deployment that fails is recorded, not fatal; only a sign-in failure or
+/// cancellation stops the matrix.
 /// </summary>
 internal sealed class MatrixRunner(MatrixOptions options, TextWriter output)
 {
@@ -32,6 +39,11 @@ internal sealed class MatrixRunner(MatrixOptions options, TextWriter output)
         if (options.Run.Fake)
         {
             _ = FakeScripts.For(definition.Name, agent);   // rejects claude-code up front, before any discovery
+        }
+
+        if (options.Run.Compaction is not null)
+        {
+            AgentChoice.RejectCompaction(agent);
         }
 
         var sandbox = options.SandboxType == "docker"
@@ -89,6 +101,14 @@ internal sealed class MatrixRunner(MatrixOptions options, TextWriter output)
                 ["maxTokens"] = options.Run.MaxTokensSet ? options.Run.MaxTokens : null,
                 ["reasoningEffort"] = options.Run.ReasoningEffort,
                 ["parallel"] = options.Parallel,
+                ["retryAttempts"] = options.RetryAttempts,
+                ["logFormat"] = options.Run.LogFormat?.Name(),
+                ["approval"] = options.Run.ApprovalSpec,
+                ["cache"] = options.Run.Cache is { } cache ? cache.Expiry ?? "never" : null,
+                ["compaction"] = options.Run.Compaction?.ToString(),
+                ["hooks"] = options.Run.Hooks.Count > 0 ? options.Run.Hooks.Select(h => h.ToString()).ToList() : null,
+                ["costLimit"] = options.Run.CostLimit,
+                ["modelCostConfig"] = options.Run.ModelCostConfig,
                 ["fake"] = options.Run.Fake,
             },
             Rows = rows,
@@ -124,33 +144,53 @@ internal sealed class MatrixRunner(MatrixOptions options, TextWriter output)
         return (probe.EndpointUrl, resource, deployments, shared);
     }
 
+    /// <summary>Characters replaced in a deployment name used as a directory: the Windows set (a superset of every platform's), so a log directory copies between machines.</summary>
+    private static readonly char[] UnsafePathChars = ['/', '\\', ':', '*', '?', '"', '<', '>', '|', '\0'];
+
+    /// <summary>The eval-set directory of a deployment: its name under the matrix's log directory, with path-unsafe characters replaced.</summary>
+    internal static string DeploymentLogDir(string logDir, string deployment)
+    {
+        var safe = new string(deployment.Select(c => UnsafePathChars.Contains(c) || char.IsControl(c) ? '_' : c).ToArray());
+        return Path.Combine(logDir, safe.Length == 0 ? "_" : safe);
+    }
+
     private async Task<MatrixRow> RunOneAsync(SelectedDeployment entry, ShowcaseTask definition, string agent, SandboxSpec sandbox, AzureAIClientSettings? settings, CancellationToken cancellationToken)
     {
         var name = entry.Deployment.Name;
         Write($"{name}: started ({entry.Route} route, {entry.Deployment.Format})");
         var watch = Stopwatch.StartNew();
+        var hooks = RunWiring.CreateHooks(options.Run, new LineWriter(line => Write($"{name}: {line}")));
         try
         {
             var config = options.Run.GenerateConfig;
             var model = options.Run.Fake
-                ? new Model(FakeScripts.For(definition.Name, agent), config)
+                ? new Model(FakeScripts.For(definition.Name, agent, name), config)
                 : FoundryModels.Create(name, config, entry.Route, modelArgs: ModelArgsFor(entry), settings: settings);
-            var task = definition.Build(new TaskBuildContext(AgentChoice.Solver(agent, options.Run.Attempts, options.Run.Debug), sandbox));
-            var evalOptions = new EvalOptions
+            var task = definition.Build(new TaskBuildContext(AgentChoice.Solver(agent, options.Run.Attempts, options.Run.Debug, options.Run.Cache, options.Run.Compaction?.Hook()), sandbox));
+            var logDir = DeploymentLogDir(options.Run.LogDir, name);
+            var evalOptions = RunWiring.EvalOptions(options.Run, model, options.Limit, new DeploymentReporter(line => Write($"{name}: {line}")), hooks) with { LogDir = logDir };
+            var setOptions = new EvalSetOptions
             {
-                Model = model,
-                Limit = options.Limit,
-                SampleIds = options.Run.SampleIds.Count > 0 ? options.Run.SampleIds : null,
-                Epochs = options.Run.Epochs,
-                MaxSamples = options.Run.MaxSamples,
-                LogDir = options.Run.LogDir,
-                Cleanup = options.Run.Cleanup,
+                Eval = evalOptions,
+                RetryAttempts = options.RetryAttempts,
+                MaxTasks = 1,
+                // the same directory serves every run of the matrix, whatever its flags (a changed limit or epochs is a new task identifier)
+                LogDirAllowDirty = true,
             };
-            var log = await Eval.RunAsync(task, evalOptions, cancellationToken);
-            var row = MatrixRow.FromLog(entry, log, watch.Elapsed.TotalSeconds);
+            var result = await EvalSet.RunAsync([task], setOptions, cancellationToken);
+            var log = result.Logs[0];
+            // a task whose latest log was already complete comes back as a header (no samples): nothing ran
+            var reused = log.Samples is null;
+            if (reused)
+            {
+                log = EvalLogWriter.Read(log.Location ?? LocateLog(logDir, log.Eval.TaskId));
+            }
+
+            var row = MatrixRow.FromLog(entry, log, reused ? LogDuration(log) : watch.Elapsed.TotalSeconds, reused);
             var detail = row.Accuracy is { } accuracy ? $" accuracy {accuracy:0.000}" : "";
             var note = row.IsError ? $" {row.Note}" : "";
-            Write($"{name}: {row.Status}{detail}{note} ({row.Tokens} tokens, {row.Seconds:0.0}s)");
+            var cost = row.Cost is { } dollars ? $", {MatrixReport.FormatCost(dollars)}" : "";
+            Write($"{name}: {(reused ? "reused " : "")}{row.Status}{detail}{note} ({row.Tokens} tokens{cost}, {row.Seconds:0.0}s)");
             return row;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -171,6 +211,76 @@ internal sealed class MatrixRunner(MatrixOptions options, TextWriter output)
             }
 
             return MatrixRow.Failed(entry, message, watch.Elapsed.TotalSeconds);
+        }
+        finally
+        {
+            RunWiring.DisposeHooks(hooks);
+        }
+    }
+
+    /// <summary>The log file of a task in a deployment directory (for a reused header that carries no location).</summary>
+    private static string LocateLog(string logDir, string taskId) =>
+        EvalSetLogs.ListAllEvalLogs(logDir).FirstOrDefault(log => log.Header.Eval.TaskId == taskId)?.Path
+        ?? throw new InvalidOperationException($"No log for task {taskId} in {logDir}.");
+
+    /// <summary>The wall-clock span the log records (a reused row has no run of its own to time).</summary>
+    private static double LogDuration(EvalLog log) =>
+        log.Stats is { StartedAt: { } started, CompletedAt: { } completed } ? Math.Max(0, (completed - started).TotalSeconds) : (log.Samples ?? []).Sum(s => s.TotalTime ?? 0);
+
+    /// <summary>Forwards the eval set's and runner's messages (retries, completion) to the matrix console; per-sample lines stay off to keep it compact.</summary>
+    private sealed class DeploymentReporter(Action<string> write) : IEvalReporter
+    {
+        public void SampleStarted(object id, int epoch)
+        {
+        }
+
+        public void SampleCompleted(EvalSample sample)
+        {
+        }
+
+        public void Message(string text) => write(text);
+    }
+
+    /// <summary>A <see cref="TextWriter"/> whose whole lines go through the matrix's locked console writer (hooks of parallel deployments never interleave).</summary>
+    private sealed class LineWriter(Action<string> write) : TextWriter
+    {
+        private readonly StringBuilder _partial = new();
+
+        public override Encoding Encoding => Encoding.UTF8;
+
+        public override void Write(char value)
+        {
+            if (value == '\n')
+            {
+                Flush();
+            }
+            else if (value != '\r')
+            {
+                _partial.Append(value);
+            }
+        }
+
+        public override void Write(string? value)
+        {
+            foreach (var c in value ?? "")
+            {
+                Write(c);
+            }
+        }
+
+        public override void WriteLine(string? value)
+        {
+            Write(value);
+            Flush();
+        }
+
+        public override void Flush()
+        {
+            if (_partial.Length > 0)
+            {
+                write(_partial.ToString());
+                _partial.Clear();
+            }
         }
     }
 

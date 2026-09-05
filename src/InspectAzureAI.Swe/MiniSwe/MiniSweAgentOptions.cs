@@ -1,4 +1,6 @@
 using InspectAzureAI.Eval.Agents;
+using InspectAzureAI.Eval.Model.Cache;
+using InspectAzureAI.Eval.Model.Compaction;
 
 namespace InspectAzureAI.Swe.MiniSwe;
 
@@ -51,4 +53,17 @@ public sealed record MiniSweAgentOptions
     public string SystemTemplate { get; init; } = MiniSweTemplates.System;
 
     public string InstanceTemplate { get; init; } = MiniSweTemplates.Instance;
+
+    /// <summary>
+    /// Prompt cache policy for every model call of the loop (Inspect's <c>generate(cache=...)</c>); null disables
+    /// the cache. Port-only: upstream mini-swe-agent has no cache and inspect_swe runs it through the bridge.
+    /// </summary>
+    public CachePolicy? Cache { get; init; }
+
+    /// <summary>
+    /// Conversation compaction for the loop (see <see cref="Compaction.Hook"/>): the input of every model call is
+    /// compacted once the strategy's threshold is reached and a context-window overflow is recovered by a forced
+    /// compaction, as the Inspect react agent does. Null (the default) sends the whole trajectory, as upstream does.
+    /// </summary>
+    public CompactionHook? Compaction { get; init; }
 }
