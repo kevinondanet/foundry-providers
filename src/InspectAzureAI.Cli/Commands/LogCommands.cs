@@ -1,16 +1,17 @@
 using System.CommandLine;
-using System.Globalization;
-using System.Text.Json;
-using System.Text.Json.Nodes;
 using InspectAzureAI.Eval.Log;
 using InspectAzureAI.Eval.Log.EvalFormat;
+using InspectAzureAI.Eval.Log.Tools;
 using InspectAzureAI.Provider.Core;
+using LogTools = InspectAzureAI.Eval.Log.Tools.LogCommands;
 
 namespace InspectAzureAI.Cli.Commands;
 
 /// <summary>
 /// Port of <c>_cli/log.py</c>: <c>log list</c>, <c>log dump</c>, <c>log headers</c>, <c>log convert</c> and
-/// <c>log schema</c> over the eval-format port (<see cref="EvalLogFiles"/>), reading <c>.eval</c> and <c>.json</c> logs alike.
+/// <c>log schema</c>. The commands parse their options here and delegate to the library port of the same commands
+/// (<see cref="InspectAzureAI.Eval.Log.Tools.LogCommands"/> and <see cref="LogConversion"/>), which read
+/// <c>.eval</c> and <c>.json</c> logs alike.
 /// </summary>
 internal sealed class LogCommands
 {
@@ -44,22 +45,19 @@ internal sealed class LogCommands
         command.SetAction(result =>
         {
             var values = common.Process(result);
-            var wanted = result.GetValue(status)?.ToLowerInvariant();
-            var logs = EvalLogFiles.ListEvalLogs(
-                values.LogDir,
-                filter: wanted is null ? null : log => log.Status.ToString().Equals(wanted, StringComparison.OrdinalIgnoreCase),
-                recursive: !result.GetValue(noRecursive));
+            var wantedStatus = result.GetValue(status) is { } wanted ? Enum.Parse<EvalStatus>(wanted, ignoreCase: true) : (EvalStatus?)null;
             var absolutePaths = result.GetValue(absolute);
-            var named = logs.Select(log => log with { Name = absolutePaths ? Path.GetFullPath(log.Name) : Path.GetRelativePath(Directory.GetCurrentDirectory(), log.Name) }).ToList();
+            var recursive = !result.GetValue(noRecursive);
             if (result.GetValue(json))
             {
-                io.Out.WriteLine(new JsonArray(named.Select(LogInfoJson).ToArray()).ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+                io.Out.WriteLine(LogTools.ListLogsJson(values.LogDir, wantedStatus, absolutePaths, recursive));
             }
             else
             {
-                foreach (var log in named)
+                var listing = LogTools.ListLogsText(values.LogDir, wantedStatus, absolutePaths, recursive);
+                if (listing.Length > 0)
                 {
-                    io.Out.WriteLine(log.Name);
+                    io.Out.WriteLine(listing);
                 }
             }
 
@@ -81,8 +79,7 @@ internal sealed class LogCommands
         {
             var file = result.GetValue(path)!;
             RequireFile(file);
-            var log = EvalLogFiles.ReadEvalLog(file, headerOnly: result.GetValue(headerOnly), resolveAttachments: ResolveAttachmentsOf(Opt.FlagOrValueOf(result, resolveAttachments)));
-            io.Out.WriteLine(EvalLogFiles.EvalLogJson(log));
+            io.Out.WriteLine(LogTools.Dump(file, result.GetValue(headerOnly), ResolveAttachmentsOf(Opt.FlagOrValueOf(result, resolveAttachments))));
             return 0;
         });
         return command;
@@ -101,7 +98,7 @@ internal sealed class LogCommands
                 RequireFile(file);
             }
 
-            io.Out.WriteLine(HeadersJson(paths));
+            io.Out.WriteLine(LogTools.HeadersJson(paths));
             return 0;
         });
         return command;
@@ -124,17 +121,15 @@ internal sealed class LogCommands
             command.Options.Add(option);
         }
 
-        command.SetAction(result =>
-        {
-            var streaming = Opt.FlagOrValueOf(result, stream);
-            if (streaming.Given && Args.CliArgs.IntOrBoolValue(streaming.Value, 1, 0, isOneTrue: false) != 0)
-            {
-                throw new PrerequisiteError("--stream is not supported by this port: each log is read into memory and written whole.");
-            }
-
-            Convert(result.GetValue(path)!, result.GetValue(to)!.ToLowerInvariant(), result.GetValue(outputDir)!, result.GetValue(overwrite), ResolveAttachmentsOf(Opt.FlagOrValueOf(result, resolveAttachments)), io);
-            return 0;
-        });
+        command.SetAction((result, cancellationToken) => ConvertAsync(
+            result.GetValue(path)!,
+            result.GetValue(to)!.ToLowerInvariant(),
+            result.GetValue(outputDir)!,
+            result.GetValue(overwrite),
+            ResolveAttachmentsOf(Opt.FlagOrValueOf(result, resolveAttachments)),
+            Opt.FlagOrValueOf(result, stream),
+            io,
+            cancellationToken));
         return command;
     }
 
@@ -158,54 +153,33 @@ internal sealed class LogCommands
         return reader.ReadToEnd().TrimEnd();
     }
 
-    /// <summary>Port of <c>headers()</c>: the headers as a JSON list in the log's own JSON format.</summary>
-    public static string HeadersJson(IEnumerable<string> files)
+    /// <summary>
+    /// The <c>convert</c> action over <see cref="LogConversion.ConvertEvalLogsAsync"/>: refuses <c>--stream</c>,
+    /// announces a directory conversion as Python does, and reports an existing output file as a prerequisite failure
+    /// (exit 2) rather than the library's bare <see cref="IOException"/> (Python: an uncaught <c>FileExistsError</c>).
+    /// </summary>
+    internal static async Task<int> ConvertAsync(string path, string to, string outputDir, bool overwrite, ResolveAttachments resolveAttachments, FlagValue stream, CliIo io, CancellationToken cancellationToken)
     {
-        var headers = EvalLogFiles.ReadEvalLogHeaders(files);
-        var array = new JsonArray(headers.Select(header => JsonNode.Parse(EvalLogFiles.EvalLogJson(header))).ToArray());
-        return array.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
-    }
-
-    /// <summary>Port of <c>log/_convert.py</c> <c>convert_eval_logs</c> for local files: a file, or every log under a directory (mirroring its layout), rewritten in the target format.</summary>
-    public static void Convert(string path, string to, string outputDir, bool overwrite, ResolveAttachments resolveAttachments, CliIo io)
-    {
-        var isDirectory = Directory.Exists(path);
-        if (!isDirectory && !File.Exists(path))
+        if (stream.Given && Args.CliArgs.IntOrBoolValue(stream.Value, 1, 0, isOneTrue: false) != 0)
         {
-            throw new PrerequisiteError($"Error: path '{path}' does not exist.");
+            throw new PrerequisiteError("--stream is not supported by this port: each log is read into memory and written whole.");
         }
 
-        outputDir = outputDir.TrimEnd('/', '\\');
-        Directory.CreateDirectory(outputDir);
-        var format = LogFormats.Parse(to);
-        if (!isDirectory)
+        if (Directory.Exists(path))
         {
-            ConvertFile(path, outputDir, Path.GetFileNameWithoutExtension(path), format, overwrite, resolveAttachments);
-            return;
+            io.Out.WriteLine("Converting log files...");
         }
 
-        var logs = EvalLogFiles.ListEvalLogs(path, recursive: true);
-        io.Out.WriteLine("Converting log files...");
-        foreach (var log in logs)
+        try
         {
-            var relative = Path.GetRelativePath(path, log.Name).Replace('\\', '/');
-            var relativeStem = Path.ChangeExtension(relative, null);
-            var targetDir = Path.Combine(outputDir, Path.GetDirectoryName(relativeStem) ?? "");
-            Directory.CreateDirectory(targetDir);
-            ConvertFile(log.Name, outputDir, relativeStem, format, overwrite, resolveAttachments);
+            await LogConversion.ConvertEvalLogsAsync(path, LogFormats.Parse(to), outputDir, overwrite, resolveAttachments, cancellationToken: cancellationToken).ConfigureAwait(false);
         }
-    }
-
-    private static void ConvertFile(string inputFile, string outputDir, string outputStem, LogFormat format, bool overwrite, ResolveAttachments resolveAttachments)
-    {
-        var outputFile = Path.Combine(outputDir, outputStem + format.Extension());
-        if (File.Exists(outputFile) && !overwrite)
+        catch (IOException ex) when (ex.GetType() == typeof(IOException))
         {
-            throw new PrerequisiteError($"Output file {outputFile} already exists (use --overwrite to overwrite existing files)");
+            throw new PrerequisiteError(ex.Message);
         }
 
-        var log = EvalLogFiles.ReadEvalLog(inputFile, resolveAttachments: resolveAttachments);
-        EvalLogFiles.WriteEvalLog(log, outputFile, format);
+        return 0;
     }
 
     private static ResolveAttachments ResolveAttachmentsOf(FlagValue value)
@@ -223,17 +197,6 @@ internal sealed class LogCommands
             var other => throw new UsageError($"Expected 'full', or 'core'. Got: {other}"),
         };
     }
-
-    private static JsonNode LogInfoJson(EvalLogInfo info) => new JsonObject
-    {
-        ["name"] = info.Name,
-        ["type"] = info.Type,
-        ["size"] = info.Size,
-        ["mtime"] = info.Mtime is { } mtime ? JsonValue.Create(mtime) : null,
-        ["task"] = info.Task,
-        ["task_id"] = info.TaskId,
-        ["suffix"] = info.Suffix,
-    };
 
     private static void RequireFile(string file)
     {

@@ -19,7 +19,7 @@ provider over `ScriptedModelApi` writing real `.eval` and `.json` logs).
 | `yaml.safe_load` (the subset `parse_cli_args` and the config-file readers use) | `Args/YamlValue.cs` |
 | `_cli/score.py` (`score`, `resolve_action`, `_resolve_output_file`, `print_results`) | `Commands/ScoreCommand.cs`, `Commands/ResultsPrinter.cs` |
 | `_cli/list.py`, `_eval/list.py` `list_tasks`, `TaskInfo` | `Commands/ListCommand.cs`, `Registry/TaskRegistry.cs` |
-| `_cli/log.py` (`list`, `dump`, `headers`, `convert`, `schema`), `log/_convert.py` | `Commands/LogCommands.cs` |
+| `_cli/log.py` (`list`, `dump`, `headers`, `convert`, `schema`), `log/_convert.py` | `Commands/LogCommands.cs` (option parsing; delegates to the log-tools port `Log/Tools/LogCommands.cs` and `LogConversion.cs`) |
 | `_cli/cache.py` | `Commands/CacheCommands.cs` |
 | `_cli/info.py` (`version`, `log-file`, `log-file-headers`, `log-schema`) | `Commands/InfoCommands.cs` |
 | `_cli/view.py` | `Commands/ViewCommand.cs` (delegation, see below) |
@@ -73,7 +73,7 @@ unknown task/model/argument, missing files, refused options); 3 sign-in, Azure, 
   through the format-aware reader (this lifts the JSON-only guard of the score-logs port); the header's model and roles
   are not rebuilt (pass `--model` / `--model-role`).
 - **`log convert`** handles local files only; an existing output is exit 2 (Python: an uncaught `FileExistsError`);
-  `--stream` is refused; written members are deflate (see the eval-format port). `log list --json` reports `type: file`.
+  `--stream` is refused; written members are deflate (see the eval-format port). `log list --json` reports `type: file` and `mtime` in milliseconds, as Python does.
 - **`view` is not ported**: the viewer is a web app. `inspectai view ...` hands its arguments verbatim to Python's
   `inspect view` when `inspect` is on `PATH` (it reads this port's logs) and otherwise prints how to install it (exit 2).
 - **`info version`** prints the assembly's informational version and install directory; `--version` prints the same.
