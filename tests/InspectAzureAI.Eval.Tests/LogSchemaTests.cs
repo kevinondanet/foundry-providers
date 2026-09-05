@@ -7,6 +7,7 @@ using InspectAzureAI.Eval.Dataset;
 using InspectAzureAI.Eval.Log;
 using InspectAzureAI.Eval.Log.Json;
 using InspectAzureAI.Eval.Model;
+using InspectAzureAI.Eval.Model.Cache;
 using InspectAzureAI.Eval.Sandbox;
 using InspectAzureAI.Eval.Scorers;
 using InspectAzureAI.Provider.Core;
@@ -113,7 +114,7 @@ public class LogSchemaTests
                 Error = "rate limited",
                 Traceback = "Traceback...",
                 TracebackAnsi = "[31mTraceback...[0m",
-                Cache = "read",
+                Cache = CacheMode.Read,
                 Retries = 1,
             },
             new ToolEvent("call_1", "bash", new JsonObject { ["cmd"] = "ls" }, "a.txt\nb.txt", new ToolCallError("timeout", "Command timed out before completing."), new ToolTruncation(20000, 16384), TimeSpan.FromSeconds(1.25))
@@ -367,7 +368,7 @@ public class LogSchemaTests
         Assert.Equal("grader", model.Role);
         Assert.Equal("resp_1", (string?)model.Call!.Response!["id"]);
         var failed = Assert.IsType<ModelEvent>(events[6]);
-        Assert.Equal("read", failed.Cache);
+        Assert.Equal(CacheMode.Read, failed.Cache);
         Assert.Equal("Traceback...", failed.Traceback);
         var tool = Assert.IsType<ToolEvent>(events[7]);
         Assert.Equal("bash", tool.View!.Title);

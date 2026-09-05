@@ -4,6 +4,7 @@ using System.Text.Json.Serialization;
 using InspectAzureAI.Eval.Context;
 using InspectAzureAI.Eval.Dataset;
 using InspectAzureAI.Eval.Model;
+using InspectAzureAI.Eval.Model.Cache;
 using InspectAzureAI.Eval.Scorers;
 using InspectAzureAI.Provider.Core;
 
@@ -281,7 +282,13 @@ internal sealed class TranscriptEventConverterFactory : JsonConverterFactory
             Error = JsonIo.Str(e, "error"),
             Traceback = JsonIo.Str(e, "traceback"),
             TracebackAnsi = JsonIo.Str(e, "traceback_ansi"),
-            Cache = JsonIo.Str(e, "cache"),
+            Cache = JsonIo.Str(e, "cache") switch
+            {
+                null => null,
+                "read" => CacheMode.Read,
+                "write" => CacheMode.Write,
+                var other => throw new JsonException($"Unknown model event cache mode '{other}'."),
+            },
             Call = JsonIo.Get<ModelCall>(e, "call", options),
             Completed = JsonIo.Time(e, "completed"),
             WorkingTime = JsonIo.Dbl(e, "working_time"),
@@ -301,7 +308,7 @@ internal sealed class TranscriptEventConverterFactory : JsonConverterFactory
             JsonIo.Str(writer, "error", model.Error);
             JsonIo.Str(writer, "traceback", model.Traceback);
             JsonIo.Str(writer, "traceback_ansi", model.TracebackAnsi);
-            JsonIo.Str(writer, "cache", model.Cache);
+            JsonIo.Str(writer, "cache", model.Cache?.ToWire());
             JsonIo.Obj(writer, "call", model.Call, options);
             JsonIo.Time(writer, "completed", model.Completed);
             JsonIo.Dbl(writer, "working_time", model.WorkingTime);

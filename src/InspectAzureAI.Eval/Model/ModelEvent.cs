@@ -1,4 +1,5 @@
 using InspectAzureAI.Eval.Context;
+using InspectAzureAI.Eval.Model.Cache;
 using InspectAzureAI.Provider.Core;
 
 namespace InspectAzureAI.Eval.Model;
@@ -40,8 +41,8 @@ public sealed record ModelEvent : TranscriptEvent
     /// <summary>Error traceback with ANSI color codes.</summary>
     public string? TracebackAnsi { get; init; }
 
-    /// <summary>Port of <c>ModelEvent.cache</c>: "read" or "write" when the call hit the cache.</summary>
-    public string? Cache { get; init; }
+    /// <summary>Port of <c>cache</c>: <see cref="CacheMode.Read"/> when the output came from the prompt cache, <see cref="CacheMode.Write"/> when the attempt ran under a cache policy, null otherwise.</summary>
+    public CacheMode? Cache { get; init; }
 
     public DateTimeOffset? Completed { get; init; }
 

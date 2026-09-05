@@ -41,6 +41,14 @@ internal static class ModelApiHooks
         _ => api.ConnectionKey(),
     };
 
+    /// <summary>Port of <c>ModelAPI.base_url</c> (a prompt cache key component): the resolved endpoint of the concrete providers, null for any other api.</summary>
+    public static string? BaseUrl(IModelApi api) => api switch
+    {
+        AzureAIModelApi azure => azure.EndpointUrl,
+        AnthropicFoundryModelApi anthropic => anthropic.BaseUrl,
+        _ => null,
+    };
+
     private static RetryDecision DefaultShouldRetry(Exception ex)
     {
         var status = HttpRetryUtil.StatusCodeOf(ex) ?? 0;
