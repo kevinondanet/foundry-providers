@@ -5,7 +5,7 @@ namespace InspectAzureAI.Eval.Scorers;
 /// Unscored (NaN-valued) sample scores are skipped, as <c>_eval/task/results.py</c> does before it
 /// hands scores to a metric, so a metric never sees the unscored sentinel.
 /// </summary>
-public static class Metrics
+public static partial class Metrics
 {
     /// <summary>Port of <c>accuracy()</c>: mean of <c>toFloat(value)</c>; 0 when there are no scores.</summary>
     public static MetricDef Accuracy(Func<ScoreValue, double>? toFloat = null) =>
@@ -15,11 +15,20 @@ public static class Metrics
     public static MetricDef Mean(Func<ScoreValue, double>? toFloat = null) =>
         new("mean", scores => Average(Values(scores, toFloat)));
 
-    /// <summary>Port of <c>stderr()</c>: sample standard deviation over the square root of n; 0 when n &lt; 2.</summary>
-    public static MetricDef Stderr(Func<ScoreValue, double>? toFloat = null) =>
+    /// <summary>
+    /// Port of <c>stderr(to_float, cluster)</c>: sample standard deviation over the square root of n (0 when n &lt; 2),
+    /// or, when <paramref name="cluster"/> names a sample-metadata key, the clustered standard error of the mean
+    /// with a finite-cluster correction (0 with fewer than two clusters; a sample without a cluster id throws).
+    /// </summary>
+    public static MetricDef Stderr(Func<ScoreValue, double>? toFloat = null, string? cluster = null) =>
         new("stderr", scores =>
         {
             var values = Values(scores, toFloat);
+            if (cluster is not null)
+            {
+                return ClusteredStderr(ClusterPartition(Scored(scores), cluster, values, "stderr"));
+            }
+
             return values.Count < 2 ? 0.0 : SampleStd(values) / Math.Sqrt(values.Count);
         });
 
@@ -37,6 +46,8 @@ public static class Metrics
         var convert = toFloat ?? ValueToFloat.Default;
         return scores.Where(s => !s.Score.IsUnscored).Select(s => convert(s.Score.Value)).ToList();
     }
+
+    private static List<SampleScore> Scored(IReadOnlyList<SampleScore> scores) => scores.Where(s => !s.Score.IsUnscored).ToList();
 
     private static double Average(List<double> values) => values.Count == 0 ? 0.0 : values.Sum() / values.Count;
 

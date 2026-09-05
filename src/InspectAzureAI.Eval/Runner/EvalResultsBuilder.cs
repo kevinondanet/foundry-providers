@@ -49,20 +49,46 @@ internal static class EvalResultsBuilder
             // Python: no reducers → an unnamed mean view; an explicit empty list disables reduction entirely
             if (reducers is { Count: 0 })
             {
+                if (metrics.Any(m => m.Scores == MetricScores.Reduced) && HasRepeatedSampleIds(scores))
+                {
+                    throw new InvalidOperationException(
+                        $"Scorer '{scorers[i].Name}' has metrics with @metric(scores=\"reduced\") but epoch reduction is disabled. "
+                        + "Configure an epochs reducer or use scores=\"auto\"/\"unreduced\".");
+                }
+
                 result.Add(ScoreForMetrics(name, scores, metrics, null));
                 continue;
             }
 
-            var views = reducers is null
-                ? [(Reducers.Mean(), (string?)null)]
-                : reducers.Select(reducer => (reducer, Reducers.NameOf(reducer))).ToList();
-            foreach (var (reducer, reducerName) in views)
+            // Port of compute_eval_scores_for_views: "unreduced" metrics see every epoch in their own view (no reducer)
+            var reducedMetrics = metrics.Where(m => m.Scores != MetricScores.Unreduced).ToList();
+            var unreducedMetrics = metrics.Where(m => m.Scores == MetricScores.Unreduced).ToList();
+            var mixedViews = reducedMetrics.Count > 0 && unreducedMetrics.Count > 0;
+            if (reducedMetrics.Count > 0)
             {
-                result.Add(ScoreForMetrics(name, ReduceScores(scores, reducer), metrics, reducerName));
+                var views = reducers is null
+                    ? [(Reducers.Mean(), mixedViews ? "mean" : null)]
+                    : reducers.Select(reducer => (reducer, Reducers.NameOf(reducer))).ToList();
+                foreach (var (reducer, reducerName) in views)
+                {
+                    result.Add(ScoreForMetrics(name, ReduceScores(scores, reducer), reducedMetrics, reducerName));
+                }
+            }
+
+            if (unreducedMetrics.Count > 0)
+            {
+                result.Add(ScoreForMetrics(name, scores, unreducedMetrics, null));
             }
         }
 
         return result;
+    }
+
+    /// <summary>Port of <c>_has_repeated_sample_ids</c>: whether any sample id (ignoring null) occurs more than once.</summary>
+    private static bool HasRepeatedSampleIds(IReadOnlyList<SampleScore> scores)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        return scores.Any(score => score.SampleId is not null && !seen.Add(Eval.SampleIdKey(score.SampleId)));
     }
 
     /// <summary>Port of <c>reduce_scores</c>: groups by sample id (in first-seen order) and reduces each group's epochs to one score.</summary>
