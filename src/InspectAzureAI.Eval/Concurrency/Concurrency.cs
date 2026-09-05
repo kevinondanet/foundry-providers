@@ -180,6 +180,28 @@ public static class Concurrency
         }
     }
 
+    /// <summary>Removes a callback registered with <see cref="AddControllerCreatedObserver"/> (a no-op when it is not registered).</summary>
+    public static void RemoveControllerCreatedObserver(Action<AdaptiveConcurrencyController> callback)
+    {
+        ArgumentNullException.ThrowIfNull(callback);
+        lock (Sync)
+        {
+            ControllerCreatedObservers.Remove(callback);
+        }
+    }
+
+    /// <summary>The registered controller-created observers (for tests asserting that finished limiters unsubscribe).</summary>
+    internal static int ControllerCreatedObserverCount
+    {
+        get
+        {
+            lock (Sync)
+            {
+                return ControllerCreatedObservers.Count;
+            }
+        }
+    }
+
     /// <summary>Port of <c>task_sample_semaphore</c>: a task's sample limiter from an earlier attempt, if registered.</summary>
     public static ISampleLimiter? TaskSampleSemaphore(string taskId)
     {

@@ -2,7 +2,7 @@ using InspectAzureAI.Eval.Context;
 
 namespace InspectAzureAI.Eval.Tests;
 
-/// <summary>The <c>tg_collect</c> port behind <c>fork</c> and <c>multi_scorer</c>: ordered results, first-failure cancellation, caller cancellation.</summary>
+/// <summary>The <c>tg_collect</c> port (<see cref="AsyncUtil.TgCollect"/>) behind <c>fork</c> and <c>multi_scorer</c>: ordered results, first-failure cancellation, caller cancellation.</summary>
 public sealed class TgCollectTests
 {
     private static Func<CancellationToken, Task<string>> Waiting(TaskCompletionSource? started, TaskCompletionSource<bool> cancelled) => async ct =>
@@ -25,14 +25,14 @@ public sealed class TgCollectTests
     public async Task results_come_back_in_input_order()
     {
         var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var results = await TgCollect.RunAsync<string>(
+        var results = await AsyncUtil.TgCollect<string>(
         [
             async _ => { await gate.Task; return "first"; },
             _ => { gate.SetResult(); return Task.FromResult("second"); },
         ], CancellationToken.None);
 
         Assert.Equal(["first", "second"], results);
-        Assert.Empty(await TgCollect.RunAsync<string>([], CancellationToken.None));
+        Assert.Empty(await AsyncUtil.TgCollect<string>([], CancellationToken.None));
     }
 
     [Fact]
@@ -46,7 +46,7 @@ public sealed class TgCollectTests
             throw new InvalidOperationException("boom");
         };
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => TgCollect.RunAsync([Waiting(started, cancelled), failing], CancellationToken.None));
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => AsyncUtil.TgCollect([Waiting(started, cancelled), failing], CancellationToken.None));
 
         Assert.Equal("boom", error.Message);
         Assert.True(cancelled.Task.IsCompletedSuccessfully);
@@ -57,7 +57,7 @@ public sealed class TgCollectTests
     {
         using var cts = new CancellationTokenSource();
         var cancelled = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var pending = TgCollect.RunAsync([Waiting(null, cancelled)], cts.Token);
+        var pending = AsyncUtil.TgCollect([Waiting(null, cancelled)], cts.Token);
 
         cts.Cancel();
 

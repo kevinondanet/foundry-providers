@@ -11,10 +11,10 @@ notification, `record_and_check_model_usage`'s throughput feed), `_util/retry.py
 
 | C# | Python |
 |---|---|
-| `Concurrency` (static): `GetOrCreateSemaphore`, `AcquireAsync` (an `IAsyncDisposable` `ConcurrencyLease`), `StatusDisplay`, `Semaphores`, `AdaptiveControllers`, `AddControllerCreatedObserver`, `TaskSampleSemaphore` / `RegisterTaskSampleSemaphore`, `Init`, `AdaptiveActive`, `ReportHttpRetry`, `HttpRetriesCount`, `BeginRequest` / `ActiveController` / `ActiveRequest` | `concurrency()`, `get_or_create_semaphore`, `concurrency_status_display`, `concurrency_semaphores`, `adaptive_controllers`, `add_controller_created_observer`, task sample semaphore registry, `init_concurrency`, `adaptive_active`, `report_http_retry`, `http_retries_count`, the `_active_controller` / `_request_had_retry` / `_request_was_cache_hit` ContextVars |
+| `Concurrency` (static): `GetOrCreateSemaphore`, `AcquireAsync` (an `IAsyncDisposable` `ConcurrencyLease`), `StatusDisplay`, `Semaphores`, `AdaptiveControllers`, `AddControllerCreatedObserver` / `RemoveControllerCreatedObserver`, `TaskSampleSemaphore` / `RegisterTaskSampleSemaphore`, `Init`, `AdaptiveActive`, `ReportHttpRetry`, `HttpRetriesCount`, `BeginRequest` / `ActiveController` / `ActiveRequest` | `concurrency()`, `get_or_create_semaphore`, `concurrency_status_display`, `concurrency_semaphores`, `adaptive_controllers`, `add_controller_created_observer`, task sample semaphore registry, `init_concurrency`, `adaptive_active`, `report_http_retry`, `http_retries_count`, the `_active_controller` / `_request_had_retry` / `_request_was_cache_hit` ContextVars |
 | `ResizableLimiter`, `ResizableSemaphore`, `IConcurrencySemaphore`, `ConcurrencyLease` | `ResizableLimiter`, `ResizableSemaphore`, the `ConcurrencySemaphore` protocol, `async with` exit |
 | `AdaptiveConcurrency` (`Create`, `Parse`, `Validate`), `AdaptiveConnections` (`Disabled` / `Default` / `WithMax` / `From` / `Parse` / `Resolve`) | `AdaptiveConcurrency` incl. the shorthand and struct-form clamping, the `adaptive_connections` value forms and `resolve_adaptive` / `_parse_adaptive_connections_cli` |
-| `AdaptiveConcurrencyController` (slow start, AIMD, saturation gate, cooldown debounce, `SetMax`, observers, bounded `History` of `ConnectionLimitChange` (the `EvalStats` log record) / `LimitChangeReason`) | `AdaptiveConcurrencyController`, `_SaturationTrackingLimiter`, `LimitChangeRecord`, `_ceil_to_nice` / `_floor_to_nice` |
+| `AdaptiveConcurrencyController` (slow start, AIMD, saturation gate, cooldown debounce, `SetMax`, `AddObserver` / `RemoveObserver`, bounded `History` of `ConnectionLimitChange` (the `EvalStats` log record) / `LimitChangeReason`) | `AdaptiveConcurrencyController`, `_SaturationTrackingLimiter`, `LimitChangeRecord`, `_ceil_to_nice` / `_floor_to_nice` |
 | `DynamicSampleLimiter`, `ISampleLimiter`, `SampleScheduler.CreateSampleSemaphore`, `ModelConcurrency.Key` | `DynamicSampleLimiter`, `create_sample_semaphore`, `model_concurrency_key` / `_connection_pool_key`, `DEFAULT_MAX_CONNECTIONS(_BATCH)` |
 | `ConnectionSlot` | `ConnectionSlot` / `_held_connection_slot` |
 | `Throughput` (static), `TokenBuckets`, `BackoffInterval`, `ModelThroughput`, `ModelThroughputView`, `EvalRunStats` | `_throughput.py` (`record_generate`, `record_retry`, `record_retry_wait`, `throughput_snapshot`, `throughput_view`, `throughput_report`, `throughput_footer_rate`, `init_model_throughput`) and the display footer counters |
@@ -64,6 +64,12 @@ the release/reacquire seam Python's hard-pause gate uses.
 - `ConnectionRequest.WasCacheHit` is carried for parity but never set: `Model` has no cache.
 - The runner does not register its sample limiter under the task id (no in-run retries in this
   runner, and a never-reset registry would grow per run); the registry API is there for hosts.
+- `DynamicSampleLimiter` is `IDisposable` (Python's is collected with the run's registry reset): its
+  controller-created subscription and its subscription on the adopted controller are process-global, so
+  `Eval.RunAsync` disposes the limiter it created when the run ends, and a host that builds one itself must
+  do the same. Dispose only unsubscribes — held leases and the last capacity keep working. `Concurrency.
+  RemoveControllerCreatedObserver` and `AdaptiveConcurrencyController.RemoveObserver` back this; both are
+  no-ops for an unregistered callback.
 
 ## Not ported
 

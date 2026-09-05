@@ -50,6 +50,10 @@ were cross-checked against the Python scorer (sympy is installed in the venv).
 - **Scorers cannot decline.** The C# `Scorer` delegate returns a non-null `Score`, so `cascade` and
   `multi_scorer` treat an unscored (NaN) score as Python's `None`; `precomputed_scores` returns
   `Score.Unscored(explanation: ...)` for a sample without a record instead of omitting the score.
+- **`multi_scorer` fails fast like `tg_collect`** (`AsyncUtil.TgCollect`): the first sub-scorer to throw cancels
+  the others through the token they receive and its exception is rethrown once they have settled; caller
+  cancellation cancels every sub-scorer and surfaces as `OperationCanceledException`. A sub-scorer that ignores
+  its token keeps running until its next cancellable await.
 - **`precomputed_scores` reads local paths and `file://` URIs only**; other schemes throw
   `NotSupportedException` (no fsspec). Metric dictionaries keyed by subscore are not supported (the
   `metrics` parameter is a flat list, as everywhere in the .NET port).
