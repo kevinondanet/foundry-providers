@@ -7,7 +7,7 @@ using Model = InspectAzureAI.Eval.Model.Model;
 /// (<c>_pattern.py</c>) and <c>model_graded_qa</c> / <c>model_graded_fact</c> (<c>_model.py</c>), each
 /// registered with <c>[accuracy(), stderr()]</c> as in Python.
 /// </summary>
-public static class Scorers
+public static partial class Scorers
 {
     private static readonly string[] MatchLocations = ["begin", "end", "any", "exact"];
 

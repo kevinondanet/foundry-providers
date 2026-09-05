@@ -36,7 +36,7 @@ public sealed class TaskState
         Input = input;
         Messages = messages.ToList();
         Target = target ?? Target.Empty;
-        Choices = choices ?? [];
+        Choices = new Choices(choices ?? []);
         _output = output ?? new ModelOutput { Model = model };
         MessageLimit = messageLimit;
         TokenLimit = tokenLimit;
@@ -104,7 +104,8 @@ public sealed class TaskState
 
     public string Uuid { get; }
 
-    public IReadOnlyList<string> Choices { get; }
+    /// <summary>Port of <c>TaskState.choices</c>: the sample's choices (empty when the sample has none), marked and shuffled by the multiple choice solver.</summary>
+    public Choices Choices { get; private set; }
 
     /// <summary>
     /// Port of the copy <c>score(AgentState)</c> makes of <c>sample_state()</c>: the same sample identity, input,
@@ -115,12 +116,28 @@ public sealed class TaskState
     {
         ArgumentNullException.ThrowIfNull(messages);
         ArgumentNullException.ThrowIfNull(output);
-        return new TaskState(Model, SampleId, Epoch, Input, messages, Target, Choices, output, MessageLimit, TokenLimit, Metadata, Store, Uuid)
+        return new TaskState(Model, SampleId, Epoch, Input, messages, Target, null, output, MessageLimit, TokenLimit, Metadata, Store, Uuid)
         {
+            Choices = Choices,
             Tools = Tools.ToList(),
             ToolChoice = ToolChoice,
             Completed = Completed,
             Scores = Scores,
         };
     }
+
+    /// <summary>
+    /// Port of <c>deepcopy(state)</c> as <c>fork()</c> uses it: an independent state with its own message list,
+    /// metadata, tools, choices, scores and a copy of the store (same uuid). Messages, output and store values are
+    /// immutable records or shared as-is.
+    /// </summary>
+    public TaskState Copy() =>
+        new TaskState(Model, SampleId, Epoch, Input, Messages.ToList(), Target, null, Output, MessageLimit, TokenLimit, Metadata, new Store(Store.ToDictionary()), Uuid)
+        {
+            Choices = Choices.Clone(),
+            Tools = Tools.ToList(),
+            ToolChoice = ToolChoice,
+            Completed = Completed,
+            Scores = Scores is null ? null : new Dictionary<string, Score>(Scores, StringComparer.Ordinal),
+        };
 }
