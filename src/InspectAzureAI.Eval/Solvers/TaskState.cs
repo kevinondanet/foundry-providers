@@ -148,6 +148,9 @@ public sealed class TaskState
     /// <summary>Port of <c>TaskState.choices</c>: the sample's choices (empty when the sample has none), marked and shuffled by the multiple choice solver.</summary>
     public Choices Choices { get; private set; }
 
+    /// <summary>Port of <c>TaskState.store_as(model_cls, instance)</c>: a <see cref="StoreModel"/> bound to this state's <see cref="Store"/>.</summary>
+    public TModel StoreAs<TModel>(string? instance = null) where TModel : StoreModel, new() => Store.As<TModel>(instance);
+
     /// <summary>
     /// Port of the copy <c>score(AgentState)</c> makes of <c>sample_state()</c>: the same sample identity, input,
     /// target, choices, limits, metadata, store, tools and scores, with <paramref name="messages"/> and

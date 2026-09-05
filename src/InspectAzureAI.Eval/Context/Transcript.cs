@@ -41,36 +41,69 @@ public sealed class Transcript
     /// </summary>
     public double WorkingTime => _working.Elapsed.TotalSeconds;
 
-    public void Add(TranscriptEvent e)
+    public void Add(TranscriptEvent e) => Record(e);
+
+    /// <summary><see cref="Add"/> returning the event as stored (span id and working start stamped), for a later <see cref="Update"/>.</summary>
+    public TEvent Record<TEvent>(TEvent e) where TEvent : TranscriptEvent
     {
         ArgumentNullException.ThrowIfNull(e);
-        if (e.SpanId is null && _currentSpanId.Value is { } spanId)
+        var stamped = e;
+        if (stamped.SpanId is null && _currentSpanId.Value is { } spanId)
         {
-            e = e with { SpanId = spanId };
+            stamped = (TEvent)(stamped with { SpanId = spanId });
         }
 
-        if (e.WorkingStart == 0)
+        if (stamped.WorkingStart == 0)
         {
-            e = e with { WorkingStart = WorkingTime };
+            stamped = (TEvent)(stamped with { WorkingStart = WorkingTime });
         }
 
         lock (_sync)
         {
-            _events.Add(e);
+            _events.Add(stamped);
+        }
+
+        return stamped;
+    }
+
+    /// <summary>
+    /// Port of <c>transcript()._event_updated(event)</c>: replaces the recorded event with the same <see cref="TranscriptEvent.Uuid"/>
+    /// in place (a pending event completing, say). An event that was never recorded is an <see cref="InvalidOperationException"/>.
+    /// </summary>
+    public void Update(TranscriptEvent e)
+    {
+        ArgumentNullException.ThrowIfNull(e);
+        if (e.Uuid is null)
+        {
+            throw new InvalidOperationException("Only an event with a uuid can be updated.");
+        }
+
+        lock (_sync)
+        {
+            var index = _events.FindIndex(existing => existing.Uuid == e.Uuid);
+            if (index < 0)
+            {
+                throw new InvalidOperationException($"Event {e.Uuid} ({e.Event}) is not in the transcript and cannot be updated.");
+            }
+
+            _events[index] = e;
         }
     }
 
     /// <summary>Port of <c>transcript().info(data, source=...)</c>; <paramref name="data"/> is serialized to JSON.</summary>
     public void Info(string source, object? data = null) => Add(new InfoEvent(source, ToJson(data)));
 
-    /// <summary>Port of <c>span(name, type=...)</c>: emits a begin event now and an end event on dispose.</summary>
+    /// <summary>
+    /// Port of <c>span(name, type=...)</c>: emits a begin event now and an end event on dispose, preceded by a
+    /// <see cref="StoreEvent"/> when the ambient sample store changed inside the span (<see cref="StoreChanges.Track"/>).
+    /// </summary>
     public IDisposable Span(string name, string type = "span")
     {
         var id = ShortUuid.Generate();
         var parentId = _currentSpanId.Value;
         Add(new SpanBeginEvent(id, name, type, parentId));
         _currentSpanId.Value = id;
-        return new SpanScope(this, id, parentId);
+        return new SpanScope(this, id, parentId, StoreChanges.Track(transcript: this));
     }
 
     private static JsonNode? ToJson(object? data) => data switch
@@ -81,7 +114,7 @@ public sealed class Transcript
         _ => JsonSerializer.SerializeToNode(data, data.GetType()),
     };
 
-    private sealed class SpanScope(Transcript transcript, string id, string? parentId) : IDisposable
+    private sealed class SpanScope(Transcript transcript, string id, string? parentId, IDisposable storeChanges) : IDisposable
     {
         private bool _disposed;
 
@@ -93,6 +126,7 @@ public sealed class Transcript
             }
 
             _disposed = true;
+            storeChanges.Dispose();
             transcript.Add(new SpanEndEvent(id));
             transcript._currentSpanId.Value = parentId;
         }

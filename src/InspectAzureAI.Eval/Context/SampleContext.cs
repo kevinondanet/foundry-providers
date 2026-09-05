@@ -71,6 +71,25 @@ public sealed class SampleContext
             : throw new ArgumentException($"SandboxEnvironment '{name}' is not a recognized environment name.", nameof(name));
     }
 
+    /// <summary>
+    /// Port of <c>init_subtask_store(store)</c>: this context with <paramref name="store"/> as the ambient store, for a
+    /// subtask or fork branch (install it with <see cref="Begin"/>). Every other member is carried over unchanged.
+    /// </summary>
+    public SampleContext WithStore(Store store)
+    {
+        ArgumentNullException.ThrowIfNull(store);
+        return new SampleContext
+        {
+            ActiveModel = ActiveModel,
+            Store = store,
+            Transcript = Transcript,
+            Limits = Limits,
+            Sandboxes = Sandboxes,
+            SampleState = SampleState,
+            Scorer = Scorer,
+        };
+    }
+
     public static SampleContext Require() =>
         Current ?? throw new InvalidOperationException("No sample context is active; SampleContext.Begin must enclose this call.");
 
