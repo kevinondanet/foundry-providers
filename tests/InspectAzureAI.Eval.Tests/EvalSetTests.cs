@@ -323,7 +323,7 @@ public sealed class EvalSetTests : IDisposable
     {
         var task = QuizTask() with { Config = new GenerateConfig { TopP = 0.9 } };
         var first = new ScriptedModelApi(ScriptedTurn.Text("answer1", new ModelUsage(1, 1, 2)), ScriptedTurn.Throw(Boom("q2")));
-        var failed = await Eval.RunAsync(task, Options(first, new GenerateConfig { Temperature = 0.5 }) with { TaskId = "task-1", EvalSetId = "set-1", MessageLimit = 12 });
+        var failed = await Eval.RunAsync(task, Options(first, new GenerateConfig { Temperature = 0.5 }) with { TaskId = "task-1", EvalSetId = "set-1", MessageLimit = 12, Metadata = new Dictionary<string, object?> { ["origin"] = "first run" } });
         Assert.Equal(EvalStatus.Error, failed.Status);
 
         var second = new ScriptedModelApi(ScriptedTurn.Text("answer2", new ModelUsage(3, 1, 4)));
@@ -333,6 +333,7 @@ public sealed class EvalSetTests : IDisposable
         Assert.Equal(EvalStatus.Success, log.Status);
         Assert.Equal("task-1", log.Eval.TaskId);
         Assert.Null(log.Eval.EvalSetId);
+        Assert.Equal("first run", log.Eval.Metadata!["origin"]);   // eval_retry passes the recorded eval.metadata through
         Assert.Equal(_logDir, Path.GetDirectoryName(log.Location));
         Assert.Single(second.Requests);
         Assert.Equal("answer1", log.Samples![0].Output.Completion);

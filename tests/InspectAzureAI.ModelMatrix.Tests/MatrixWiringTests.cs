@@ -94,7 +94,9 @@ public sealed class MatrixWiringTests : IDisposable
         var row = second.Rows.Single();
         Assert.Equal(MatrixRow.Ok, row.Status);
         Assert.False(row.Reused);
-        Assert.NotEqual(path, row.Log);
+        // Python names logs {created}_{task}_{task_id} at second resolution, so a resume within the same second lands on
+        // the failed log's own path (the .eval recorder resumes into it) rather than a new file; assert the name, not distinctness.
+        Assert.EndsWith("_" + previous.Eval.TaskId + ".eval", row.Log);
         var resumed = EvalLogWriter.Read(row.Log!);
         Assert.Equal(previous.Eval.TaskId, resumed.Eval.TaskId);
         Assert.Equal(previous.Eval.EvalSetId, resumed.Eval.EvalSetId);

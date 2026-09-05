@@ -147,6 +147,7 @@ public static class EvalRetry
             CostLimit = spec.Config.CostLimit,
             Reporter = reporter,
             TaskId = spec.TaskId,
+            Metadata = spec.Metadata,
             SampleSource = EvalSampleSource.FromLog(log, task.Dataset, reporter is null ? null : reporter.Message),
             InitialModelUsage = log.Stats.ModelUsage is { Count: > 0 } usage ? usage : null,
         };

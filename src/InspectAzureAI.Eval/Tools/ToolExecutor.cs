@@ -114,6 +114,7 @@ public static class ToolExecutor
         // Python encloses a handoff's tool span in a "handoff" span named after the agent.
         using var handoffSpan = tools.FirstOrDefault(t => t.Name == call.Function)?.Handoff is { } handoffAgent ? transcript?.Span(handoffAgent.Agent.Name, "handoff") : null;
         using var span = transcript?.Span(call.Function, "tool");
+        var started = DateTimeOffset.UtcNow;
         var stopwatch = Stopwatch.StartNew();
         var tool = tools.FirstOrDefault(t => t.Name == call.Function);
         ToolResult result = ToolResult.Empty;
@@ -259,7 +260,16 @@ public static class ToolExecutor
         }
 
         var message = new ChatMessageTool(content, toolCallId: call.Id, function: call.Function, error: error);
-        transcript?.Add(new ToolEvent(call.Id, call.Function, call.Arguments, eventResult, error, truncation, stopwatch.Elapsed) { Agent = agent });
+        // Python creates the event when the call starts and _set_result stamps completed/message_id on every call;
+        // failed marks only the unhandled-exception path (a ToolCallError is not a failure).
+        transcript?.Add(new ToolEvent(call.Id, call.Function, call.Arguments, eventResult, error, truncation, stopwatch.Elapsed)
+        {
+            Timestamp = started,
+            Completed = DateTimeOffset.UtcNow,
+            Agent = agent,
+            Failed = fatal is not null ? true : null,
+            MessageId = message.Id,
+        });
         return new Outcome(message, fatal, extra, output);
     }
 

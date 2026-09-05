@@ -208,6 +208,8 @@ public sealed class ApprovalTests : IDisposable
         Assert.Equal("Tool call approver requested termination.", ex.Reason);
         var toolEvent = Assert.Single(scope.Transcript.Events.OfType<ToolEvent>());
         Assert.Equal("addition", toolEvent.Function);
+        Assert.True(toolEvent.Failed);   // Python: TerminateSampleError takes the unhandled-exception path, failed=True
+        Assert.NotNull(toolEvent.Completed);
         var approval = Assert.Single(scope.Transcript.Events.OfType<ApprovalEvent>());
         Assert.Equal("terminate", approval.Decision);
         Assert.Equal(HumanApprovals.Terminated, approval.Explanation);

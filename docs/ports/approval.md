@@ -70,8 +70,9 @@ reduced to the primary choice (warned once), and state tracking uses the origina
   is not supported. Custom approvers used in policy files register with `ApproverRegistry.Register`.
 - `Approval.Metadata` is recorded on the event's base `Metadata` (Python's `ApprovalEvent` inherits it the same way).
   `RecordApproval` is a no-op outside a sample context (Python always has a default transcript).
-- `TerminateSampleException` lives in `InspectAzureAI.Eval.Approval` (Python: `_util/exception.py`); the .NET
-  `ToolEvent` has no `failed` flag, so the terminate path records the event without it.
+- `TerminateSampleException` lives in `InspectAzureAI.Eval.Approval` (Python: `_util/exception.py`); like Python's
+  `TerminateSampleError` it reaches the executor's unhandled-exception path, so the tool event is recorded with
+  `failed: true` before it propagates.
 - Python's `ModelOutput.model_copy(deep=True)` for `modify` is a record copy with cloned argument objects.
 
 ## Not ported

@@ -55,8 +55,10 @@ every sample written (`condense_sample`) and adds a direct equality test against
   read; the JSON reader (`EvalLogWriter.Read`, another agent's) still keeps the refs verbatim.
 - Local files only: the S3 / fsspec branches (ETags, conditional writes, remote listings) are not ported; `write_eval_log`
   returns nothing rather than a `WriteEvalLogResult`.
-- The runner keeps its existing `<local time>_<task>_<6 hex>` file name (with the format's extension); Python's
-  `{created}_{task}_{task_id}` naming is available as `LogFileNaming.LogFilePath`/`EvalRecorder.LogFilePath`.
+- The runner names its log with `LogFileNaming.LogFilePath` (Python's `{created}_{task}_{task_id}` pattern, each
+  component through `clean_filename_component`, `INSPECT_EVAL_LOG_FILE_PATTERN` honoured), so Python's
+  `list_eval_logs` parses the task and id from the name; an earlier `<local time>_<task>_<6 hex>` scheme kept
+  underscores in the task name and made Python misread both.
 - The JSON recorder only writes at `FlushAsync`/`LogFinishAsync` (as Python), but the runner does not resolve
   `EvalSampleReductions`, so `reductions.json` is written only through `WriteEvalLog` of a log that carries them.
 - Errors: a missing sample is `KeyNotFoundException` (Python `IndexError`), neither id nor uuid `ArgumentException`
