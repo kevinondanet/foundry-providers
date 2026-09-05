@@ -67,3 +67,7 @@ Python source paths are relative to `src/inspect_ai/`; C# paths to `src/InspectA
 |---|---|
 | [integration.md](integration.md) | The order in which the area branches were merged into `port/inspect-full` and which duplicate definitions were unified (limit scopes, `ModelEvent.cache`, `CompactionEvent`, `ModelFallback`, `FailOnError`, `adaptive_connections`, the sample loop). |
 | [showcase-wiring.md](showcase-wiring.md) | How SweShowcase, ModelMatrix, Sample and the SWE agents use eval sets, the `.eval` format, approval, hooks, the prompt cache, compaction and cost; the showcase-only flags; the matrix's per-deployment eval sets; why mini-swe keeps its own loop rather than `Agents.React`. |
+
+## Not ported
+
+- [deferred](deferred.md) — the six subsystems deliberately left out (checkpointing, ACP, control server, deep agent, human agent, batch API) and the smaller gaps, with Python sources and what each needs.
