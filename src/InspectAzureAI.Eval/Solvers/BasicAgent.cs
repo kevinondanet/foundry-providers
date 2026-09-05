@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using InspectAzureAI.Eval.Context;
+using InspectAzureAI.Eval.Model.Compaction;
 using InspectAzureAI.Eval.Scorers;
 using InspectAzureAI.Eval.Tools;
 using InspectAzureAI.Provider.Core;
@@ -39,6 +40,9 @@ public static partial class Solvers
     /// <paramref name="incorrectMessage"/>. The final accepted submission also marks the state completed.
     /// Message and token limits are those of the state (a default message limit of 50 applies when neither
     /// is set); a <see cref="LimitExceededException"/> propagates to the runner like Python's.
+    /// With <paramref name="compaction"/> (see <see cref="Compaction.Hook"/>) the loop compacts its input when
+    /// the conversation nears the context window and, after a <c>model_length</c> stop, recovers by forced
+    /// compaction before giving up, as the Python react agent does.
     /// </summary>
     public static Solver BasicAgent(
         Solver? init = null,
@@ -52,7 +56,8 @@ public static partial class Solvers
         string? continueMessage = null,
         Func<ScoreValue, double>? scoreValue = null,
         int? maxToolOutput = null,
-        bool submitAppend = false)
+        bool submitAppend = false,
+        CompactionHook? compaction = null)
     {
         ArgumentException.ThrowIfNullOrEmpty(submitName);
         ArgumentNullException.ThrowIfNull(submitDescription);
@@ -91,19 +96,42 @@ public static partial class Solvers
 
             var context = SampleContext.Require();
             var model = context.ActiveModel;
+            var compact = compaction?.Invoke(state.Messages.ToArray(), state.Tools.Select(t => t.ToInfo()).ToArray(), model);
             var loopStartTokens = state.TokenUsage;
             var attempts = 0;
             while (!state.Completed)
             {
                 GenerateLoop.CheckMessageLimit(state);
-                var output = await model.GenerateAsync(state.Messages.ToArray(), state.Tools.ToArray(), cancellationToken: cancellationToken).ConfigureAwait(false);
+                IReadOnlyList<ChatMessage> input = state.Messages.ToArray();
+                if (compact is not null)
+                {
+                    var compacted = await compact.CompactInputAsync(input, cancellationToken: cancellationToken).ConfigureAwait(false);
+                    input = compacted.Input;
+                    if (compacted.Message is { } supplemental)
+                    {
+                        state.Messages.Add(supplemental);
+                    }
+                }
+
+                var output = await model.GenerateAsync(input, state.Tools.ToArray(), cancellationToken: cancellationToken).ConfigureAwait(false);
                 GenerateLoop.CheckTokenLimit(state);
                 CheckLoopTokenLimit(tokenLimit, state.TokenUsage - loopStartTokens);
                 state.Output = output;
                 state.Messages.Add(output.Message);
+                if (compact is not null)
+                {
+                    await compact.RecordOutputAsync(input, output, cancellationToken).ConfigureAwait(false);
+                }
 
                 if (output.StopReason == StopReason.ModelLength)
                 {
+                    if (compact is not null
+                        && await Compaction.TryRecoverOverflowAsync(compact, state.Messages.Take(state.Messages.Count - 1).ToArray(), cancellationToken).ConfigureAwait(false) is { } recovered)
+                    {
+                        state.Messages = recovered.ToList();
+                        continue;
+                    }
+
                     context.Transcript.Add(new InfoEvent(null, JsonValue.Create("Agent terminated: model context window exceeded")));
                     break;
                 }

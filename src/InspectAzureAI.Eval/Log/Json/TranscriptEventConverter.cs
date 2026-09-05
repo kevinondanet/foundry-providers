@@ -3,6 +3,7 @@ using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using InspectAzureAI.Eval.Context;
 using InspectAzureAI.Eval.Model;
+using InspectAzureAI.Eval.Model.Compaction;
 using InspectAzureAI.Eval.Scorers;
 using InspectAzureAI.Provider.Core;
 
@@ -71,6 +72,17 @@ internal sealed class TranscriptEventConverterFactory : JsonConverterFactory
                     Get<string>(e, "name", options) ?? "",
                     Get<string>(e, "type", options) ?? "",
                     Get<string>(e, "action", options) ?? ""),
+                "compaction" => new CompactionEvent
+                {
+                    Type = Get<string>(e, "type", options) ?? "summary",
+                    Role = Get<string>(e, "role", options),
+                    TokensBefore = GetInt(e, "tokens_before"),
+                    TokensAfter = GetInt(e, "tokens_after"),
+                    Source = Get<string>(e, "source", options),
+                    Metadata = e.TryGetProperty("metadata", out var compactionMetadata) && compactionMetadata.ValueKind == JsonValueKind.Object
+                        ? PlainJson.ToObject(compactionMetadata) as Dictionary<string, object?>
+                        : null,
+                },
                 _ => throw new JsonException($"Unknown transcript event '{kind}'."),
             };
 
@@ -208,6 +220,30 @@ internal sealed class TranscriptEventConverterFactory : JsonConverterFactory
                     writer.WriteString("action", step.Action);
                     writer.WriteString("type", step.Type);
                     writer.WriteString("name", step.Name);
+                    break;
+                case CompactionEvent compaction:
+                    Put(writer, "metadata", compaction.Metadata, options);
+                    writer.WriteString("type", compaction.Type);
+                    if (compaction.Role is { } role)
+                    {
+                        writer.WriteString("role", role);
+                    }
+
+                    if (compaction.TokensBefore is { } tokensBefore)
+                    {
+                        writer.WriteNumber("tokens_before", tokensBefore);
+                    }
+
+                    if (compaction.TokensAfter is { } tokensAfter)
+                    {
+                        writer.WriteNumber("tokens_after", tokensAfter);
+                    }
+
+                    if (compaction.Source is { } compactionSource)
+                    {
+                        writer.WriteString("source", compactionSource);
+                    }
+
                     break;
                 default:
                     throw new JsonException($"Unsupported transcript event {value.GetType().Name}.");
