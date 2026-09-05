@@ -103,6 +103,11 @@ public static class Eval
             throw new ArgumentOutOfRangeException(nameof(options), "RetryOnError must not be negative.");
         }
         var scorerNames = EvalResultsBuilder.UniqueScorerNames(task.Scorers);
+        foreach (var reducer in task.Epochs?.Reducers ?? [])
+        {
+            Reducers.Validate(epochs, reducer);
+        }
+
         var startedAt = DateTimeOffset.UtcNow;
 
         var spec = new EvalSpec

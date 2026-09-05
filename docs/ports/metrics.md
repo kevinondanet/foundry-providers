@@ -55,6 +55,8 @@ were cross-checked against the Python scorer (sympy is installed in the venv).
   `metrics` parameter is a flat list, as everywhere in the .NET port).
 - **Randomness** (`bootstrap_stderr`, `ci(method: "bootstrap")`) uses `System.Random` (optionally
   injected) rather than numpy's global state, so resampled values differ from Python run to run.
+- **Dict- and list-valued metric entries carry `group`** (the metric's name), as Python's `scorer_for_metrics`
+  writes; `params` stays `{}` because `MetricDef` has no registry params.
 - **`frequency` keys use `ScoreValue.Text`**, which renders `1.0` as `1` (there is no int/float
   distinction in `ScoreValue`); Python would report `1` and `1.0` as separate categories.
 - **`f1`** case-folds with `ToLowerInvariant` (Python `casefold` also folds ß→ss) and, like the rest of

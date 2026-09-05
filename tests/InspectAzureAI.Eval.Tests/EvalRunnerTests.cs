@@ -489,4 +489,53 @@ public sealed class EvalRunnerTests : IDisposable
         Assert.Contains(log.Samples, s => s.Id is int);
         Assert.Contains(log.Samples, s => s.Id is string);
     }
+
+    [Fact]
+    public async Task dict_valued_metrics_are_logged_with_their_group()
+    {
+        var dataset = new MemoryDataset([new Sample("capital of France?") { Target = "Paris" }, new Sample("2 + 2?") { Target = "4" }]);
+        var api = new ScriptedModelApi(ScriptedTurn.Text("Paris"), ScriptedTurn.Text("5"));
+        var task = new EvalTask { Name = "grouped", Dataset = dataset, Scorers = [Scorers.Includes() with { Metrics = [Metrics.Accuracy(), Metrics.Ci()] }] };
+
+        var log = await Eval.RunAsync(task, Options(api));
+
+        var metrics = Assert.Single(log.Results!.Scores).Metrics;
+        Assert.Equal(["accuracy", "lower", "upper"], metrics.Keys);
+        Assert.Null(metrics["accuracy"].Group);
+        Assert.Equal("ci", metrics["lower"].Group);
+        Assert.Equal("ci", metrics["upper"].Group);
+
+        var path = Directory.GetFiles(_logDir, "*.json").Single();
+        Assert.Equal(2, Regex.Matches(await File.ReadAllTextAsync(path), "\"group\": \"ci\"").Count);
+        var read = EvalLogWriter.Read(path);
+        Assert.Equal("ci", read.Results!.Scores[0].Metrics["upper"].Group);
+        Assert.Null(read.Results.Scores[0].Metrics["accuracy"].Group);
+    }
+
+    [Fact]
+    public async Task a_reducer_needing_more_epochs_than_the_run_has_fails_before_any_model_call()
+    {
+        var api = new ScriptedModelApi(ScriptedTurn.Text("Paris"));
+        var task = new EvalTask
+        {
+            Name = "pass-at",
+            Dataset = new MemoryDataset([new Sample("capital of France?") { Target = "Paris" }]),
+            Scorers = [Scorers.Includes()],
+            Epochs = new Epochs(2, [Reducers.PassAt(5)]),
+        };
+
+        var error = await Assert.ThrowsAsync<PrerequisiteError>(() => Eval.RunAsync(task, Options(api)));
+
+        Assert.Contains("pass_at_5", error.Message);
+        Assert.Contains("only 2 epochs", error.Message);
+        Assert.Empty(api.Requests);
+        Assert.False(Directory.Exists(_logDir));
+
+        // the eval-level epochs override is what is validated, as in Python (task.epochs is replaced before validate_reducer)
+        var log = await Eval.RunAsync(task, Options(api) with { Epochs = 5 });
+        Assert.Equal(EvalStatus.Success, log.Status);
+        Assert.Equal(5, log.Eval.Config.Epochs);
+        Assert.Equal(["pass_at_5"], log.Eval.Config.EpochsReducer);
+        Assert.Equal(5, api.Requests.Count);
+    }
 }

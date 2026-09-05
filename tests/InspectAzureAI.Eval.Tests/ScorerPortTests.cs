@@ -499,4 +499,36 @@ public class ScorerPortTests : IDisposable
     {
         Assert.Equal(expected, (await Run(Scorers.Math(), output, target)).Text);
     }
+
+    [Fact]
+    public async Task multi_scorer_cancels_the_other_scorers_when_one_fails()
+    {
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cancelled = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        ScorerDef waiting = new("slow-grader", async (_, _, ct) =>
+        {
+            started.SetResult();
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(20), ct);
+            }
+            catch (OperationCanceledException)
+            {
+                cancelled.SetResult(true);
+                throw;
+            }
+
+            return new Score(1);
+        }, []);
+        ScorerDef failing = new("broken", async (_, _, _) =>
+        {
+            await started.Task;
+            throw new InvalidOperationException("grader down");
+        }, []);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => Scorers.MultiScorer([waiting, failing], Reducers.Mean()).Score(State("x"), new Target("x"), CancellationToken.None));
+
+        Assert.Equal("grader down", error.Message);
+        Assert.True(cancelled.Task.IsCompletedSuccessfully);
+    }
 }

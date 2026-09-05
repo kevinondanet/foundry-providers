@@ -839,4 +839,40 @@ public sealed class MultipleChoiceTests : IDisposable
         Assert.Equal(["user", "user"], result.Messages.Select(m => m.Role));
         Assert.Single(state.Messages);
     }
+
+    [Fact]
+    public async Task fork_cancels_the_other_branches_when_one_fails()
+    {
+        using var scope = new SampleContextScope();
+        var generate = GenerateLoop.Create(scope.Model);
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cancelled = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        Solver waiting = async (state, _, cancellationToken) =>
+        {
+            started.SetResult();
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(20), cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                cancelled.SetResult(true);
+                throw;
+            }
+
+            return state;
+        };
+        Solver failing = async (_, _, _) =>
+        {
+            await started.Task;
+            throw new InvalidOperationException("boom");
+        };
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => Solvers.Fork(State(), [waiting, failing], generate));
+
+        Assert.Equal("boom", error.Message);
+        Assert.True(cancelled.Task.IsCompletedSuccessfully);
+        Assert.Equal(scope.Transcript.Events.OfType<SpanBeginEvent>().Select(e => e.Id).Order(), scope.Transcript.Events.OfType<SpanEndEvent>().Select(e => e.Id).Order());
+        Assert.Null(scope.Transcript.CurrentSpanId);
+    }
 }
