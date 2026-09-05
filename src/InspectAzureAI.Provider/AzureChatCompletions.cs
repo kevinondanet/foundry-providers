@@ -59,9 +59,20 @@ public sealed class AzureChatResponseMessage(JsonObject raw)
 
     public string? Content => Raw["content"]?.ToString();
 
+    /// <summary>
+    /// Reasoning text when the model exposes it: <c>reasoning_content</c> (DeepSeek, Kimi, Cohere, and
+    /// gpt-oss behind model-router), else <c>reasoning</c>, else <c>thinking</c> (MAI-Thinking-1 sends these
+    /// as null when the reasoning is hidden). Null unless a non-empty string is present.
+    /// </summary>
+    public string? ReasoningContent =>
+        NonEmptyString(Raw["reasoning_content"]) ?? NonEmptyString(Raw["reasoning"]) ?? NonEmptyString(Raw["thinking"]);
+
     /// <summary>Tool calls, or null when the field is absent (Python distinguishes None from []).</summary>
     public IReadOnlyList<AzureToolCall>? ToolCalls =>
         Raw["tool_calls"] is JsonArray calls ? calls.OfType<JsonObject>().Select(c => new AzureToolCall(c)).ToList() : null;
+
+    private static string? NonEmptyString(JsonNode? node) =>
+        node is JsonValue value && value.TryGetValue<string>(out var text) && text.Length > 0 ? text : null;
 }
 
 /// <summary>Dict-backed view of a response tool call (port of <c>ChatCompletionsToolCall</c>).</summary>
@@ -82,4 +93,16 @@ public sealed class AzureCompletionsUsage(JsonObject raw)
     public int CompletionTokens => raw["completion_tokens"]?.GetValue<int>() ?? 0;
 
     public int TotalTokens => raw["total_tokens"]?.GetValue<int>() ?? 0;
+
+    /// <summary>
+    /// Reasoning tokens: <c>completion_tokens_details.reasoning_tokens</c> (OpenAI, MAI-Thinking-1, grok) or the
+    /// top-level <c>reasoning_tokens</c> some streams report (Kimi, DeepSeek). Null when not reported; a
+    /// reported 0 stays 0.
+    /// </summary>
+    public int? ReasoningTokens => IntOf(raw["completion_tokens_details"]?["reasoning_tokens"]) ?? IntOf(raw["reasoning_tokens"]);
+
+    /// <summary>Prompt tokens served from the prompt cache (<c>prompt_tokens_details.cached_tokens</c>); null when not reported.</summary>
+    public int? CachedTokens => IntOf(raw["prompt_tokens_details"]?["cached_tokens"]);
+
+    private static int? IntOf(JsonNode? node) => node is JsonValue value && value.TryGetValue<int>(out var number) ? number : null;
 }

@@ -9,6 +9,9 @@ internal sealed class StreamChoice
 {
     public List<string> Content { get; } = [];
 
+    /// <summary>Reasoning fragments (<c>reasoning_content</c> / <c>reasoning</c> / <c>thinking</c> deltas), when the model exposes them.</summary>
+    public List<string> Reasoning { get; } = [];
+
     /// <summary>Keyed by wire index (or synthesised slot).</summary>
     public SortedDictionary<int, StreamToolCall> ToolCalls { get; } = [];
 
@@ -101,6 +104,17 @@ public static class AzureAIStreamAccumulator
 
                 var delta = updateChoice["delta"] as JsonObject ?? new JsonObject();
                 var report = index == 0 && deltasRequested;
+                var reasoning = ReasoningDelta(delta);
+                if (reasoning is not null)
+                {
+                    choice.Reasoning.Add(reasoning);
+                    if (report)
+                    {
+                        await ModelStreamObserver.ReportModelStreamDeltaAsync(new StreamReasoningEvent(reasoning)).ConfigureAwait(false);
+                        reported = true;
+                    }
+                }
+
                 var content = delta["content"]?.ToString();
                 if (!string.IsNullOrEmpty(content))
                 {
@@ -165,6 +179,11 @@ public static class AzureAIStreamAccumulator
                 ["role"] = "assistant",
                 ["content"] = string.Concat(choice.Content),
             };
+            if (choice.Reasoning.Count > 0)
+            {
+                message["reasoning_content"] = string.Concat(choice.Reasoning);
+            }
+
             if (choice.ToolCalls.Count > 0)
             {
                 var toolCalls = new JsonArray();
@@ -207,4 +226,15 @@ public static class AzureAIStreamAccumulator
 
         return new AzureChatCompletions(response);
     }
+
+    /// <summary>
+    /// The reasoning fragment of a delta: <c>reasoning_content</c> (DeepSeek, Kimi, Cohere, gpt-oss behind
+    /// model-router), else <c>reasoning</c>, else <c>thinking</c>; non-empty strings only (hidden-reasoning
+    /// models send these keys as null).
+    /// </summary>
+    private static string? ReasoningDelta(JsonObject delta) =>
+        NonEmptyString(delta["reasoning_content"]) ?? NonEmptyString(delta["reasoning"]) ?? NonEmptyString(delta["thinking"]);
+
+    private static string? NonEmptyString(JsonNode? node) =>
+        node is JsonValue value && value.TryGetValue<string>(out var text) && text.Length > 0 ? text : null;
 }

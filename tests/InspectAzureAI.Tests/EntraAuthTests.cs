@@ -9,7 +9,7 @@ using InspectAzureAI.Provider.Util;
 
 namespace InspectAzureAI.Tests;
 
-/// <summary>Entra ID sign-in: credential selection, audience pinning and token diagnostics (no Python counterpart).</summary>
+/// <summary>Entra ID sign-in: DefaultAzureCredential, audience pinning and token diagnostics (no Python counterpart).</summary>
 public class EntraAuthTests
 {
     [Fact]
@@ -18,46 +18,22 @@ public class EntraAuthTests
         using var env = EnvScope.Clean();
 
         Assert.IsType<DefaultAzureCredential>(AzureHosting.CreateCredential());
-        Assert.Equal("default", AzureHosting.ResolveCredentialSelector());
-    }
-
-    [Theory]
-    [InlineData("default", typeof(DefaultAzureCredential))]
-    [InlineData("cli", typeof(AzureCliCredential))]
-    [InlineData(" CLI ", typeof(AzureCliCredential))]
-    [InlineData("developer-cli", typeof(AzureDeveloperCliCredential))]
-    [InlineData("managed-identity", typeof(ManagedIdentityCredential))]
-    [InlineData("environment", typeof(EnvironmentCredential))]
-    [InlineData("interactive", typeof(InteractiveBrowserCredential))]
-    public void azureai_credential_selects_the_credential_type(string selector, Type expected)
-    {
-        using var env = EnvScope.Clean().Set(AzureHosting.AzureAICredential, selector);
-
-        Assert.IsType(expected, AzureHosting.CreateCredential());
-        Assert.IsType(expected, AzureHosting.CreateCredential(selector));
+        Assert.IsType<DefaultAzureCredential>(AzureHosting.ResolveAzureCredential("AzureAI").Inner);
     }
 
     [Fact]
-    public void unknown_credential_selector_is_a_prerequisite_error()
+    public void resolve_audience_defaults_and_honours_the_env_var()
     {
-        using var env = EnvScope.Clean().Set(AzureHosting.AzureAICredential, "kerberos");
+        using var env = EnvScope.Clean();
+        Assert.Equal("https://cognitiveservices.azure.com/.default", AzureHosting.DefaultAzureAudience);
+        Assert.Equal(AzureHosting.DefaultAzureAudience, AzureHosting.ResolveAudience());
 
-        var ex = Assert.Throws<PrerequisiteError>(() => AzureHosting.CreateCredential());
-        Assert.Contains("AZUREAI_CREDENTIAL='kerberos' is not a supported credential", ex.Message);
-        Assert.Contains("default, cli, developer-cli, managed-identity, environment, interactive", ex.Message);
+        env.Set(AzureHosting.AzureAIAudience, "https://custom.audience/.default");
+        Assert.Equal("https://custom.audience/.default", AzureHosting.ResolveAudience());
+        Assert.Equal("https://custom.audience/.default", AzureHosting.ResolveAzureCredential("AzureAI", new FakeTokenCredential("t")).Scope);
 
-        var api = Assert.Throws<PrerequisiteError>(() => new AzureAIModelApi("m", Fixtures.BaseUrl));
-        Assert.Contains("not a supported credential", api.Message);
-    }
-
-    [Fact]
-    public void user_assigned_managed_identity_comes_from_azure_client_id()
-    {
-        using var env = EnvScope.Clean()
-            .Set(AzureHosting.AzureAICredential, "managed-identity")
-            .Set(AzureHosting.AzureClientId, "00000000-0000-0000-0000-000000000001");
-
-        Assert.IsType<ManagedIdentityCredential>(AzureHosting.CreateCredential());
+        env.Set(AzureHosting.AzureAIAudience, "");
+        Assert.Equal(AzureHosting.DefaultAzureAudience, AzureHosting.ResolveAudience());
     }
 
     [Fact]
@@ -85,7 +61,7 @@ public class EntraAuthTests
             Transport = transport, TokenCredential = inner, ConfigureClientOptions = o => o.Retry.MaxRetries = 0,
         });
 
-        Assert.Equal("https://custom.audience/.default", api.Credential!.Scope);
+        Assert.Equal("https://custom.audience/.default", api.Credential.Scope);
         var result = await api.GenerateAsync([new ChatMessageUser("hi")], [], ToolChoice.Auto, new GenerateConfig());
 
         Assert.Equal("ok", result.OutputOrThrow().Completion);
@@ -95,23 +71,28 @@ public class EntraAuthTests
     }
 
     [Fact]
-    public async Task token_provider_shape_still_works_over_the_credential()
+    public async Task credential_acquires_the_token_for_the_pinned_scope()
     {
         using var env = EnvScope.Clean();
-        var api = new AzureAIModelApi("m", Fixtures.BaseUrl, settings: new AzureAIClientSettings { TokenCredential = new FakeTokenCredential("entra-token") });
+        var inner = new FakeTokenCredential("entra-token");
+        var api = new AzureAIModelApi("m", Fixtures.BaseUrl, settings: new AzureAIClientSettings { TokenCredential = inner });
 
-        Assert.NotNull(api.Credential);
-        Assert.Equal("entra-token", await api.TokenProvider!(CancellationToken.None));
+        Assert.Equal(AzureHosting.DefaultAzureAudience, api.Credential.Scope);
+        var token = await api.Credential.GetTokenAsync(new TokenRequestContext([api.Credential.Scope]), CancellationToken.None);
+
+        Assert.Equal("entra-token", token.Token);
+        Assert.Equal([AzureHosting.DefaultAzureAudience], Assert.Single(inner.Scopes));
     }
 
     [Fact]
-    public void describe_names_az_login_for_the_default_and_cli_credentials()
+    public void describe_names_az_login_for_the_default_credential()
     {
         using var env = EnvScope.Clean();
 
         Assert.Contains("az login", AzureHosting.Describe(new DefaultAzureCredential()));
-        Assert.Contains("az login", AzureHosting.Describe(new AzureCliCredential()));
-        var pinned = new AudienceTokenCredential(new AzureCliCredential(), AzureHosting.DefaultAzureAudience);
+        Assert.Equal("AzureCliCredential", AzureHosting.Describe(new AzureCliCredential()));
+        var pinned = new AudienceTokenCredential(new DefaultAzureCredential(), AzureHosting.DefaultAzureAudience);
+        Assert.Contains("az login", AzureHosting.Describe(pinned));
         Assert.Contains($"scope {AzureHosting.DefaultAzureAudience}", AzureHosting.Describe(pinned));
     }
 

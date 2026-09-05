@@ -29,10 +29,11 @@ public static class ToolCallParsing
     /// parsed as JSON with <c>json.loads</c> semantics (duplicate keys: last wins; recovering an object
     /// trailed only by stray double quotes; bounding nesting at <see cref="MaxToolCallArgumentsDepth"/>;
     /// recording <see cref="ToolCall.ParseError"/> on failure — including for the non-standard
-    /// <c>NaN</c>/<c>Infinity</c> tokens Python would accept); otherwise the raw string is YAML-parsed into
-    /// the first declared parameter of the named tool.
+    /// <c>NaN</c>/<c>Infinity</c> tokens Python would accept). Anything else yields empty arguments: the
+    /// Python YAML fallback for non-JSON arguments only matters for prompt-emulated tool calls, which this
+    /// lite port does not do — native function calling always returns a JSON object.
     /// </summary>
-    public static ToolCall ParseToolCall(string id, string function, string? arguments, IReadOnlyList<ToolInfo>? tools = null, string type = "function")
+    public static ToolCall ParseToolCall(string id, string function, string? arguments, string type = "function")
     {
         string? error = null;
         var argumentsDict = new JsonObject();
@@ -80,35 +81,6 @@ public static class ToolCallParsing
                 else
                 {
                     argumentsDict = parsed;
-                }
-            }
-        }
-        else if (!string.IsNullOrEmpty(function) && tools is { Count: > 0 })
-        {
-            var toolInfo = tools.FirstOrDefault(t => t.Name == function && t.Parameters.Properties.Count > 0);
-            if (toolInfo is not null)
-            {
-                var paramNames = toolInfo.Parameters.Properties.Keys.ToList();
-                JsonNode? value = null;
-                try
-                {
-                    value = YamlScalar.SafeLoad(arguments);
-                }
-                catch (JsonException)
-                {
-                    ReportParseError(MaxDepthParseError());
-                }
-
-                if (error is null)
-                {
-                    if (ExceedsMaxDepth(value))
-                    {
-                        ReportParseError(MaxDepthParseError());
-                    }
-                    else
-                    {
-                        argumentsDict[paramNames[0]] = value;
-                    }
                 }
             }
         }

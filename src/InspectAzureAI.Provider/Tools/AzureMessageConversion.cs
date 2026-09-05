@@ -14,9 +14,9 @@ namespace InspectAzureAI.Provider.Tools;
 public static class AzureMessageConversion
 {
     /// <summary>Port of <c>chat_request_messages</c>; applies the Mistral reducer when <paramref name="isMistral"/>.</summary>
-    public static List<ChatRequestMessage> ChatRequestMessages(IReadOnlyList<ChatMessage> messages, ChatApiHandler? handler, bool isMistral = false)
+    public static List<ChatRequestMessage> ChatRequestMessages(IReadOnlyList<ChatMessage> messages, bool isMistral = false)
     {
-        var chatMessages = messages.Select(m => ChatRequestMessage(m, handler)).ToList();
+        var chatMessages = messages.Select(m => ChatRequestMessage(m)).ToList();
         if (isMistral)
         {
             chatMessages = chatMessages.Aggregate(new List<ChatRequestMessage>(), MistralMessageReducer);
@@ -68,7 +68,7 @@ public static class AzureMessageConversion
     }
 
     /// <summary>Port of <c>chat_request_message</c>.</summary>
-    public static ChatRequestMessage ChatRequestMessage(ChatMessage message, ChatApiHandler? handler)
+    public static ChatRequestMessage ChatRequestMessage(ChatMessage message)
     {
         switch (message)
         {
@@ -85,11 +85,6 @@ public static class AzureMessageConversion
             case ChatMessageAssistant assistant:
                 if (assistant.ToolCalls is { Count: > 0 })
                 {
-                    if (handler is not null)
-                    {
-                        return new ChatRequestAssistantMessage(handler.AssistantMessage(assistant).Content);
-                    }
-
                     var text = assistant.Text;
                     return new ChatRequestAssistantMessage(
                         assistant.ToolCalls.Select(AzureToolConversion.ChatToolCall),

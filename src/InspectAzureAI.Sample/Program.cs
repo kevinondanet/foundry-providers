@@ -1,8 +1,10 @@
+using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Azure;
 using Azure.Core;
+using Azure.Core.Pipeline;
 using Azure.Identity;
 using InspectAzureAI.Provider;
 using System.Diagnostics;
@@ -16,14 +18,23 @@ using InspectAzureAI.Sample;
 var arguments = args.ToList();
 var fake = arguments.Remove("--fake");
 var streamingArg = TakeOption(arguments, "--streaming");
-var emulateArg = TakeOption(arguments, "--emulate-tools");
 var modelArg = TakeOption(arguments, "--model");
-var authArg = TakeOption(arguments, "--auth");
 var routeArg = TakeOption(arguments, "--route");
 var jsonFlag = arguments.Remove("--json");
 var includeFailed = arguments.Remove("--include-failed");
 var skipTools = arguments.Remove("--skip-tools");
 var onlyArg = TakeOption(arguments, "--only");
+var outArg = TakeOption(arguments, "--out");
+var paramsArg = TakeOption(arguments, "--params");
+var parallel = 4;
+if (TakeOption(arguments, "--parallel") is { } parallelArg)
+{
+    if (!int.TryParse(parallelArg, out parallel) || parallel <= 0)
+    {
+        Console.Error.WriteLine($"--parallel expects a positive number, got '{parallelArg}'\n\n{Cli.Help}");
+        return 2;
+    }
+}
 var maxTokensArg = TakeOption(arguments, "--max-tokens");
 if (maxTokensArg is not null)
 {
@@ -53,7 +64,15 @@ for (string? pair; (pair = TakeOption(arguments, "--model-arg")) is not null;)
         return 2;
     }
 
-    Cli.ExtraModelArgs[pair[..eq]] = Cli.ParseModelArgValue(pair[(eq + 1)..]);
+    try
+    {
+        Cli.ExtraModelArgs[pair[..eq]] = ProviderUtil.ParseModelArgValue(pair[(eq + 1)..]);
+    }
+    catch (ArgumentException ex)
+    {
+        Console.Error.WriteLine($"--model-arg {pair[..eq]}: {ex.Message}\n\n{Cli.Help}");
+        return 2;
+    }
 }
 var temperatureArg = TakeOption(arguments, "--temperature");
 if (temperatureArg is not null)
@@ -65,6 +84,31 @@ if (temperatureArg is not null)
     }
 
     Cli.Temperature = temperature;
+}
+
+var reasoningEffortArg = TakeOption(arguments, "--reasoning-effort");
+if (reasoningEffortArg is not null)
+{
+    var effort = reasoningEffortArg.Trim().ToLowerInvariant();
+    if (!ReasoningParams.EffortLevels.Contains(effort))
+    {
+        Console.Error.WriteLine($"--reasoning-effort expects one of {string.Join("|", ReasoningParams.EffortLevels)}, got '{reasoningEffortArg}'\n\n{Cli.Help}");
+        return 2;
+    }
+
+    Cli.ReasoningEffort = effort;
+}
+
+var reasoningTokensArg = TakeOption(arguments, "--reasoning-tokens");
+if (reasoningTokensArg is not null)
+{
+    if (!int.TryParse(reasoningTokensArg, out var reasoningTokens) || reasoningTokens <= 0)
+    {
+        Console.Error.WriteLine($"--reasoning-tokens expects a positive number, got '{reasoningTokensArg}'\n\n{Cli.Help}");
+        return 2;
+    }
+
+    Cli.ReasoningTokens = reasoningTokens;
 }
 
 if (arguments.Count == 0 || arguments[0] is "--help" or "-h" or "help")
@@ -79,17 +123,18 @@ try
 {
     return command switch
     {
-        "config" => Cli.Config(Cli.CreateApi(modelArg, streamingArg, emulateArg, fake, authArg)),
+        "config" => Cli.Config(Cli.CreateApi(modelArg, streamingArg, fake)),
         "naming" => Cli.Naming(rest),
-        "chat" => await Cli.Chat(Cli.CreateModelApi(routeArg, modelArg, streamingArg, emulateArg, fake, authArg), string.Join(" ", rest)),
-        "stream" => await Cli.Stream(Cli.CreateModelApi(routeArg, modelArg, streamingArg, emulateArg, fake, authArg), string.Join(" ", rest)),
-        "tools" => await Cli.ToolLoop(Cli.CreateModelApi(routeArg, modelArg, streamingArg, emulateArg ?? "false", fake, authArg), string.Join(" ", rest)),
-        "emulate-tools" => await Cli.ToolLoop(Cli.CreateModelApi(routeArg, modelArg, streamingArg, emulateArg ?? "true", fake, authArg), string.Join(" ", rest)),
-        "image" => await Cli.Image(Cli.CreateModelApi(routeArg, modelArg, streamingArg, emulateArg, fake, authArg), rest),
-        "retry-demo" => Cli.RetryDemo(Cli.CreateApi(modelArg, streamingArg, emulateArg, fake, authArg)),
-        "token" => await Cli.Token(Cli.CreateApi(modelArg, streamingArg, emulateArg, fake, authArg)),
-        "models" => await Cli.Models(Cli.CreateApi(modelArg, streamingArg, emulateArg, fake, authArg), authArg, fake, jsonFlag),
-        "test-all" => await Cli.TestAll(Cli.CreateApi(modelArg, streamingArg, emulateArg, fake, authArg), authArg, fake, onlyArg, includeFailed, skipTools, jsonFlag),
+        "chat" => await Cli.Chat(Cli.CreateModelApi(routeArg, modelArg, streamingArg, fake), string.Join(" ", rest)),
+        "stream" => await Cli.Stream(Cli.CreateModelApi(routeArg, modelArg, streamingArg, fake), string.Join(" ", rest)),
+        "tools" => await Cli.ToolLoop(Cli.CreateModelApi(routeArg, modelArg, streamingArg, fake), string.Join(" ", rest)),
+        "image" => await Cli.Image(Cli.CreateModelApi(routeArg, modelArg, streamingArg, fake), rest),
+        "retry-demo" => Cli.RetryDemo(Cli.CreateApi(modelArg, streamingArg, fake)),
+        "token" => await Cli.Token(Cli.CreateApi(modelArg, streamingArg, fake)),
+        "models" => await Cli.Models(Cli.CreateApi(modelArg, streamingArg, fake), fake, jsonFlag),
+        "test-all" => await Cli.TestAll(Cli.CreateApi(modelArg, streamingArg, fake), fake, onlyArg, includeFailed, skipTools, jsonFlag),
+        "capture" => await Cli.Capture(Cli.CreateApi(modelArg, streamingArg, fake), fake, onlyArg, includeFailed, outArg, paramsArg, parallel),
+        "params" => await Cli.Params(Cli.CreateApi(modelArg, streamingArg, fake), fake, onlyArg, includeFailed, paramsArg ?? "all", parallel, jsonFlag, outArg),
         _ => Cli.Unknown(command),
     };
 }
@@ -100,7 +145,7 @@ catch (UsageError ex)
 }
 catch (PrerequisiteError ex)
 {
-    Console.Error.WriteLine(ex.Message);
+    Console.Error.WriteLine(ProviderUtil.StripRichMarkup(ex.Message));
     return 2;
 }
 catch (Exception ex) when (Cli.IsSignInFailure(ex))
@@ -143,20 +188,21 @@ namespace InspectAzureAI.Sample
     internal sealed class UsageError(string message) : Exception(message);
 
     /// <summary>Subcommand implementations for the sample console app.</summary>
-    internal static class Cli
+    internal static partial class Cli
     {
         public const string Help = """
-            InspectAzureAI.Sample - .NET port of the Inspect AI `azureai` model provider
+            InspectAzureAI.Sample - lite .NET port of the Inspect AI `azureai` model provider (az login only)
 
             usage: dotnet run --project src/InspectAzureAI.Sample -- <command> [options] [args]
 
             commands:
-              config                    print the resolved endpoint, auth mode and model names (no call)
-              naming <model...>         show service/canonical names and is-llama for each model name
+              config                    print the resolved endpoint, credential and model names (no call)
+              naming <model...>         show service/canonical names, the Mistral rule and which token-limit
+                                        parameter is sent for each model name (no call)
               chat [prompt]             one non-streaming completion
               stream [prompt]           one streaming completion (deltas printed as they arrive)
-              tools [prompt]            native function-calling loop with the local get_weather tool
-              emulate-tools [prompt]    Llama <tool_call> prompt-format tool-calling loop, same tool
+              tools [prompt]            native function-calling loop with the local get_weather tool: the model's
+                                        tool_calls are executed and fed back until it answers in plain text
               image <path-or-url>       send an image (materialised as a data URI) with a question
               retry-demo                show ShouldRetry / IsAuthFailure / HandleAzureError decisions
               token                     acquire an Entra ID token with the resolved credential and print
@@ -166,35 +212,44 @@ namespace InspectAzureAI.Sample
               test-all                  smoke-test every healthy chat deployment: chat, stream, native tools; Anthropic
                                         deployments go through the Messages route automatically
                                         (--only a,b  --include-failed  --skip-tools  --json); exit 1 on any chat failure
+              capture                   like test-all, but record every HTTP exchange (request line, headers with the
+                                        bearer token redacted, body; response status, headers, body) as JSON for the
+                                        educational dashboard in docs/dashboard (--out <file>  --only a,b  --include-failed
+                                        --params all|a,b to add the parameter probes  --parallel n)
+              params                    probe which request parameters each chat deployment accepts, one call per
+                                        candidate on top of a baseline: temperature, top_p, seed/penalties, stop, n,
+                                        logprobs, top_k, parallel_tool_calls, response_format, the other token-limit
+                                        field, stream_options, and the family's reasoning controls; prints verdicts
+                                        (accepted / ignored / rejected) with evidence and a matrix
+                                        (--only a,b  --params a,b  --parallel n  --json  --out <file>)
               --help                    this text
 
             options:
-              --model <name>            model name (default: $INSPECT_AZUREAI_MODEL or Llama-3.3-70B-Instruct)
+              --model <name>            model name (default: $INSPECT_AZUREAI_MODEL or gpt-5.4-mini)
               --streaming auto|true|false   the `streaming` model arg (default auto)
-              --emulate-tools true|false    the `emulate_tools` model arg
-              --fake                    answer from a canned in-memory transport (no network, no keys)
+              --fake                    answer from a canned in-memory transport (no network, no sign-in)
               --temperature <n>         sampling temperature (default: not sent; gpt-5 deployments accept only 1)
               --max-tokens <n|none>     max_tokens sent (default: the provider's max_tokens(), 2048 for most models)
-              --model-arg key=value     repeatable; the Python -M model args (emulate_tools, max_completion_tokens,
-                                        streaming, or any pass-through body field such as safe_mode=true)
-              --auth <selector>         Entra ID credential: default (DefaultAzureCredential, includes az login),
-                                        cli, developer-cli, managed-identity, environment, interactive
+              --reasoning-effort <lvl>  Inspect's reasoning_effort (none|minimal|low|medium|high|xhigh|max), mapped to the
+                                        family's field: reasoning_effort (OpenAI, grok, MAI), thinking {type} (DeepSeek,
+                                        Kimi, Cohere), adaptive thinking + output_config.effort (Claude); none = off
+              --reasoning-tokens <n>    Inspect's reasoning_tokens budget (Claude budget_tokens, Cohere token_budget)
+              --model-arg key=value     repeatable; the Python -M model args: max_completion_tokens=true (MAI-Thinking-1),
+                                        streaming, model_format=<vendor>, anthropic_beta=<list>, or any pass-through body
+                                        field; JSON values are parsed, e.g. thinking={"type":"enabled"}
               --route models|anthropic  chat/stream/tools/image: the model-inference route (default) or the
                                         Anthropic Messages route (/anthropic/v1/messages) for Claude deployments
 
-            environment (same names and precedence as the Python provider):
-              AZURE_API_KEY / AZUREAI_API_KEY                       api key (legacy name wins)
+            environment:
               AZURE_ENDPOINT_URL / AZUREAI_ENDPOINT_URL / AZUREAI_BASE_URL   endpoint (in that order)
               INSPECT_EVAL_MODEL_BASE_URL                           last-resort endpoint fallback
               AZUREAI_AUDIENCE                                      Entra ID token scope (default https://cognitiveservices.azure.com/.default)
-              AZUREAI_CREDENTIAL                                    same values as --auth (default: default)
-              AZURE_TENANT_ID / AZURE_CLIENT_ID                     tenant pin / user-assigned managed identity
+              AZURE_TENANT_ID / AZURE_CLIENT_ID                     Azure.Identity: tenant pin / user-assigned managed identity
               AZUREAI_RESOURCE_ID / AZURE_SUBSCRIPTION_ID           models/test-all: skip or narrow the ARM search
-              AZUREAI_ANTHROPIC_API_KEY / AZUREAI_ANTHROPIC_BASE_URL  Anthropic route (Inspect's names); the base URL is
-                                                            derived from AZUREAI_BASE_URL when unset
+              AZUREAI_ANTHROPIC_BASE_URL / AZURE_ANTHROPIC_BASE_URL  Anthropic route base URL; derived from AZUREAI_BASE_URL when unset
 
-            Entra ID is used whenever no API key is set: sign in with `az login` (and `az account set`),
-            then run `token` to confirm which identity the credential resolves to.
+            Authentication is Entra ID only (DefaultAzureCredential): sign in with `az login` (and `az account set`),
+            then run `token` to confirm which identity the credential resolves to. No API key variables are read.
             """;
 
         /// <summary>What to try when token acquisition fails.</summary>
@@ -202,8 +257,7 @@ namespace InspectAzureAI.Sample
             Hints:
               az login                                   sign in (add --tenant <id> for a specific tenant)
               az account set --subscription <name|id>    pick the subscription that owns the endpoint
-              --auth cli / AZUREAI_CREDENTIAL=cli        skip the managed-identity probe and use az login directly
-              AZURE_TENANT_ID=<id>                       pin the tenant for the default / cli credentials
+              AZURE_TENANT_ID=<id>                       pin the tenant DefaultAzureCredential signs in to
               AZUREAI_AUDIENCE=<scope>                   change the token scope (default https://cognitiveservices.azure.com/.default)
             """;
 
@@ -230,42 +284,19 @@ namespace InspectAzureAI.Sample
             },
         };
 
-        public static AzureAIModelApi CreateApi(string? model, string? streaming, string? emulateTools, bool fake, string? auth = null)
+        public static AzureAIModelApi CreateApi(string? model, string? streaming, bool fake)
         {
-            var settings = new AzureAIClientSettings();
-            if (auth is not null)
-            {
-                try
-                {
-                    settings = settings with { TokenCredential = AzureHosting.CreateCredential(auth) };
-                }
-                catch (PrerequisiteError ex)
-                {
-                    throw new UsageError($"--auth: {ex.Message}");
-                }
-            }
-
-            model ??= Environment.GetEnvironmentVariable("INSPECT_AZUREAI_MODEL") ?? "Llama-3.3-70B-Instruct";
-            var modelArgs = new Dictionary<string, object?>(ExtraModelArgs);
-            if (emulateTools is not null)
-            {
-                if (!bool.TryParse(emulateTools, out var emulate))
-                {
-                    throw new UsageError($"--emulate-tools expects true or false, got '{emulateTools}'");
-                }
-
-                modelArgs["emulate_tools"] = emulate;
-            }
-
+            model ??= Environment.GetEnvironmentVariable("INSPECT_AZUREAI_MODEL") ?? "gpt-5.4-mini";
             try
             {
                 if (fake)
                 {
-                    return new AzureAIModelApi(model, "https://fake.local/models", "fake-key", streaming: streaming, modelArgs: modelArgs,
-                        settings: new AzureAIClientSettings { Transport = FakeAzure.Transport() });
+                    // Offline: a canned transport and a dummy token, so no sign-in is attempted.
+                    return new AzureAIModelApi(model, "https://fake.local/models", streaming: streaming, modelArgs: ExtraModelArgs,
+                        settings: new AzureAIClientSettings { Transport = FakeAzure.Transport(), TokenCredential = FakeAzure.Credential });
                 }
 
-                return new AzureAIModelApi(model, streaming: streaming, modelArgs: modelArgs, settings: settings);
+                return new AzureAIModelApi(model, streaming: streaming, modelArgs: ExtraModelArgs);
             }
             catch (ArgumentException ex)
             {
@@ -275,11 +306,11 @@ namespace InspectAzureAI.Sample
         }
 
         /// <summary>Creates the provider for the selected route: model-inference (default) or the Anthropic Messages route.</summary>
-        public static IModelApi CreateModelApi(string? route, string? model, string? streaming, string? emulateTools, bool fake, string? auth)
+        public static IModelApi CreateModelApi(string? route, string? model, string? streaming, bool fake)
         {
             if (route is null || route.Equals("models", StringComparison.OrdinalIgnoreCase))
             {
-                return CreateApi(model, streaming, emulateTools, fake, auth);
+                return CreateApi(model, streaming, fake);
             }
 
             if (!route.Equals("anthropic", StringComparison.OrdinalIgnoreCase))
@@ -292,22 +323,9 @@ namespace InspectAzureAI.Sample
                 throw new UsageError("--route anthropic has no --fake endpoint");
             }
 
-            var settings = new AzureAIClientSettings();
-            if (auth is not null)
-            {
-                try
-                {
-                    settings = settings with { TokenCredential = AzureHosting.CreateCredential(auth) };
-                }
-                catch (PrerequisiteError ex)
-                {
-                    throw new UsageError($"--auth: {ex.Message}");
-                }
-            }
-
             try
             {
-                return new AnthropicFoundryModelApi(model ?? Environment.GetEnvironmentVariable("INSPECT_AZUREAI_MODEL") ?? "claude-sonnet-4-6", streaming: streaming, settings: settings);
+                return new AnthropicFoundryModelApi(model ?? Environment.GetEnvironmentVariable("INSPECT_AZUREAI_MODEL") ?? "claude-sonnet-4-6", streaming: streaming, modelArgs: ExtraModelArgs);
             }
             catch (ArgumentException ex)
             {
@@ -318,20 +336,20 @@ namespace InspectAzureAI.Sample
         public static int Config(AzureAIModelApi api)
         {
             Console.WriteLine($"endpoint            : {api.EndpointUrl}");
-            Console.WriteLine($"auth mode           : {(api.ApiKey is not null ? "api key (sent as api-key + Authorization: Bearer)" : "Entra ID (Authorization: Bearer only)")}");
-            if (api.Credential is not null)
-            {
-                Console.WriteLine($"credential          : {AzureHosting.Describe(api.Credential)}");
-                Console.WriteLine("                      run `token` to confirm the sign-in (az login) yields a token");
-            }
+            Console.WriteLine("auth mode           : Entra ID (Authorization: Bearer only; no API key variables are read)");
+            Console.WriteLine($"credential          : {AzureHosting.Describe(api.Credential)}");
+            Console.WriteLine("                      run `token` to confirm the sign-in (az login) yields a token");
             Console.WriteLine($"model_name          : {api.ModelName}");
             Console.WriteLine($"service_model_name  : {api.ServiceModelName()}");
             Console.WriteLine($"canonical_name      : {api.CanonicalName()}");
             Console.WriteLine($"org_prefix          : {api.OrgPrefix ?? "(none)"}");
-            Console.WriteLine($"is_llama / mistral  : {api.IsLlama()} / {api.IsMistral()}");
+            Console.WriteLine($"is_mistral          : {api.IsMistral()}");
             Console.WriteLine($"max_tokens()        : {(api.MaxTokens()?.ToString() ?? "null (server default)")}");
             Console.WriteLine($"streaming           : {(api.Streaming?.ToString() ?? "auto")}");
-            Console.WriteLine($"emulate_tools       : {(api.EmulateTools?.ToString() ?? "auto (Llama only)")}");
+            Console.WriteLine($"token limit param   : {TokenLimitParam(api)}");
+            Console.WriteLine($"family              : {api.FamilyHint} — {ReasoningParams.Describe(api.FamilyHint).Notes}");
+            var reasoning = api.ReasoningRequestParams(DefaultConfig(api));
+            Console.WriteLine($"reasoning params    : {(reasoning.Count == 0 ? "(none; pass --reasoning-effort or --reasoning-tokens)" : reasoning.ToJsonString())}");
             Console.WriteLine($"connection_key      : {api.ConnectionKey()}");
             Console.WriteLine($"model_extras        : {JsonSerializer.Serialize(api.ModelArgs)}");
             return 0;
@@ -341,18 +359,45 @@ namespace InspectAzureAI.Sample
         {
             if (models.Count == 0)
             {
-                models = ["gpt-4o", "o1-preview", "Mistral-large-2411", "Llama-3.3-70B-Instruct", "moonshotai/kimi-k2.5", "my-custom-org/gpt-4o", "custom-org/llama-3-70b"];
+                models =
+                [
+                    "gpt-5.4-mini", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-4o", "model-router", "DeepSeek-V4-Flash", "DeepSeek-V4-Flash-0731",
+                    "Mistral-Large-3", "Ministral-3B", "MAI-Thinking-1", "Kimi-K2.7-Code", "Kimi-K2.6", "Cohere-command-a-plus-05-2026",
+                    "grok-4.6", "claude-sonnet-4-6", "moonshotai/kimi-k2.5", "my-custom-org/gpt-4o",
+                ];
             }
 
-            Console.WriteLine($"{"model_name",-28} {"service",-24} {"canonical",-28} {"llama",-6} {"mistral",-8} max_tokens");
+            Console.WriteLine($"{"model_name",-30} {"family",-11} {"mistral",-8} {"max_tokens",-11} {"token limit param",-48} reasoning control");
             foreach (var model in models)
             {
-                var api = new AzureAIModelApi(model, "https://example.com/models", "key");
-                Console.WriteLine($"{model,-28} {api.ServiceModelName(),-24} {api.CanonicalName(),-28} {api.IsLlama(),-6} {api.IsMistral(),-8} {api.MaxTokens()?.ToString() ?? "null"}");
+                var api = new AzureAIModelApi(model, "https://example.com/models", modelArgs: ExtraModelArgs,
+                    settings: new AzureAIClientSettings { TokenCredential = FakeAzure.Credential });
+                Console.WriteLine($"{model,-30} {api.FamilyHint,-11} {api.IsMistral(),-8} {api.MaxTokens()?.ToString() ?? "null",-11} {TokenLimitParam(api),-48} {ReasoningControl(api.FamilyHint)}");
             }
 
+            Console.WriteLine();
+            Console.WriteLine("claude-* deployments are served on the Anthropic Messages route (--route anthropic), not the model-inference route.");
             return 0;
         }
+
+        /// <summary>The family's reasoning control in one line (see <see cref="ReasoningParams.Describe"/>).</summary>
+        private static string ReasoningControl(ModelFamilyHint family)
+        {
+            var support = ReasoningParams.Describe(family);
+            return support.Toggle switch
+            {
+                ThinkingToggle.EnabledDisabled => "thinking {type: enabled|disabled}" + (support.BudgetKey is null ? "" : $" + {support.BudgetKey}"),
+                ThinkingToggle.Adaptive => "thinking {type: adaptive} + output_config.effort",
+                _ => support.EffortKey ?? "(none)",
+            };
+        }
+
+        /// <summary>Which body field carries the token limit for this model (README fidelity notes 2 and 18).</summary>
+        private static string TokenLimitParam(AzureAIModelApi api) =>
+            api.MaxTokens() is null && !MaxTokensSet ? "(not sent: max_tokens() is null)"
+            : api.ForceMaxCompletionTokens ? "max_completion_tokens (forced by -M max_completion_tokens=true)"
+            : OpenAIUtil.NeedsMaxCompletionTokens(api.ModelFamily()) ? "max_completion_tokens (gpt-5 / o-series rule)"
+            : "max_tokens";
 
         public static async Task<int> Chat(IModelApi api, string prompt)
         {
@@ -375,7 +420,7 @@ namespace InspectAzureAI.Sample
             var input = new List<ChatMessage> { new ChatMessageUser(Prompt(prompt, "What is the weather like in Paris right now? Use the get_weather tool.")) };
             for (var turn = 0; turn < 5; turn++)
             {
-                Console.WriteLine($"== turn {turn + 1} ({(api is AzureAIModelApi azure ? $"emulate_tools={azure.EmulateTools?.ToString() ?? "auto"}" : "Anthropic Messages route")}) ==");
+                Console.WriteLine($"== turn {turn + 1} ({(api is AzureAIModelApi ? "native tool_calls, model-inference route" : "tool_use blocks, Anthropic Messages route")}) ==");
                 var result = await api.GenerateAsync(input, [WeatherTool], ToolChoice.Auto, DefaultConfig(api));
                 Report(result);
                 var output = result.OutputOrThrow();
@@ -417,12 +462,6 @@ namespace InspectAzureAI.Sample
         /// <summary>Acquires a token with the resolved credential and prints who it belongs to (never the token).</summary>
         public static async Task<int> Token(AzureAIModelApi api)
         {
-            if (api.Credential is null)
-            {
-                Console.WriteLine("An API key is configured, so Entra ID is not used. Unset AZURE_API_KEY / AZUREAI_API_KEY to sign in with az login.");
-                return 0;
-            }
-
             Console.WriteLine($"credential : {AzureHosting.Describe(api.Credential.Inner)}");
             Console.WriteLine($"scope      : {api.Credential.Scope}");
             try
@@ -504,18 +543,96 @@ namespace InspectAzureAI.Sample
             return 0;
         }
 
-        private static readonly (string Check, string Prompt)[] SmokeChecks =
+        /// <summary>A question that benefits from thinking (10403 = 101 × 103) without needing a long answer.</summary>
+        public const string ReasoningPrompt = ProbeCatalog.PromptReasoning;
+
+        private static readonly (string Check, string Prompt, Func<GenerateConfig, GenerateConfig>? Configure)[] SmokeChecks =
         [
-            ("chat", "Reply with exactly: ok"),
-            ("stream", "Count from 1 to 3 on one line."),
-            ("tools", "What is the weather in Oslo right now? Use the get_weather tool."),
+            ("chat", "Reply with exactly: ok", null),
+            ("stream", "Count from 1 to 3 on one line.", null),
+            ("tools", "What is the weather in Oslo right now? Use the get_weather tool.", null),
+            ("reasoning", ReasoningPrompt, c => c with { ReasoningEffort = ReasoningEffort ?? "medium", ReasoningTokens = ReasoningTokens }),
         ];
 
-        private static TokenCredential ArmCredential(AzureAIModelApi api, string? auth) =>
-            api.Credential?.Inner ?? api.Settings.TokenCredential ?? AzureHosting.CreateCredential(auth);
+        private static readonly string[] ReasoningRequestKeys = ["reasoning_effort", "thinking", "output_config", "reasoning"];
+
+        /// <summary>
+        /// What the reasoning check saw: <c>text</c> (reasoning text came back), <c>hidden</c> (only a reasoning token
+        /// count), <c>none</c> (a reasoning field went out, nothing came back), <c>n/a</c> (no reasoning field on the wire).
+        /// Reads the recorded request body, because the ModelCall snapshot omits model extras.
+        /// </summary>
+        private static string ReasoningVisibility(ModelOutput output, IReadOnlyList<HttpExchange> exchanges)
+        {
+            if (output.Message.ContentList.OfType<ContentReasoning>().Any(r => r.Reasoning.Length > 0))
+            {
+                return "text";
+            }
+
+            if (output.Usage?.ReasoningTokens is > 0)
+            {
+                return "hidden";
+            }
+
+            return ReasoningFieldSent(exchanges) ? "none" : "n/a";
+        }
+
+        private static bool ReasoningFieldSent(IReadOnlyList<HttpExchange> exchanges)
+        {
+            if (exchanges.LastOrDefault()?.RequestBody is not { } body)
+            {
+                return false;
+            }
+
+            try
+            {
+                return JsonNode.Parse(body) is JsonObject request && ReasoningRequestKeys.Any(request.ContainsKey);
+            }
+            catch (JsonException)
+            {
+                return false;
+            }
+        }
+
+        /// <summary>A provider whose HTTP exchanges are recorded (headers, bodies), for verdicts that need the wire and for the dashboard.</summary>
+        private sealed class CapturedTarget(IModelApi api, IReadOnlyList<HttpExchange> exchanges, IDisposable? handler) : IDisposable
+        {
+            public IModelApi Api { get; } = api;
+
+            public IReadOnlyList<HttpExchange> Exchanges { get; } = exchanges;
+
+            public void Dispose()
+            {
+                (Api as IDisposable)?.Dispose();
+                handler?.Dispose();
+            }
+        }
+
+        private static CapturedTarget CreateCapturedTarget(AzureAIModelApi api, AzureAIClientSettings shared, FoundryDeployment deployment, bool anthropic, IReadOnlyDictionary<string, object?> args)
+        {
+            if (anthropic)
+            {
+                var handler = new HttpCaptureHandler();
+                var claude = new AnthropicFoundryModelApi(deployment.Name, AnthropicFoundryModelApi.DeriveBaseUrl(api.EndpointUrl), streaming: api.Streaming, modelArgs: args, settings: shared, handler: handler);
+                return new CapturedTarget(claude, handler.Exchanges, handler);
+            }
+
+            var capture = new HttpCapturePolicy();
+            var settings = shared with
+            {
+                ConfigureClientOptions = options =>
+                {
+                    shared.ConfigureClientOptions?.Invoke(options);
+                    options.AddPolicy(capture, HttpPipelinePosition.PerRetry);   // after the bearer-token policy, before the transport
+                },
+            };
+            var modelArgs = new Dictionary<string, object?>(args) { ["model_format"] = deployment.Format };   // ARM's vendor string picks the reasoning mapping
+            return new CapturedTarget(new AzureAIModelApi(deployment.Name, api.EndpointUrl, streaming: api.Streaming, modelArgs: modelArgs, settings: settings), capture.Exchanges, null);
+        }
+
+        private static TokenCredential ArmCredential(AzureAIModelApi api) => api.Credential.Inner;
 
         /// <summary>Discovers the resource behind the endpoint and prints its deployments.</summary>
-        public static async Task<int> Models(AzureAIModelApi api, string? auth, bool fake, bool json)
+        public static async Task<int> Models(AzureAIModelApi api, bool fake, bool json)
         {
             if (fake)
             {
@@ -523,7 +640,7 @@ namespace InspectAzureAI.Sample
                 return 2;
             }
 
-            using var catalog = new FoundryCatalog(ArmCredential(api, auth));
+            using var catalog = new FoundryCatalog(ArmCredential(api));
             var (resource, deployments) = await catalog.DiscoverAsync(api.EndpointUrl);
             if (json)
             {
@@ -545,7 +662,7 @@ namespace InspectAzureAI.Sample
         }
 
         /// <summary>Runs chat, stream and native-tool smoke tests against every healthy chat deployment.</summary>
-        public static async Task<int> TestAll(AzureAIModelApi api, string? auth, bool fake, string? only, bool includeFailed, bool skipTools, bool json)
+        public static async Task<int> TestAll(AzureAIModelApi api, bool fake, string? only, bool includeFailed, bool skipTools, bool json)
         {
             if (fake)
             {
@@ -553,10 +670,10 @@ namespace InspectAzureAI.Sample
                 return 2;
             }
 
-            using var catalog = new FoundryCatalog(ArmCredential(api, auth));
+            using var catalog = new FoundryCatalog(ArmCredential(api));
             var (resource, deployments) = await catalog.DiscoverAsync(api.EndpointUrl);
             var wanted = only?.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToHashSet(StringComparer.OrdinalIgnoreCase);
-            var shared = api.Settings with { TokenCredential = api.Credential?.Inner ?? api.Settings.TokenCredential };   // one credential, one token cache
+            var shared = api.Settings with { TokenCredential = api.Credential.Inner };   // one credential, one token cache
             var rows = new List<SmokeRow>();
 
             if (!json)
@@ -582,42 +699,49 @@ namespace InspectAzureAI.Sample
                 }
 
                 var anthropic = IsAnthropicFormat(deployment);
-                IModelApi target = anthropic
-                    ? new AnthropicFoundryModelApi(deployment.Name, AnthropicFoundryModelApi.DeriveBaseUrl(api.EndpointUrl), streaming: api.Streaming, settings: shared)
-                    : new AzureAIModelApi(deployment.Name, api.EndpointUrl, streaming: api.Streaming, modelArgs: ExtraModelArgs, settings: shared);
+                var args = new Dictionary<string, object?>(ExtraModelArgs);
+                var target = CreateCapturedTarget(api, shared, deployment, anthropic, args);
                 if (anthropic)
                 {
                     row.Notes.Add("Anthropic Messages route (/anthropic/v1/messages)");
                 }
 
-                var forcedMaxCompletionTokens = false;
-                foreach (var (check, prompt) in SmokeChecks)
+                try
                 {
-                    if (check == "tools" && skipTools)
+                    var forcedMaxCompletionTokens = false;
+                    foreach (var (check, prompt, configure) in SmokeChecks)
                     {
-                        row.Results[check] = "skipped";
-                        continue;
-                    }
+                        if (check == "tools" && skipTools)
+                        {
+                            row.Results[check] = "skipped";
+                            continue;
+                        }
 
-                    var status = await SmokeAsync(target, check, prompt, row);
-                    if (status == "fail" && !anthropic && !forcedMaxCompletionTokens
-                        && row.Errors.GetValueOrDefault(check, "").Contains("max_completion_tokens", StringComparison.OrdinalIgnoreCase))
-                    {
-                        // Reasoning models (e.g. MAI-Thinking-1) reject max_tokens; Python's name rule does not know them.
-                        var args = new Dictionary<string, object?>(ExtraModelArgs) { ["max_completion_tokens"] = true };
-                        target = new AzureAIModelApi(deployment.Name, api.EndpointUrl, streaming: api.Streaming, modelArgs: args, settings: shared);
-                        forcedMaxCompletionTokens = true;
-                        row.Notes.Add("needs --model-arg max_completion_tokens=true");
-                        row.Errors.Remove(check);
-                        status = await SmokeAsync(target, check, prompt, row);
-                    }
+                        var status = await SmokeAsync(target, check, prompt, configure, row);
+                        if (status == "fail" && !anthropic && !forcedMaxCompletionTokens
+                            && row.Errors.GetValueOrDefault(check, "").Contains("max_completion_tokens", StringComparison.OrdinalIgnoreCase))
+                        {
+                            // Reasoning models (e.g. MAI-Thinking-1) reject max_tokens; Python's name rule does not know them.
+                            args["max_completion_tokens"] = true;
+                            target.Dispose();
+                            target = CreateCapturedTarget(api, shared, deployment, anthropic, args);
+                            forcedMaxCompletionTokens = true;
+                            row.Notes.Add("needs --model-arg max_completion_tokens=true");
+                            row.Errors.Remove(check);
+                            status = await SmokeAsync(target, check, prompt, configure, row);
+                        }
 
-                    row.Results[check] = status;
+                        row.Results[check] = status;
+                    }
+                }
+                finally
+                {
+                    target.Dispose();
                 }
 
                 if (!json)
                 {
-                    Console.WriteLine($"{deployment.Name,-22} chat={row.Results.GetValueOrDefault("chat")} stream={row.Results.GetValueOrDefault("stream")} tools={row.Results.GetValueOrDefault("tools")} tokens={row.Tokens} ms={row.Milliseconds}{(row.Notes.Count > 0 ? "  " + string.Join("; ", row.Notes) : "")}");
+                    Console.WriteLine($"{deployment.Name,-22} chat={row.Results.GetValueOrDefault("chat")} stream={row.Results.GetValueOrDefault("stream")} tools={row.Results.GetValueOrDefault("tools")} reasoning={row.Results.GetValueOrDefault("reasoning")}{(row.ReasoningTokens is { } rt ? $"({rt} tok)" : "")} tokens={row.Tokens} ms={row.Milliseconds}{(row.Notes.Count > 0 ? "  " + string.Join("; ", row.Notes) : "")}");
                 }
             }
 
@@ -628,19 +752,19 @@ namespace InspectAzureAI.Sample
                 Console.WriteLine(JsonSerializer.Serialize(new
                 {
                     resource, endpoint = api.EndpointUrl,
-                    results = rows.Select(r => new { deployment = r.Deployment.Name, format = r.Deployment.Format, state = r.Deployment.State, skipped = r.Skipped, checks = r.Results, tokens = r.Tokens, ms = r.Milliseconds, notes = r.Notes, errors = r.Errors }),
+                    results = rows.Select(r => new { deployment = r.Deployment.Name, format = r.Deployment.Format, state = r.Deployment.State, skipped = r.Skipped, checks = r.Results, reasoningTokens = r.ReasoningTokens, tokens = r.Tokens, ms = r.Milliseconds, notes = r.Notes, errors = r.Errors }),
                     ok = failedChat.Count == 0,
                 }, Pretty));
                 return failedChat.Count == 0 ? 0 : 1;
             }
 
             Console.WriteLine();
-            Console.WriteLine($"{"deployment",-30} {"format",-11} {"state",-10} {"chat",-8} {"stream",-8} {"tools",-8} {"tokens",7} {"ms",7}  note");
+            Console.WriteLine($"{"deployment",-30} {"format",-11} {"state",-10} {"chat",-8} {"stream",-8} {"tools",-8} {"reasoning",-16} {"tokens",7} {"ms",7}  note");
             foreach (var r in rows)
             {
                 Console.WriteLine(r.Skipped is not null
                     ? $"{r.Deployment.Name,-30} {r.Deployment.Format,-11} {r.Deployment.State,-10} skipped: {r.Skipped}"
-                    : $"{r.Deployment.Name,-30} {r.Deployment.Format,-11} {r.Deployment.State,-10} {Cell(r.Results, "chat"),-8} {Cell(r.Results, "stream"),-8} {Cell(r.Results, "tools"),-8} {r.Tokens,7} {r.Milliseconds,7}  {string.Join("; ", r.Notes)}");
+                    : $"{r.Deployment.Name,-30} {r.Deployment.Format,-11} {r.Deployment.State,-10} {Cell(r.Results, "chat"),-8} {Cell(r.Results, "stream"),-8} {Cell(r.Results, "tools"),-8} {ReasoningCell(r),-16} {r.Tokens,7} {r.Milliseconds,7}  {string.Join("; ", r.Notes)}");
             }
 
             foreach (var r in rows.Where(r => r.Errors.Count > 0))
@@ -656,25 +780,211 @@ namespace InspectAzureAI.Sample
             return failedChat.Count == 0 ? 0 : 1;
         }
 
+        /// <summary>
+        /// Records one complete HTTP exchange per check (chat, stream, tools) for every deployment: request line,
+        /// headers (bearer token redacted) and body; response status, headers and body (raw SSE for streams); plus
+        /// the parsed output. The JSON feeds the educational dashboard in <c>docs/dashboard</c>.
+        /// </summary>
+        public static async Task<int> Capture(AzureAIModelApi api, bool fake, string? only, bool includeFailed, string? outPath, string? paramsFilter, int parallel)
+        {
+            if (fake)
+            {
+                Console.Error.WriteLine("capture needs Azure Resource Manager and live endpoints; it is not available with --fake.");
+                return 2;
+            }
+
+            using var catalog = new FoundryCatalog(ArmCredential(api));
+            var (resource, deployments) = await catalog.DiscoverAsync(api.EndpointUrl);
+            var wanted = only?.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var shared = api.Settings with { TokenCredential = api.Credential.Inner };   // one credential, one token cache
+            var entries = new JsonArray();
+            var report = new JsonObject
+            {
+                ["capturedAt"] = DateTimeOffset.UtcNow.ToString("u"),
+                ["resource"] = new JsonObject { ["name"] = resource.Name, ["kind"] = resource.Kind, ["location"] = resource.Location, ["resourceGroup"] = resource.ResourceGroup },
+                ["endpoint"] = api.EndpointUrl,
+                ["anthropicEndpoint"] = AnthropicFoundryModelApi.DeriveBaseUrl(api.EndpointUrl) + "/v1/messages",
+                ["credential"] = AzureHosting.Describe(api.Credential),
+                ["deployments"] = entries,
+            };
+
+            foreach (var deployment in deployments)
+            {
+                if (wanted is not null && !wanted.Contains(deployment.Name))
+                {
+                    continue;
+                }
+
+                var anthropic = IsAnthropicFormat(deployment);
+                var checks = new JsonArray();
+                var entry = new JsonObject
+                {
+                    ["name"] = deployment.Name,
+                    ["model"] = deployment.Model,
+                    ["format"] = deployment.Format,
+                    ["version"] = deployment.Version,
+                    ["sku"] = deployment.Sku,
+                    ["capacity"] = deployment.Capacity,
+                    ["state"] = deployment.State,
+                    ["chatCapable"] = deployment.SupportsChat,
+                    ["route"] = anthropic ? "anthropic" : "models",
+                    ["capabilities"] = new JsonObject(deployment.Capabilities.Select(kv => KeyValuePair.Create(kv.Key, (JsonNode?)kv.Value))),
+                    ["checks"] = checks,
+                };
+                entries.Add(entry);
+                if (!includeFailed && (!deployment.IsSucceeded || !deployment.SupportsChat))
+                {
+                    entry["skipped"] = !deployment.IsSucceeded ? $"provisioningState={deployment.State}" : "chatCompletion=false";
+                    Console.Error.WriteLine($"{deployment.Name,-30} skipped ({entry["skipped"]})");
+                    continue;
+                }
+
+                var args = new Dictionary<string, object?>(ExtraModelArgs);
+                var summary = new List<string>();
+                foreach (var (check, prompt, configure) in SmokeChecks)
+                {
+                    var result = await CaptureCheckAsync(api, shared, deployment, anthropic, check, prompt, configure, args);
+                    checks.Add(result);
+                    var error = result["error"]?.ToString() ?? "";
+                    if (!anthropic && !args.ContainsKey("max_completion_tokens") && error.Contains("max_completion_tokens", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Reasoning models (e.g. MAI-Thinking-1) reject max_tokens; keep the rejection on record, then retry.
+                        args["max_completion_tokens"] = true;
+                        result["note"] = "rejected max_tokens; retried with -M max_completion_tokens=true (next entry)";
+                        result = await CaptureCheckAsync(api, shared, deployment, anthropic, check, prompt, configure, args);
+                        result["note"] = "retry with max_completion_tokens=true";
+                        checks.Add(result);
+                    }
+
+                    summary.Add($"{check}={(result["ok"]?.GetValue<bool>() == true ? "ok" : "fail")}");
+                }
+
+                var forced = args.ContainsKey("max_completion_tokens") && !ExtraModelArgs.ContainsKey("max_completion_tokens");
+                Console.Error.WriteLine($"{deployment.Name,-30} {string.Join(' ', summary)}{(forced ? "  (max_completion_tokens=true)" : "")}");
+            }
+
+            if (paramsFilter is not null)
+            {
+                // The parameter probes, in parallel across the deployments that were tested above.
+                var probed = deployments.Where(d => entries.OfType<JsonObject>().Any(e => e["name"]?.ToString() == d.Name && e["skipped"] is null)).ToList();
+                var filter = ParseParamsFilter(paramsFilter);
+                Console.Error.WriteLine($"probing parameters on {probed.Count} deployment(s), {parallel} at a time");
+                foreach (var (deployment, parameters) in await ProbeAllAsync(api, shared, probed, filter, parallel, Console.Error.WriteLine))
+                {
+                    entries.OfType<JsonObject>().First(e => e["name"]?.ToString() == deployment.Name)["params"] = parameters;
+                }
+            }
+
+            var json = report.ToJsonString(Pretty);
+            if (outPath is null)
+            {
+                Console.WriteLine(json);
+            }
+            else
+            {
+                await File.WriteAllTextAsync(outPath, json);
+                Console.Error.WriteLine($"wrote {outPath} ({json.Length:N0} chars)");
+            }
+
+            return 0;
+        }
+
+        private static async Task<JsonObject> CaptureCheckAsync(
+            AzureAIModelApi api, AzureAIClientSettings shared, FoundryDeployment deployment, bool anthropic, string check, string prompt,
+            Func<GenerateConfig, GenerateConfig>? configure, Dictionary<string, object?> args)
+        {
+            using var target = CreateCapturedTarget(api, shared, deployment, anthropic, args);
+            var result = new JsonObject { ["check"] = check, ["prompt"] = prompt, ["ok"] = false };
+            var watch = Stopwatch.StartNew();
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
+            try
+            {
+                var input = new List<ChatMessage> { new ChatMessageUser(prompt) };
+                var config = configure?.Invoke(DefaultConfig(target.Api)) ?? DefaultConfig(target.Api);
+                GenerateResult generated = check switch
+                {
+                    "stream" => await target.Api.GenerateAsync(input, [], ToolChoice.Auto, config, _ => Task.CompletedTask, cts.Token),
+                    "tools" => await target.Api.GenerateAsync(input, [WeatherTool], ToolChoice.Auto, config, cts.Token),
+                    _ => await target.Api.GenerateAsync(input, [], ToolChoice.Auto, config, cts.Token),
+                };
+                if (generated.Output is { } output)
+                {
+                    result["ok"] = check != "tools" || output.Message.ToolCalls is { Count: > 0 };
+                    result["output"] = OutputJson(output, target.Exchanges);
+                }
+                else
+                {
+                    result["error"] = AzureAIModelApi.AzureErrorMessage(generated.Error!);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                result["error"] = "timed out after 120s";
+            }
+            catch (Exception ex) when (ex is RequestFailedException or ServiceResponseException or InvalidOperationException)
+            {
+                result["error"] = AzureAIModelApi.AzureErrorMessage(ex);
+            }
+
+            watch.Stop();
+            result["ms"] = watch.ElapsedMilliseconds;
+            result["exchanges"] = new JsonArray(target.Exchanges.Select(e => (JsonNode?)e.ToJson()).ToArray());
+            return result;
+        }
+
+        /// <summary>The parsed output as the dashboard sees it: completion, reasoning (text and visibility), tool calls, usage.</summary>
+        private static JsonObject OutputJson(ModelOutput output, IReadOnlyList<HttpExchange> exchanges)
+        {
+            const int maxReasoningChars = 2000;
+            var reasoning = string.Join("\n\n", output.Message.ContentList.OfType<ContentReasoning>().Select(r => r.Redacted ? "[redacted thinking block]" : r.Reasoning));
+            return new JsonObject
+            {
+                ["completion"] = output.Completion,
+                ["stopReason"] = output.StopReason.ToWire(),
+                ["reasoning"] = reasoning.Length == 0 ? null : reasoning.Length > maxReasoningChars ? reasoning[..maxReasoningChars] + $"… ({reasoning.Length:N0} chars)" : reasoning,
+                ["reasoningVisibility"] = ReasoningVisibility(output, exchanges),
+                ["toolCalls"] = output.Message.ToolCalls is { } calls
+                    ? new JsonArray(calls.Select(c => (JsonNode?)new JsonObject { ["id"] = c.Id, ["function"] = c.Function, ["arguments"] = c.Arguments.DeepClone(), ["parseError"] = c.ParseError }).ToArray())
+                    : null,
+                ["usage"] = output.Usage is { } usage
+                    ? new JsonObject
+                    {
+                        ["inputTokens"] = usage.InputTokens,
+                        ["outputTokens"] = usage.OutputTokens,
+                        ["totalTokens"] = usage.TotalTokens,
+                        ["reasoningTokens"] = usage.ReasoningTokens,
+                        ["cacheReadTokens"] = usage.InputTokensCacheRead,
+                        ["cacheWriteTokens"] = usage.InputTokensCacheWrite,
+                    }
+                    : null,
+            };
+        }
+
         private static bool IsAnthropicFormat(FoundryDeployment deployment) =>
             string.Equals(deployment.Format, "Anthropic", StringComparison.OrdinalIgnoreCase);
+
+        private static string ReasoningCell(SmokeRow row)
+        {
+            var verdict = Cell(row.Results, "reasoning");
+            return row.ReasoningTokens is { } tokens && verdict is "text" or "hidden" ? $"{verdict} · {tokens} tok" : verdict;
+        }
 
         private static string Cell(Dictionary<string, string> results, string check) =>
             results.TryGetValue(check, out var v) ? (v.StartsWith("fail", StringComparison.Ordinal) ? "FAIL" : v) : "-";
 
-        private static async Task<string> SmokeAsync(IModelApi target, string check, string prompt, SmokeRow row)
+        private static async Task<string> SmokeAsync(CapturedTarget target, string check, string prompt, Func<GenerateConfig, GenerateConfig>? configure, SmokeRow row)
         {
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
             var watch = Stopwatch.StartNew();
             try
             {
                 var input = new List<ChatMessage> { new ChatMessageUser(prompt) };
-                var config = DefaultConfig(target);
+                var config = configure?.Invoke(DefaultConfig(target.Api)) ?? DefaultConfig(target.Api);
                 GenerateResult result = check switch
                 {
-                    "stream" => await target.GenerateAsync(input, [], ToolChoice.Auto, config, _ => Task.CompletedTask, cts.Token),
-                    "tools" => await target.GenerateAsync(input, [WeatherTool], ToolChoice.Auto, config, cts.Token),
-                    _ => await target.GenerateAsync(input, [], ToolChoice.Auto, config, cts.Token),
+                    "stream" => await target.Api.GenerateAsync(input, [], ToolChoice.Auto, config, _ => Task.CompletedTask, cts.Token),
+                    "tools" => await target.Api.GenerateAsync(input, [WeatherTool], ToolChoice.Auto, config, cts.Token),
+                    _ => await target.Api.GenerateAsync(input, [], ToolChoice.Auto, config, cts.Token),
                 };
                 watch.Stop();
                 row.Milliseconds += watch.ElapsedMilliseconds;
@@ -691,6 +1001,12 @@ namespace InspectAzureAI.Sample
                     if (call is null) return "no-call";
                     if (call.ParseError is not null) { row.Errors[check] = call.ParseError; return "fail"; }
                     return call.Function == WeatherTool.Name ? "ok" : "wrong-tool";
+                }
+
+                if (check == "reasoning")
+                {
+                    row.ReasoningTokens = output.Usage?.ReasoningTokens;
+                    return ReasoningVisibility(output, target.Exchanges);
                 }
 
                 return output.Completion.Length > 0 || output.StopReason != StopReason.Unknown ? "ok" : "empty";
@@ -721,6 +1037,7 @@ namespace InspectAzureAI.Sample
             public Dictionary<string, string> Errors { get; } = new();
             public List<string> Notes { get; } = [];
             public int Tokens { get; set; }
+            public int? ReasoningTokens { get; set; }
             public long Milliseconds { get; set; }
         }
 
@@ -738,26 +1055,46 @@ namespace InspectAzureAI.Sample
 
         public static bool MaxTokensSet { get; set; }
 
+        /// <summary>--reasoning-effort: Inspect's reasoning_effort (none|minimal|low|medium|high|xhigh|max), mapped per family.</summary>
+        public static string? ReasoningEffort { get; set; }
+
+        /// <summary>--reasoning-tokens: Inspect's reasoning_tokens budget (Claude budget_tokens, Cohere token_budget).</summary>
+        public static int? ReasoningTokens { get; set; }
+
         /// <summary>--model-arg key=value pairs merged into every created provider (the Python -M args).</summary>
         public static Dictionary<string, object?> ExtraModelArgs { get; } = new();
 
-        /// <summary>Parses a -M value the way YAML would: true/false, integers, decimals, else a string.</summary>
-        public static object? ParseModelArgValue(string value) =>
-            bool.TryParse(value, out var b) ? b
-            : int.TryParse(value, out var i) ? i
-            : double.TryParse(value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var d) ? d
-            : value;
-
         private static GenerateConfig DefaultConfig(IModelApi api) =>
-            new() { MaxTokens = MaxTokensSet ? MaxTokens : api.MaxTokens(), Temperature = Temperature };
+            new() { MaxTokens = MaxTokensSet ? MaxTokens : api.MaxTokens(), Temperature = Temperature, ReasoningEffort = ReasoningEffort, ReasoningTokens = ReasoningTokens };
 
         private static string Prompt(string prompt, string fallback = "This is a test string. What are you?") =>
             string.IsNullOrWhiteSpace(prompt) ? fallback : prompt;
 
+        private static bool _streamingReasoning;
+
+        private static readonly string Dim = Console.IsOutputRedirected ? "" : "\u001b[2m";
+
+        private static readonly string Undim = Console.IsOutputRedirected ? "" : "\u001b[0m";
+
         private static Task OnStream(StreamEvent streamEvent)
         {
+            if (streamEvent is not StreamReasoningEvent && _streamingReasoning)
+            {
+                Console.WriteLine();                       // reasoning ended: the answer starts on its own line
+                _streamingReasoning = false;
+            }
+
             switch (streamEvent)
             {
+                case StreamReasoningEvent reasoning:
+                    if (!_streamingReasoning)
+                    {
+                        Console.Write(Dim + "[reasoning] " + Undim);
+                        _streamingReasoning = true;
+                    }
+
+                    Console.Write(Dim + reasoning.Reasoning + Undim);
+                    break;
                 case StreamTextEvent text:
                     Console.Write(text.Text);
                     break;
@@ -801,6 +1138,15 @@ namespace InspectAzureAI.Sample
             {
                 Console.WriteLine($"-- output (model={output.Model}, stop_reason={output.StopReason.ToWire()}) --");
                 Console.WriteLine(output.Completion);
+                var reasoningItems = output.Message.ContentList.OfType<ContentReasoning>().ToList();
+                if (reasoningItems.Count > 0)
+                {
+                    Console.WriteLine($"-- reasoning ({reasoningItems.Sum(r => r.Reasoning.Length)} chars, {reasoningItems.Count} block{(reasoningItems.Count == 1 ? "" : "s")}) --");
+                    foreach (var item in reasoningItems)
+                    {
+                        Console.WriteLine(item.Redacted ? "[redacted thinking block]" : item.Reasoning.Length > 0 ? item.Reasoning : "[thinking block with a signature but no text]");
+                    }
+                }
                 if (output.Message.ToolCalls is { Count: > 0 } calls)
                 {
                     foreach (var call in calls)
@@ -816,6 +1162,9 @@ namespace InspectAzureAI.Sample
 
                 Console.WriteLine(output.Usage is { } usage
                     ? $"usage: input={usage.InputTokens} output={usage.OutputTokens} total={usage.TotalTokens}"
+                      + (usage.ReasoningTokens is { } reasoningTokens ? $" reasoning={reasoningTokens}" : "")
+                      + (usage.InputTokensCacheRead is { } cacheRead ? $" cache_read={cacheRead}" : "")
+                      + (usage.InputTokensCacheWrite is { } cacheWrite ? $" cache_write={cacheWrite}" : "")
                     : "usage: (not reported)");
                 return 0;
             }
@@ -865,6 +1214,18 @@ namespace InspectAzureAI.Sample
     {
         public static CannedTransport Transport() => new() { Responder = Respond };
 
+        /// <summary>A credential handing out a fixed dummy token, so <c>--fake</c> never touches Azure.Identity.</summary>
+        public static TokenCredential Credential { get; } = new FakeTokenCredential();
+
+        private sealed class FakeTokenCredential : TokenCredential
+        {
+            public override AccessToken GetToken(TokenRequestContext requestContext, CancellationToken cancellationToken) =>
+                new("fake-token", DateTimeOffset.UtcNow.AddHours(1));
+
+            public override ValueTask<AccessToken> GetTokenAsync(TokenRequestContext requestContext, CancellationToken cancellationToken) =>
+                new(GetToken(requestContext, cancellationToken));
+        }
+
         private static Response Respond(CapturedRequest request)
         {
             var body = request.BodyJson;
@@ -872,8 +1233,6 @@ namespace InspectAzureAI.Sample
             var streaming = body["stream"]?.GetValue<bool>() == true;
             var hasToolResult = messages.Any(m => m!["role"]!.GetValue<string>() == "tool");
             var nativeTools = body.ContainsKey("tools");
-            var emulated = messages.Count > 0 && messages[0]!["role"]!.GetValue<string>() == "system"
-                           && (messages[0]!["content"]?.GetValue<string>() ?? "").Contains("\"name\": \"get_weather\"");
             var hasImage = messages.Any(m => m!["content"] is JsonArray parts && parts.Any(p => p!["type"]!.GetValue<string>() == "image_url"));
 
             if (hasToolResult)
@@ -892,11 +1251,6 @@ namespace InspectAzureAI.Sample
                     ])
                     : CannedResponse.Json(200,
                         """{"id":"fake-1","created":1,"model":"fake-model","choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_fake_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\": \"Paris\"}"}}]}}],"usage":{"prompt_tokens":40,"completion_tokens":12,"total_tokens":52}}""");
-            }
-
-            if (emulated)
-            {
-                return Completion("Let me look that up.<tool_call>{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Paris\"}}</tool_call>", streaming);
             }
 
             if (hasImage)
@@ -946,4 +1300,302 @@ namespace InspectAzureAI.Sample
         private static string Usage() =>
             """{"id":"fake-1","created":1,"model":"fake-model","choices":[],"usage":{"prompt_tokens":30,"completion_tokens":15,"total_tokens":45}}""";
     }
+
+    /// <summary>One HTTP request/response pair as seen on the wire (secrets redacted), serialisable for the dashboard.</summary>
+    internal sealed class HttpExchange(string method, string url)
+    {
+        private const int MaxBodyChars = 64 * 1024;
+
+        private readonly long _started = Stopwatch.GetTimestamp();
+
+        public string Method { get; } = method;
+
+        public string Url { get; } = url;
+
+        public Dictionary<string, string> RequestHeaders { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+        public string? RequestBody { get; set; }
+
+        public int Status { get; set; }
+
+        public string? Reason { get; set; }
+
+        public Dictionary<string, string> ResponseHeaders { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+        public string? ResponseBody { get; set; }
+
+        /// <summary>Set instead of <see cref="ResponseBody"/> for unbuffered (streamed) bodies; read once the consumer has drained it.</summary>
+        public TeeStream? BodySource { get; set; }
+
+        public long Milliseconds { get; private set; }
+
+        public void Stop() => Milliseconds = (long)Stopwatch.GetElapsedTime(_started).TotalMilliseconds;
+
+        /// <summary>Never records a credential: the bearer token is replaced by its length, key-style headers and cookies by a marker.</summary>
+        public static string Redact(string name, string value)
+        {
+            if (name.Equals("Authorization", StringComparison.OrdinalIgnoreCase))
+            {
+                return value.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)
+                    ? $"Bearer <Entra ID token redacted, {value.Length - "Bearer ".Length} chars>"
+                    : "<redacted>";
+            }
+
+            return name.Equals("api-key", StringComparison.OrdinalIgnoreCase)
+                   || name.Equals("x-api-key", StringComparison.OrdinalIgnoreCase)
+                   || name.Equals("Set-Cookie", StringComparison.OrdinalIgnoreCase)
+                ? "<redacted>"
+                : value;
+        }
+
+        public JsonObject ToJson()
+        {
+            var body = ResponseBody ?? BodySource?.Captured;
+            return new JsonObject
+            {
+                ["method"] = Method,
+                ["url"] = Url,
+                ["ms"] = Milliseconds,
+                ["request"] = new JsonObject { ["headers"] = Headers(RequestHeaders), ["body"] = AsJsonOrText(RequestBody) },
+                ["response"] = Status == 0
+                    ? null
+                    : new JsonObject { ["status"] = Status, ["reason"] = Reason, ["headers"] = Headers(ResponseHeaders), ["body"] = AsJsonOrText(body) },
+            };
+        }
+
+        private static JsonObject Headers(Dictionary<string, string> headers)
+        {
+            var node = new JsonObject();
+            foreach (var (name, value) in headers)
+            {
+                node[name] = value;
+            }
+
+            return node;
+        }
+
+        private static JsonNode? AsJsonOrText(string? text)
+        {
+            if (text is null)
+            {
+                return null;
+            }
+
+            var trimmed = text.TrimStart();
+            if (trimmed.StartsWith('{') || trimmed.StartsWith('['))
+            {
+                try
+                {
+                    return JsonNode.Parse(text);
+                }
+                catch (JsonException)
+                {
+                }
+            }
+
+            return JsonValue.Create(text.Length > MaxBodyChars ? text[..MaxBodyChars] + $"\n… (truncated, {text.Length:N0} chars)" : text);
+        }
+    }
+
+    /// <summary>
+    /// Azure.Core pipeline policy recording every attempt the <c>ChatCompletionsClient</c> makes. Placed per-retry it
+    /// sees the request after the bearer-token policy has added <c>Authorization</c>; buffered responses are read from
+    /// <c>Response.Content</c>, streamed ones are tee'd so the SSE body is captured while the provider consumes it.
+    /// </summary>
+    internal sealed class HttpCapturePolicy : HttpPipelinePolicy
+    {
+        public List<HttpExchange> Exchanges { get; } = [];
+
+        public override void Process(HttpMessage message, ReadOnlyMemory<HttpPipelinePolicy> pipeline)
+        {
+            var exchange = Begin(message);
+            try
+            {
+                ProcessNext(message, pipeline);
+            }
+            finally
+            {
+                Complete(message, exchange);
+            }
+        }
+
+        public override async ValueTask ProcessAsync(HttpMessage message, ReadOnlyMemory<HttpPipelinePolicy> pipeline)
+        {
+            var exchange = Begin(message);
+            try
+            {
+                await ProcessNextAsync(message, pipeline).ConfigureAwait(false);
+            }
+            finally
+            {
+                Complete(message, exchange);
+            }
+        }
+
+        private HttpExchange Begin(HttpMessage message)
+        {
+            var exchange = new HttpExchange(message.Request.Method.Method, message.Request.Uri.ToString());
+            foreach (var header in message.Request.Headers)
+            {
+                exchange.RequestHeaders[header.Name] = HttpExchange.Redact(header.Name, header.Value);
+            }
+
+            if (message.Request.Content is { } content)
+            {
+                using var buffer = new MemoryStream();
+                content.WriteTo(buffer, CancellationToken.None);
+                exchange.RequestBody = Encoding.UTF8.GetString(buffer.ToArray());
+            }
+
+            Exchanges.Add(exchange);
+            return exchange;
+        }
+
+        private static void Complete(HttpMessage message, HttpExchange exchange)
+        {
+            exchange.Stop();
+            if (!message.HasResponse)
+            {
+                return;
+            }
+
+            var response = message.Response;
+            exchange.Status = response.Status;
+            exchange.Reason = response.ReasonPhrase;
+            foreach (var header in response.Headers)
+            {
+                exchange.ResponseHeaders[header.Name] = HttpExchange.Redact(header.Name, header.Value);
+            }
+
+            if (message.BufferResponse)
+            {
+                exchange.ResponseBody = response.Content.ToString();
+            }
+            else if (response.ContentStream is { } stream)
+            {
+                var tee = new TeeStream(stream);
+                response.ContentStream = tee;
+                exchange.BodySource = tee;
+            }
+        }
+    }
+
+    /// <summary>The same recording for the Anthropic route, which uses <see cref="HttpClient"/> over an injectable handler.</summary>
+    internal sealed class HttpCaptureHandler() : DelegatingHandler(new HttpClientHandler())
+    {
+        public List<HttpExchange> Exchanges { get; } = [];
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var exchange = new HttpExchange(request.Method.Method, request.RequestUri?.ToString() ?? "");
+            foreach (var (name, values) in request.Headers)
+            {
+                exchange.RequestHeaders[name] = HttpExchange.Redact(name, string.Join(", ", values));
+            }
+
+            if (request.Content is { } content)
+            {
+                foreach (var (name, values) in content.Headers)
+                {
+                    exchange.RequestHeaders[name] = string.Join(", ", values);
+                }
+
+                exchange.RequestBody = await content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            Exchanges.Add(exchange);
+            HttpResponseMessage response;
+            try
+            {
+                response = await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                exchange.Stop();
+            }
+
+            exchange.Status = (int)response.StatusCode;
+            exchange.Reason = response.ReasonPhrase;
+            foreach (var (name, values) in response.Headers)
+            {
+                exchange.ResponseHeaders[name] = HttpExchange.Redact(name, string.Join(", ", values));
+            }
+
+            foreach (var (name, values) in response.Content.Headers)
+            {
+                exchange.ResponseHeaders[name] = string.Join(", ", values);
+            }
+
+            var tee = new TeeStream(await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false));
+            var replacement = new StreamContent(tee);
+            foreach (var (name, values) in response.Content.Headers)
+            {
+                replacement.Headers.TryAddWithoutValidation(name, values);
+            }
+
+            response.Content = replacement;
+            exchange.BodySource = tee;
+            return response;
+        }
+    }
+
+    /// <summary>A read-only pass-through stream that keeps a copy of everything read through it.</summary>
+    internal sealed class TeeStream(Stream inner) : Stream
+    {
+        private readonly MemoryStream _copy = new();
+
+        public string Captured => Encoding.UTF8.GetString(_copy.ToArray());
+
+        public override bool CanRead => inner.CanRead;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => false;
+
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override void Flush()
+        {
+        }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            var read = inner.Read(buffer, offset, count);
+            _copy.Write(buffer, offset, read);
+            return read;
+        }
+
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            var read = await inner.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+            _copy.Write(buffer.Span[..read]);
+            return read;
+        }
+
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
+            ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                inner.Dispose();
+            }
+
+            base.Dispose(disposing);
+        }
+    }
 }
+

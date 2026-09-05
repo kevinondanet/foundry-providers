@@ -14,7 +14,7 @@ public sealed record StreamTextEvent(string Text) : StreamEvent
     public override string Type => "text";
 }
 
-/// <summary>Reasoning delta (port of <c>StreamReasoningEvent</c>; never emitted by azureai).</summary>
+/// <summary>Reasoning delta (port of <c>StreamReasoningEvent</c>): a fragment of <c>reasoning_content</c> on the model-inference route or of a <c>thinking</c> block on the Anthropic route.</summary>
 public sealed record StreamReasoningEvent(string Reasoning) : StreamEvent
 {
     public override string Type => "reasoning";

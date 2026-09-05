@@ -19,11 +19,11 @@ public class AnthropicFoundryTests
         + (extraBlocks is null ? "" : "," + extraBlocks) + "],\"stop_reason\":\"" + stopReason + "\",\"stop_sequence\":null,\"usage\":{" + usage + "}}";
 
     private static (AnthropicFoundryModelApi Api, FakeArmHandler Handler, FakeTokenCredential Credential) Build(
-        string body, HttpStatusCode status = HttpStatusCode.OK, string? apiKey = null, string contentType = "application/json")
+        string body, HttpStatusCode status = HttpStatusCode.OK, string contentType = "application/json")
     {
         var handler = new FakeArmHandler(_ => new HttpResponseMessage(status) { Content = new StringContent(body, Encoding.UTF8, contentType) });
         var credential = new FakeTokenCredential("entra-token");
-        var api = new AnthropicFoundryModelApi("claude-sonnet-4-6", apiKey: apiKey,
+        var api = new AnthropicFoundryModelApi("claude-sonnet-4-6",
             settings: new AzureAIClientSettings { TokenCredential = credential }, handler: handler);
         return (api, handler, credential);
     }
@@ -73,37 +73,25 @@ public class AnthropicFoundryTests
     }
 
     [Fact]
-    public async Task api_key_is_sent_as_x_api_key_and_api_key()
-    {
-        using var env = EnvScope.Clean().Set(AzureAIModelApi.AzureAIBaseUrlVar, Inference);
-        var (api, handler, _) = Build(MessageJson(), apiKey: "k");
-
-        await api.GenerateAsync([new ChatMessageUser("hi")], [], ToolChoice.Auto, new GenerateConfig());
-
-        var request = handler.Requests.Single();
-        Assert.Null(request.Headers.Authorization);
-        Assert.Equal("k", request.Headers.GetValues("x-api-key").Single());
-        Assert.Equal("k", request.Headers.GetValues("api-key").Single());
-        Assert.Null(api.Credential);
-    }
-
-    [Fact]
     public void env_precedence_and_base_url_derivation()
     {
-        using var env = EnvScope.Clean().Set("AZUREAI_ANTHROPIC_BASE_URL", "https://res.services.ai.azure.com/models").Set("AZURE_ANTHROPIC_API_KEY", "legacy");
-        var api = new AnthropicFoundryModelApi("azure/claude-3-5-sonnet");
+        using var env = EnvScope.Clean().Set("AZUREAI_ANTHROPIC_BASE_URL", "https://res.services.ai.azure.com/models");
+        var api = new AnthropicFoundryModelApi("azure/claude-3-5-sonnet", settings: Fixtures.Entra());
 
-        Assert.Equal("legacy", api.ApiKey);
+        Assert.NotNull(api.Credential);
         Assert.Equal("claude-3-5-sonnet", api.DeploymentName);
         Assert.Equal("https://res.services.ai.azure.com/anthropic", api.BaseUrl);
         Assert.Equal(4096, api.MaxTokens());
-        Assert.Equal(32000, new AnthropicFoundryModelApi("claude-3-7-sonnet", "https://x/anthropic", "k").MaxTokens());
+        Assert.Equal(32000, new AnthropicFoundryModelApi("claude-3-7-sonnet", "https://x/anthropic", settings: Fixtures.Entra()).MaxTokens());
         Assert.Equal("https://x/anthropic", AnthropicFoundryModelApi.DeriveBaseUrl("https://x/anthropic/"));
         Assert.Equal("https://x/anthropic", AnthropicFoundryModelApi.DeriveBaseUrl("https://x"));
         Assert.Equal("https://x/anthropic", AnthropicFoundryModelApi.DeriveBaseUrl("https://x/models"));
 
-        env.Set("AZUREAI_ANTHROPIC_BASE_URL", null).Set("AZURE_ANTHROPIC_API_KEY", null);
-        Assert.Throws<PrerequisiteError>(() => new AnthropicFoundryModelApi("claude-sonnet-4-6", settings: new AzureAIClientSettings { TokenCredential = new FakeTokenCredential("t") }));
+        env.Set("AZUREAI_ANTHROPIC_BASE_URL", null);
+        var missing = Assert.Throws<PrerequisiteError>(() => new AnthropicFoundryModelApi("claude-sonnet-4-6", settings: new AzureAIClientSettings { TokenCredential = new FakeTokenCredential("t") }));
+        Assert.Equal(
+            "ERROR: Unable to initialise Anthropic on Azure client\n\nNo [bold][blue]AZUREAI_ANTHROPIC_BASE_URL[/blue][/bold], [bold][blue]AZURE_ANTHROPIC_BASE_URL[/blue][/bold], [bold][blue]AZURE_ENDPOINT_URL[/blue][/bold], [bold][blue]AZUREAI_ENDPOINT_URL[/blue][/bold], or [bold][blue]AZUREAI_BASE_URL[/blue][/bold] defined in the environment.",
+            missing.Message);
     }
 
     [Fact]

@@ -1,0 +1,26 @@
+[
+  {
+    "id": 1,
+    "input": "The package textkit in the current directory has a failing test suite. Run `python3 -m pytest -q`, find the bug in textkit/__init__.py and fix it so that every test passes. Do not modify the tests.",
+    "target": "python3 -m pytest -q exits 0",
+    "files": {
+      "textkit/__init__.py": "files/textkit/textkit/__init__.py",
+      "tests/test_slugify.py": "files/textkit/tests/test_slugify.py"
+    },
+    "metadata": {
+      "check": "test -s tests/test_slugify.py && python3 -m pytest -q"
+    }
+  },
+  {
+    "id": 2,
+    "input": "The package mathkit in the current directory has a failing test suite. Run `python3 -m pytest -q`, find the bug in mathkit/__init__.py and fix it so that every test passes. Do not modify the tests.",
+    "target": "python3 -m pytest -q exits 0",
+    "files": {
+      "mathkit/__init__.py": "files/mathkit/mathkit/__init__.py",
+      "tests/test_primes.py": "files/mathkit/tests/test_primes.py"
+    },
+    "metadata": {
+      "check": "test -s tests/test_primes.py && python3 -m pytest -q"
+    }
+  }
+]

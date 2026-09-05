@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using Azure;
 using Azure.Core;
@@ -16,20 +17,18 @@ namespace InspectAzureAI.Provider.Anthropic;
 /// served on the Anthropic Messages route (<c>/anthropic/v1/messages</c>) rather than the model-inference
 /// route. It follows the Azure path of Inspect's <c>anthropic</c> provider
 /// (<c>src/inspect_ai/model/_providers/anthropic.py</c>, <c>anthropic/azure/&lt;deployment&gt;</c>): the same
-/// environment variables (<c>AZUREAI_ANTHROPIC_API_KEY</c> / <c>AZURE_ANTHROPIC_API_KEY</c>,
-/// <c>AZUREAI_ANTHROPIC_BASE_URL</c> / <c>AZURE_ANTHROPIC_BASE_URL</c>), the same <c>max_tokens</c> rule,
-/// the same stop-reason and usage mapping. Two deliberate extensions: Entra ID (bearer) is accepted when
-/// no key is set, and the base URL is derived from the model-inference endpoint when the Anthropic
-/// variables are absent. Thinking, prompt caching, citations, batch mode and server-side tools are not
-/// ported. Requests are sent with <see cref="HttpClient"/> over an injectable handler; responses are kept
+/// base-URL variables (<c>AZUREAI_ANTHROPIC_BASE_URL</c> / <c>AZURE_ANTHROPIC_BASE_URL</c>), the same
+/// <c>max_tokens</c> rule, the same stop-reason and usage mapping. Two deliberate differences: it
+/// authenticates with Entra ID only (bearer token from the same credential as the main provider; Python
+/// requires an API key), and the base URL is derived from the model-inference endpoint when the Anthropic
+/// variables are absent. Extended thinking is mapped from <c>GenerateConfig.ReasoningEffort</c> / <c>ReasoningTokens</c>
+/// (adaptive thinking plus <c>output_config.effort</c>, or the deprecated <c>budget_tokens</c> form) and
+/// thinking blocks are parsed, streamed and replayed with their signature; prompt caching, citations, batch
+/// mode and server-side tools are not ported. Requests are sent with <see cref="HttpClient"/> over an injectable handler; responses are kept
 /// as raw JSON so the recorded <see cref="ModelCall"/> is the wire payload.
 /// </summary>
 public sealed class AnthropicFoundryModelApi : IModelApi, IDisposable
 {
-    public const string AzureAIAnthropicApiKeyVar = "AZUREAI_ANTHROPIC_API_KEY";
-
-    public const string AzureAnthropicApiKeyVar = "AZURE_ANTHROPIC_API_KEY";
-
     public const string AzureAIAnthropicBaseUrlVar = "AZUREAI_ANTHROPIC_BASE_URL";
 
     public const string AzureAnthropicBaseUrlVar = "AZURE_ANTHROPIC_BASE_URL";
@@ -46,9 +45,9 @@ public sealed class AnthropicFoundryModelApi : IModelApi, IDisposable
     public AnthropicFoundryModelApi(
         string modelName,
         string? baseUrl = null,
-        string? apiKey = null,
         GenerateConfig? config = null,
         object? streaming = null,
+        IReadOnlyDictionary<string, object?>? modelArgs = null,
         AzureAIClientSettings? settings = null,
         HttpMessageHandler? handler = null)
     {
@@ -59,19 +58,24 @@ public sealed class AnthropicFoundryModelApi : IModelApi, IDisposable
         Config = config ?? new GenerateConfig();
         Settings = settings ?? new AzureAIClientSettings();
 
-        ApiKey = !string.IsNullOrEmpty(apiKey) ? apiKey
-            : Environment.GetEnvironmentVariable(AzureAIAnthropicApiKeyVar) is { Length: > 0 } preferred ? preferred
-            : Environment.GetEnvironmentVariable(AzureAnthropicApiKeyVar) is { Length: > 0 } legacy ? legacy
-            : null;
-        if (ApiKey is null)
+        // Model args become top-level request fields (applied last, so they override derived ones); the
+        // reserved anthropic_beta arg is sent as the `anthropic-beta` header instead.
+        var args = modelArgs is null ? new Dictionary<string, object?>() : new Dictionary<string, object?>(modelArgs);
+        if (args.TryGetValue("anthropic_beta", out var beta))
         {
-            Credential = AzureHosting.ResolveAzureCredential("Anthropic on Azure", Settings.TokenCredential);
+            args.Remove("anthropic_beta");
+            AnthropicBeta = beta?.ToString();
         }
+
+        args.Remove("model_format");   // a model-inference-route hint; never a Messages API field
+        ModelArgs = args;
+
+        Credential = AzureHosting.ResolveAzureCredential("Anthropic on Azure", Settings.TokenCredential);
 
         var resolved = ProviderUtil.ModelBaseUrl(baseUrl, BaseUrlVars) ?? ProviderUtil.ModelBaseUrl(null, InferenceEndpointVars);
         if (string.IsNullOrEmpty(resolved))
         {
-            throw ProviderUtil.EnvironmentPrerequisiteError("Anthropic on Azure", [AzureAIAnthropicBaseUrlVar]);
+            throw ProviderUtil.EnvironmentPrerequisiteError("Anthropic on Azure", [.. BaseUrlVars, .. InferenceEndpointVars]);
         }
 
         BaseUrl = DeriveBaseUrl(resolved);
@@ -92,11 +96,17 @@ public sealed class AnthropicFoundryModelApi : IModelApi, IDisposable
 
     public AzureAIClientSettings Settings { get; }
 
-    /// <summary>Resolved key, or null when Entra ID is used.</summary>
-    public string? ApiKey { get; }
+    /// <summary>Entra ID credential pinned to <c>AZUREAI_AUDIENCE</c>, shared with the main provider's resolution.</summary>
+    public AudienceTokenCredential Credential { get; }
 
-    /// <summary>Entra ID credential pinned to <c>AZUREAI_AUDIENCE</c>, set only when no key was found (port-only extension).</summary>
-    public AudienceTokenCredential? Credential { get; }
+    /// <summary>Value of the <c>anthropic-beta</c> header (from the <c>anthropic_beta</c> model arg), or null.</summary>
+    public string? AnthropicBeta { get; }
+
+    /// <summary>Leftover model args, sent as top-level request fields after the derived ones.</summary>
+    public IReadOnlyDictionary<string, object?> ModelArgs { get; }
+
+    /// <summary>Always <see cref="ModelFamilyHint.Anthropic"/>; the reasoning mapping is <see cref="ThinkingParams"/>.</summary>
+    public ModelFamilyHint FamilyHint => ModelFamilyHint.Anthropic;
 
     /// <summary>The Anthropic base URL (<c>https://&lt;resource&gt;.services.ai.azure.com/anthropic</c>).</summary>
     public string BaseUrl { get; }
@@ -174,6 +184,11 @@ public sealed class AnthropicFoundryModelApi : IModelApi, IDisposable
             Content = new StringContent(request.ToJsonString(), Encoding.UTF8, "application/json"),
         };
         message.Headers.Add("anthropic-version", AnthropicVersion);
+        if (AnthropicBeta is { Length: > 0 })
+        {
+            message.Headers.Add("anthropic-beta", AnthropicBeta);
+        }
+
         await AuthorizeAsync(message, cancellationToken).ConfigureAwait(false);
 
         HttpResponseMessage response;
@@ -233,17 +248,18 @@ public sealed class AnthropicFoundryModelApi : IModelApi, IDisposable
             }
 
             modelCall.SetResponse(messageJson.DeepClone(), watch.Elapsed.TotalSeconds);
-            return new GenerateResult(ParseMessage(messageJson, tools), null, modelCall);
+            return new GenerateResult(ParseMessage(messageJson), null, modelCall);
         }
     }
 
     /// <summary>Builds the Messages request body (system prompt, alternating messages, tools, sampling params).</summary>
     public JsonObject BuildRequest(IReadOnlyList<ChatMessage> input, IReadOnlyList<ToolInfo> tools, ToolChoice toolChoice, GenerateConfig config, bool streaming)
     {
+        var maxTokens = config.MaxTokens ?? MaxTokens() ?? 4096;
         var request = new JsonObject
         {
             ["model"] = DeploymentName,
-            ["max_tokens"] = config.MaxTokens ?? MaxTokens() ?? 4096,
+            ["max_tokens"] = maxTokens,
         };
 
         var system = string.Join("\n\n", input.OfType<ChatMessageSystem>().Select(m => m.Text).Where(s => s.Length > 0));
@@ -280,8 +296,57 @@ public sealed class AnthropicFoundryModelApi : IModelApi, IDisposable
         if (config.Temperature is not null) request["temperature"] = config.Temperature;
         if (config.TopP is not null) request["top_p"] = config.TopP;
         if (config.StopSeqs is not null) request["stop_sequences"] = new JsonArray(config.StopSeqs.Select(s => (JsonNode?)JsonValue.Create(s)).ToArray());
+        foreach (var (key, value) in ThinkingParams(config, maxTokens))
+        {
+            request[key] = value?.DeepClone();
+        }
+
         if (streaming) request["stream"] = true;
+        foreach (var (key, value) in ModelArgs)
+        {
+            request[key] = value is JsonNode node ? node.DeepClone() : JsonSerializer.SerializeToNode(value);
+        }
+
         return request;
+    }
+
+    /// <summary>
+    /// The thinking fields for the config (Claude on Foundry): nothing when neither reasoning setting is
+    /// given or the effort is <c>none</c> (thinking stays off on 4.6; <c>{type: disabled}</c> is never sent
+    /// because newer models reject it); <c>thinking: {type: enabled, budget_tokens}</c> for a
+    /// <c>ReasoningTokens</c> budget (the deprecated 4.6 form; <c>max_tokens</c> is raised above the budget
+    /// as Inspect does), otherwise <c>thinking: {type: adaptive}</c>; and <c>output_config: {effort}</c> for
+    /// any effort other than <c>none</c> (<c>minimal</c> becomes <c>low</c>, the rest verbatim).
+    /// </summary>
+    public static JsonObject ThinkingParams(GenerateConfig config, int maxTokens)
+    {
+        var fields = new JsonObject();
+        var effort = config.ReasoningEffort?.Trim().ToLowerInvariant();
+        var budget = config.ReasoningTokens;
+        if ((string.IsNullOrEmpty(effort) && budget is null) || effort == "none")
+        {
+            return fields;
+        }
+
+        if (budget is > 0)
+        {
+            fields["thinking"] = new JsonObject { ["type"] = "enabled", ["budget_tokens"] = budget };
+            if (maxTokens <= budget)
+            {
+                fields["max_tokens"] = budget + AzureAIModelApi.DefaultMaxTokens;
+            }
+        }
+        else
+        {
+            fields["thinking"] = new JsonObject { ["type"] = "adaptive" };
+        }
+
+        if (!string.IsNullOrEmpty(effort))
+        {
+            fields["output_config"] = new JsonObject { ["effort"] = effort == "minimal" ? "low" : effort };
+        }
+
+        return fields;
     }
 
     /// <summary>Converts the conversation to Messages-API turns, merging consecutive same-role turns (the API requires alternation).</summary>
@@ -327,9 +392,31 @@ public sealed class AnthropicFoundryModelApi : IModelApi, IDisposable
         return messages;
     }
 
+    /// <summary>
+    /// The assistant turn on the wire: thinking blocks first (replayed unchanged with their signature, as
+    /// the Messages API requires on later turns), then text and images, then <c>tool_use</c>. A reasoning
+    /// item without a signature cannot be replayed and is dropped with a one-time warning.
+    /// </summary>
     private static JsonArray AssistantBlocks(ChatMessageAssistant assistant)
     {
         var blocks = ContentBlocks(assistant.ContentList);
+        var position = 0;
+        foreach (var reasoning in assistant.ContentList.OfType<ContentReasoning>())
+        {
+            if (reasoning.Redacted)
+            {
+                blocks.Insert(position++, new JsonObject { ["type"] = "redacted_thinking", ["data"] = reasoning.Signature ?? "" });
+            }
+            else if (reasoning.Signature is { Length: > 0 })
+            {
+                blocks.Insert(position++, new JsonObject { ["type"] = "thinking", ["thinking"] = reasoning.Reasoning, ["signature"] = reasoning.Signature });
+            }
+            else
+            {
+                ProviderLogger.WarnOnce("Anthropic on Azure: a reasoning block without a signature cannot be replayed and was left out of the conversation.");
+            }
+        }
+
         foreach (var call in assistant.ToolCalls ?? [])
         {
             blocks.Add(new JsonObject { ["type"] = "tool_use", ["id"] = call.Id, ["name"] = call.Function, ["input"] = call.Arguments.DeepClone() });
@@ -380,7 +467,7 @@ public sealed class AnthropicFoundryModelApi : IModelApi, IDisposable
     }
 
     /// <summary>Builds the <see cref="ModelOutput"/> from a Messages response (or an accumulated stream).</summary>
-    public ModelOutput ParseMessage(JsonObject message, IReadOnlyList<ToolInfo> tools)
+    public ModelOutput ParseMessage(JsonObject message)
     {
         var items = new List<Content>();
         var toolCalls = new List<ToolCall>();
@@ -391,9 +478,15 @@ public sealed class AnthropicFoundryModelApi : IModelApi, IDisposable
                 case "text":
                     items.Add(new ContentText(block["text"]?.ToString() ?? ""));
                     break;
+                case "thinking":
+                    items.Add(new ContentReasoning(block["thinking"]?.ToString() ?? "", block["signature"]?.ToString()));
+                    break;
+                case "redacted_thinking":
+                    items.Add(new ContentReasoning("", block["data"]?.ToString(), Redacted: true));
+                    break;
                 case "tool_use":
                     toolCalls.Add(ToolCallParsing.ParseToolCall(
-                        block["id"]?.ToString() ?? "", block["name"]?.ToString() ?? "", PythonJson.Dumps(block["input"] ?? new JsonObject()), tools));
+                        block["id"]?.ToString() ?? "", block["name"]?.ToString() ?? "", PythonJson.Dumps(block["input"] ?? new JsonObject())));
                     break;
             }
         }
@@ -467,6 +560,14 @@ public sealed class AnthropicFoundryModelApi : IModelApi, IDisposable
                             entry.Json.Append(partial);
                             await ModelStreamObserver.ReportModelStreamDeltaAsync(new StreamToolCallEvent(entry.Block["id"]?.ToString(), entry.Block["name"]?.ToString(), partial)).ConfigureAwait(false);
                             break;
+                        case "thinking_delta":
+                            var thinking = delta["thinking"]?.ToString() ?? "";
+                            entry.Text.Append(thinking);
+                            await ModelStreamObserver.ReportModelStreamDeltaAsync(new StreamReasoningEvent(thinking)).ConfigureAwait(false);
+                            break;
+                        case "signature_delta":
+                            entry.Block["signature"] = (entry.Block["signature"]?.ToString() ?? "") + (delta["signature"]?.ToString() ?? "");
+                            break;
                     }
 
                     break;
@@ -501,6 +602,10 @@ public sealed class AnthropicFoundryModelApi : IModelApi, IDisposable
             {
                 block["text"] = entry.Text.ToString();
             }
+            else if (block["type"]?.ToString() == "thinking")
+            {
+                block["thinking"] = entry.Text.ToString();
+            }
             else if (block["type"]?.ToString() == "tool_use" && entry.Json.Length > 0)
             {
                 block["input"] = JsonNode.Parse(entry.Json.ToString()) ?? new JsonObject();
@@ -514,14 +619,7 @@ public sealed class AnthropicFoundryModelApi : IModelApi, IDisposable
 
     private async Task AuthorizeAsync(HttpRequestMessage message, CancellationToken cancellationToken)
     {
-        if (ApiKey is not null)
-        {
-            message.Headers.Add("x-api-key", ApiKey);          // the Anthropic SDK header …
-            message.Headers.Add("api-key", ApiKey);            // … and the Azure AI Services one
-            return;
-        }
-
-        var token = await Credential!.GetTokenAsync(new TokenRequestContext([Credential.Scope]), cancellationToken).ConfigureAwait(false);
+        var token = await Credential.GetTokenAsync(new TokenRequestContext([Credential.Scope]), cancellationToken).ConfigureAwait(false);
         message.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Token);
     }
 
@@ -534,7 +632,7 @@ public sealed class AnthropicFoundryModelApi : IModelApi, IDisposable
                 return text;
             }
         }
-        catch (System.Text.Json.JsonException)
+        catch (JsonException)
         {
         }
 

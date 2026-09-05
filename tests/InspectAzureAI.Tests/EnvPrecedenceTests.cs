@@ -1,6 +1,6 @@
+using Azure.Identity;
 using InspectAzureAI.Provider;
 using InspectAzureAI.Provider.Core;
-using InspectAzureAI.Provider.Testing;
 using InspectAzureAI.Provider.Util;
 
 namespace InspectAzureAI.Tests;
@@ -9,128 +9,10 @@ namespace InspectAzureAI.Tests;
 public class EnvPrecedenceTests
 {
     [Fact]
-    public void test_explicit_api_key_takes_precedence_over_environment()
-    {
-        using var env = EnvScope.Clean()
-            .Set(AzureAIModelApi.AzureApiKeyVar, "legacy-env-key")
-            .Set(AzureAIModelApi.AzureAIApiKeyVar, "env-key");
-
-        var api = new AzureAIModelApi("test-model", Fixtures.BaseUrl, "explicit-key");
-
-        Assert.Equal("explicit-key", api.ApiKey);
-        Assert.Null(api.TokenProvider);
-    }
-
-    [Fact]
-    public void test_azureai_api_key_is_offered_to_override_hook()
-    {
-        using var env = EnvScope.Clean().Set(AzureAIModelApi.AzureAIApiKeyVar, "source-key");
-        var seen = new List<(string, string)>();
-        ModelApiHooks.OverrideApiKey = (name, value) =>
-        {
-            seen.Add((name, value));
-            return "overridden-key";
-        };
-        try
-        {
-            var api = new AzureAIModelApi("test-model", Fixtures.BaseUrl);
-            Assert.Equal([(AzureAIModelApi.AzureAIApiKeyVar, "source-key")], seen);
-            Assert.Equal("overridden-key", api.ApiKey);
-        }
-        finally
-        {
-            ModelApiHooks.OverrideApiKey = null;
-        }
-    }
-
-    [Fact]
-    public void registered_hook_can_supply_a_key_when_none_exists()
-    {
-        using var env = EnvScope.Clean();
-        ModelApiHooks.HasApiKeyOverride = true;
-        ModelApiHooks.OverrideApiKey = (name, value) => name == AzureAIModelApi.AzureAIApiKeyVar && value == "" ? "vault-key" : null;
-        try
-        {
-            var api = new AzureAIModelApi("test-model", Fixtures.BaseUrl);
-            Assert.Equal("vault-key", api.ApiKey);
-            Assert.Null(api.TokenProvider);
-            Assert.Equal("None:test-model", api.ConnectionKey());
-        }
-        finally
-        {
-            ModelApiHooks.OverrideApiKey = null;
-            ModelApiHooks.HasApiKeyOverride = false;
-        }
-    }
-
-    [Fact]
-    public void api_key_env_precedence_azure_over_azureai()
-    {
-        using var env = EnvScope.Clean()
-            .Set(AzureAIModelApi.AzureApiKeyVar, "a")
-            .Set(AzureAIModelApi.AzureAIApiKeyVar, "b");
-        Assert.Equal("a", new AzureAIModelApi("m", Fixtures.BaseUrl).ApiKey);
-
-        env.Set(AzureAIModelApi.AzureApiKeyVar, null);
-        Assert.Equal("b", new AzureAIModelApi("m", Fixtures.BaseUrl).ApiKey);
-    }
-
-    [Fact]
-    public void empty_azure_api_key_is_taken_as_is_and_falls_through_to_managed_identity()
-    {
-        using var env = EnvScope.Clean()
-            .Set(AzureAIModelApi.AzureApiKeyVar, "")
-            .Set(AzureAIModelApi.AzureAIApiKeyVar, "b");
-        var credential = new FakeTokenCredential("entra-token");
-        var api = new AzureAIModelApi("m", Fixtures.BaseUrl, settings: new AzureAIClientSettings { TokenCredential = credential });
-
-        // os.environ.get(AZURE_API_KEY, os.environ.get(AZUREAI_API_KEY)) returns "" here, never "b"
-        Assert.Equal("", api.ApiKey);
-        Assert.NotNull(api.TokenProvider);
-
-        env.Set(AzureAIModelApi.AzureApiKeyVar, null);
-        Assert.Equal("b", new AzureAIModelApi("m", Fixtures.BaseUrl).ApiKey);
-    }
-
-    [Fact]
-    public async Task empty_api_key_generates_with_the_entra_token()
-    {
-        using var env = EnvScope.Clean().Set(AzureAIModelApi.AzureApiKeyVar, "");
-        var transport = new CannedTransport { Responder = _ => CannedResponse.Json(200, Fixtures.Completion("ok")) };
-        var api = new AzureAIModelApi("m", Fixtures.BaseUrl, settings: new AzureAIClientSettings
-        {
-            Transport = transport, TokenCredential = new FakeTokenCredential("entra-token"), ConfigureClientOptions = o => o.Retry.MaxRetries = 0,
-        });
-
-        var result = await api.GenerateAsync([new ChatMessageUser("hi")], [], ToolChoice.Auto, new GenerateConfig());
-
-        Assert.Equal("ok", result.OutputOrThrow().Completion);
-        Assert.Equal("Bearer entra-token", transport.LastRequest!.Headers["Authorization"]);
-    }
-
-    [Fact]
-    public void has_api_key_override_without_a_hook_function_is_a_no_op()
-    {
-        using var env = EnvScope.Clean();
-        ModelApiHooks.HasApiKeyOverride = true;
-        ModelApiHooks.OverrideApiKey = null;
-        try
-        {
-            var api = new AzureAIModelApi("m", Fixtures.BaseUrl, settings: new AzureAIClientSettings { TokenCredential = new FakeTokenCredential("t") });
-            Assert.Null(api.ApiKey);
-            Assert.NotNull(api.TokenProvider);
-        }
-        finally
-        {
-            ModelApiHooks.HasApiKeyOverride = false;
-        }
-    }
-
-    [Fact]
     public void missing_base_url_error()
     {
-        using var env = EnvScope.Clean().Set(AzureAIModelApi.AzureAIApiKeyVar, "k");
-        var ex = Assert.Throws<PrerequisiteError>(() => new AzureAIModelApi("m"));
+        using var env = EnvScope.Clean();
+        var ex = Assert.Throws<PrerequisiteError>(() => new AzureAIModelApi("m", settings: Fixtures.Entra()));
         Assert.Equal(
             "ERROR: Unable to initialise AzureAI client\n\nNo [bold][blue]AZUREAI_BASE_URL[/blue][/bold] defined in the environment.",
             ex.Message);
@@ -140,20 +22,19 @@ public class EnvPrecedenceTests
     public void base_url_env_precedence_and_inspect_fallback()
     {
         using var env = EnvScope.Clean()
-            .Set(AzureAIModelApi.AzureAIApiKeyVar, "k")
             .Set(AzureAIModelApi.AzureEndpointUrlVar, "https://one/")
             .Set(AzureAIModelApi.AzureAIEndpointUrlVar, "https://two")
             .Set(AzureAIModelApi.AzureAIBaseUrlVar, "https://three/models/")
             .Set("INSPECT_EVAL_MODEL_BASE_URL", "https://four");
 
-        Assert.Equal("https://explicit", new AzureAIModelApi("m", "https://explicit").EndpointUrl);
-        Assert.Equal("https://one/", new AzureAIModelApi("m").EndpointUrl);
+        Assert.Equal("https://explicit", new AzureAIModelApi("m", "https://explicit", settings: Fixtures.Entra()).EndpointUrl);
+        Assert.Equal("https://one/", new AzureAIModelApi("m", settings: Fixtures.Entra()).EndpointUrl);
         env.Set(AzureAIModelApi.AzureEndpointUrlVar, null);
-        Assert.Equal("https://two", new AzureAIModelApi("m").EndpointUrl);
+        Assert.Equal("https://two", new AzureAIModelApi("m", settings: Fixtures.Entra()).EndpointUrl);
         env.Set(AzureAIModelApi.AzureAIEndpointUrlVar, null);
-        Assert.Equal("https://three/models/", new AzureAIModelApi("m").EndpointUrl);
+        Assert.Equal("https://three/models/", new AzureAIModelApi("m", settings: Fixtures.Entra()).EndpointUrl);
         env.Set(AzureAIModelApi.AzureAIBaseUrlVar, null);
-        Assert.Equal("https://four", new AzureAIModelApi("m").EndpointUrl);
+        Assert.Equal("https://four", new AzureAIModelApi("m", settings: Fixtures.Entra()).EndpointUrl);
     }
 
     [Fact]
@@ -163,32 +44,44 @@ public class EnvPrecedenceTests
             "ERROR: Unable to initialise X client\n\nNo [bold][blue]A[/blue][/bold] or [bold][blue]B[/blue][/bold] defined in the environment.",
             ProviderUtil.EnvironmentPrerequisiteError("X", ["A", "B"]).Message);
         Assert.Equal(
-            "ERROR: Unable to initialise AzureAI client\n\nNo [bold][blue]AZURE_API_KEY[/blue][/bold], [bold][blue]AZUREAI_API_KEY[/blue][/bold], or [bold][blue]or managed identity (Entra ID)[/blue][/bold] defined in the environment.",
-            ProviderUtil.EnvironmentPrerequisiteError("AzureAI", ["AZURE_API_KEY", "AZUREAI_API_KEY", "or managed identity (Entra ID)"]).Message);
+            "ERROR: Unable to initialise X client\n\nNo [bold][blue]A[/blue][/bold], [bold][blue]B[/blue][/bold], or [bold][blue]C[/blue][/bold] defined in the environment.",
+            ProviderUtil.EnvironmentPrerequisiteError("X", ["A", "B", "C"]).Message);
     }
 
     [Fact]
-    public void managed_identity_is_used_when_no_api_key()
+    public void entra_credential_is_always_used_and_pinned_to_the_audience()
     {
         using var env = EnvScope.Clean().Set(AzureAIModelApi.AzureAIAudienceVar, "https://custom.audience/.default");
         var credential = new FakeTokenCredential("entra-token");
         var api = new AzureAIModelApi("m", Fixtures.BaseUrl, settings: new AzureAIClientSettings { TokenCredential = credential });
 
-        Assert.Null(api.ApiKey);
-        Assert.NotNull(api.TokenProvider);
+        Assert.NotNull(api.Credential);
+        Assert.Same(credential, api.Credential.Inner);
+        Assert.Equal("https://custom.audience/.default", api.Credential.Scope);
         Assert.Equal("https://custom.audience/.default", AzureAIModelApi.TokenAudience);
         Assert.Equal("https://cognitiveservices.azure.com/.default", AzureHosting.DefaultAzureAudience);
     }
 
     [Fact]
-    public void model_args_pop_emulate_tools_and_forward_the_rest()
+    public void default_azure_credential_is_used_when_the_host_supplies_none()
     {
-        var api = Fixtures.Api("gpt-4o", modelArgs: new Dictionary<string, object?> { ["emulate_tools"] = false, ["azure"] = true });
-        Assert.False(api.EmulateTools);
+        using var env = EnvScope.Clean();
+        var api = new AzureAIModelApi("m", Fixtures.BaseUrl);
+
+        Assert.IsType<DefaultAzureCredential>(api.Credential.Inner);
+        Assert.Equal(AzureHosting.DefaultAzureAudience, api.Credential.Scope);
+    }
+
+    [Fact]
+    public void model_args_pop_max_completion_tokens_and_forward_the_rest()
+    {
+        var api = Fixtures.Api("gpt-4o", modelArgs: new Dictionary<string, object?> { ["max_completion_tokens"] = true, ["azure"] = true });
+        Assert.True(api.ForceMaxCompletionTokens);
         Assert.Equal(["azure"], api.ModelArgs.Keys);
 
-        Assert.True(Fixtures.Api("gpt-4o", modelArgs: new Dictionary<string, object?> { ["emulate_tools"] = "false" }).EmulateTools);
-        Assert.Null(Fixtures.Api("gpt-4o").EmulateTools);
+        var plain = Fixtures.Api("gpt-4o");
+        Assert.False(plain.ForceMaxCompletionTokens);
+        Assert.Empty(plain.ModelArgs);
     }
 
     [Theory]
@@ -207,5 +100,13 @@ public class EnvPrecedenceTests
         var ex = Assert.Throws<ArgumentException>(() => Fixtures.Api(streaming: "always"));
         Assert.Contains("streaming", ex.Message);
         Assert.Equal("Unrecognized value for the streaming model arg: 'always' (expected true, false, or \"auto\")", ex.Message);
+    }
+
+    [Fact]
+    public void strip_rich_markup_for_console_output()
+    {
+        var message = ProviderUtil.EnvironmentPrerequisiteError("X", ["A", "B"]).Message;
+        Assert.Equal("ERROR: Unable to initialise X client\n\nNo A or B defined in the environment.", ProviderUtil.StripRichMarkup(message));
+        Assert.Equal("keep [0], [Fact] and [] as they are", ProviderUtil.StripRichMarkup("keep [0], [Fact] and [] as they are"));
     }
 }

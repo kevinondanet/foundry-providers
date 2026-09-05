@@ -1,0 +1,12 @@
+[
+  {
+    "id": 1,
+    "input": "Which Python version is installed in this environment? Run it to find out and answer with the exact version string that `python3 --version` prints.",
+    "target": "The answer states the installed Python 3 version as printed by `python3 --version` (for the showcase image any 3.12.x patch release, e.g. 'Python 3.12.7')."
+  },
+  {
+    "id": 2,
+    "input": "How many CPU cores does this machine report? Check with a command such as `nproc` and answer with the number.",
+    "target": "The answer gives a single positive integer as the number of CPU cores the machine reports (the value printed by `nproc`)."
+  }
+]

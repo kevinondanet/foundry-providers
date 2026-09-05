@@ -126,7 +126,7 @@ public class StreamingTests
         };
 
         var response = await AzureAIStreamAccumulator.CompletionFromStreamAsync(Fixtures.Updates(updates));
-        var choice = AzureAIModelApi.ChatCompletionChoice("test-model", response.Choices[0], [], null);
+        var choice = AzureAIModelApi.ChatCompletionChoice("test-model", response.Choices[0]);
         Assert.Equal(StopReason.ContentFilter, choice.StopReason);
         Assert.NotNull(choice.StopDetails);
         Assert.Equal("content_filter", choice.StopDetails.Type);

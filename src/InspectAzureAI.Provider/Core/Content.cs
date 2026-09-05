@@ -2,8 +2,8 @@ namespace InspectAzureAI.Provider.Core;
 
 /// <summary>
 /// Base of the content union (port of <c>ContentBase</c> in
-/// <c>src/inspect_ai/_util/content.py</c>). Only the members the azureai provider
-/// touches are carried over: text, image, audio and video.
+/// <c>src/inspect_ai/_util/content.py</c>). Only the members the providers touch are carried
+/// over: text, reasoning, image, audio and video.
 /// </summary>
 public abstract record Content
 {
@@ -18,6 +18,17 @@ public sealed record ContentText(string Text) : Content
 
     /// <summary>Whether the text is a refusal (ignored by the azureai provider).</summary>
     public bool? Refusal { get; init; }
+}
+
+/// <summary>
+/// Reasoning content (port of <c>ContentReasoning</c>, <c>content.py</c>): thinking the model chose to
+/// expose. <see cref="Signature"/> carries Anthropic's opaque signature (or the <c>redacted_thinking</c>
+/// payload when <see cref="Redacted"/>), which must travel back unchanged on later turns. The Foundry
+/// model-inference route exposes reasoning as plain text (<c>reasoning_content</c>) with no signature.
+/// </summary>
+public sealed record ContentReasoning(string Reasoning, string? Signature = null, bool Redacted = false) : Content
+{
+    public override string Type => "reasoning";
 }
 
 /// <summary>

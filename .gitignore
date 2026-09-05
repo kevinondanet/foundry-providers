@@ -7,3 +7,12 @@ obj/
 *.swp
 TestResults/
 .DS_Store
+
+# eval logs written by the SWE showcase
+logs/
+
+# personal Claude Code settings
+.claude/settings.local.json
+
+# per-machine dotnet run environment (Foundry endpoint)
+src/*/Properties/launchSettings.json

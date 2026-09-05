@@ -1,0 +1,26 @@
+[
+  {
+    "id": 1,
+    "input": "What is 2+2?",
+    "target": "4",
+    "metadata": {"check": "python3 -c 'print(4)'", "difficulty": 1},
+    "files": {"hello.txt": "files/hello.txt", "inline.txt": "inline text content"},
+    "setup": "echo setup",
+    "sandbox": "local"
+  },
+  {
+    "id": "b",
+    "input": "Pick one",
+    "target": ["A", "B"],
+    "choices": "x, y,, z",
+    "sandbox": ["docker", "files/Dockerfile"]
+  },
+  {
+    "input": "Third",
+    "target": 42,
+    "choices": ["p", " ", "q"],
+    "files": "{\"a.txt\": \"A\"}",
+    "sandbox": "[\"docker\", \"img:1\"]",
+    "metadata": "{\"k\": \"v\"}"
+  }
+]
