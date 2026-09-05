@@ -23,6 +23,9 @@ public sealed class FakeSandboxEnvironment(Func<IReadOnlyList<string>, ExecResul
     /// <summary>Answers a command; a returned null falls back to <see cref="Ok"/>.</summary>
     public Func<IReadOnlyList<string>, ExecResult?>? OnExec { get; set; } = onExec is null ? null : cmd => onExec(cmd);
 
+    /// <summary>Answers a command given the whole call (stdin included); consulted before <see cref="OnExec"/>, a returned null falls through to it.</summary>
+    public Func<FakeExecCall, ExecResult?>? OnExecCall { get; set; }
+
     public static ExecResult Ok(string stdout = "", string stderr = "") => new(true, 0, stdout, stderr);
 
     public static ExecResult Fail(int returnCode, string stderr = "", string stdout = "") => new(false, returnCode, stdout, stderr);
@@ -37,8 +40,9 @@ public sealed class FakeSandboxEnvironment(Func<IReadOnlyList<string>, ExecResul
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        Calls.Add(new FakeExecCall(cmd, input, cwd, env, user, timeout));
-        return Task.FromResult(OnExec?.Invoke(cmd) ?? Ok());
+        var call = new FakeExecCall(cmd, input, cwd, env, user, timeout);
+        Calls.Add(call);
+        return Task.FromResult(OnExecCall?.Invoke(call) ?? OnExec?.Invoke(cmd) ?? Ok());
     }
 
     public Task WriteFileAsync(string path, string contents, CancellationToken cancellationToken = default) =>
