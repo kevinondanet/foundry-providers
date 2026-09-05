@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text.RegularExpressions;
 using InspectAzureAI.Eval.Log;
+using InspectAzureAI.Eval.Runner.Scoring;
 using InspectAzureAI.Eval.Scorers;
 
 namespace InspectAzureAI.Eval.Runner;
@@ -37,9 +38,77 @@ internal static class EvalResultsBuilder
         IReadOnlyList<string> scorerNames,
         IReadOnlyList<IReadOnlyDictionary<string, SampleScore>> sampleScores,
         IReadOnlyList<ScoreReducer>? reducers,
+        IReadOnlyList<MetricDef>? metricsOverride) =>
+        ComputeViews(scorers, scorerNames, sampleScores, reducers, metricsOverride).Scores;
+
+    /// <summary>
+    /// Port of <c>eval_results</c>: the <see cref="EvalResults"/> (one <see cref="EvalScore"/> per scorer and reducer view,
+    /// the sample counts, the headline resolved against <paramref name="headlineMetric"/>) and the per-view
+    /// <see cref="EvalSampleReductions"/> (null when there are no scorers, as in Python). <paramref name="scorerNames"/>
+    /// are the unique names the sample scores are keyed by (<see cref="UniqueScorerNames"/>); <paramref name="metricsOverride"/>
+    /// replaces every scorer's metrics; <paramref name="completedSamples"/> is the number of samples that ended without
+    /// error, falling back to the number of scored samples when the caller cannot know it. Shared by the runner and
+    /// <see cref="ScoreLogs"/> so re-scoring and recomputation agree with the run.
+    /// </summary>
+    public static ComputedResults ComputeResults(
+        int totalSamples,
+        IReadOnlyList<IReadOnlyDictionary<string, SampleScore>> sampleScores,
+        IReadOnlyList<ScorerDef> scorers,
+        IReadOnlyList<string> scorerNames,
+        IReadOnlyList<ScoreReducer>? reducers,
+        IReadOnlyList<MetricDef>? metricsOverride,
+        EarlyStoppingSummary? earlyStopping = null,
+        IReadOnlyDictionary<string, object?>? metadata = null,
+        int? completedSamples = null,
+        HeadlineMetric? headlineMetric = null)
+    {
+        ArgumentNullException.ThrowIfNull(sampleScores);
+        ArgumentNullException.ThrowIfNull(scorers);
+        ArgumentNullException.ThrowIfNull(scorerNames);
+        var views = ComputeViews(scorers, scorerNames, sampleScores, reducers, metricsOverride);
+        var results = new EvalResults
+        {
+            TotalSamples = totalSamples,
+            CompletedSamples = completedSamples ?? sampleScores.Count,
+            EarlyStopping = earlyStopping,
+            Scores = views.Scores,
+            Metadata = metadata,
+        };
+        if (HeadlineMetrics.Resolve(results, headlineMetric) is { } headline)
+        {
+            results = results with { Headline = HeadlineMetrics.Ref(headline) };
+        }
+
+        return new ComputedResults(results, scorers.Count > 0 ? views.Reductions : null);
+    }
+
+    /// <summary>
+    /// Port of <c>reducer_log_names</c> for the run header: the names of the epoch reducers, or null when there are none
+    /// or one of them has no registry name (a custom delegate; Python cannot record those either).
+    /// </summary>
+    public static IReadOnlyList<string>? EpochsReducerNames(IReadOnlyList<ScoreReducer>? reducers)
+    {
+        if (reducers is not { Count: > 0 })
+        {
+            return null;
+        }
+
+        var names = reducers.Select(Reducers.NameOf).ToList();
+        return names.Any(name => name is null) ? null : names.Select(name => name!).ToList();
+    }
+
+    /// <summary>The scores and epoch reductions of every scorer's reducer views (<c>compute_eval_scores_for_views</c> over all scorers).</summary>
+    private sealed record ScoreViews(IReadOnlyList<EvalScore> Scores, IReadOnlyList<EvalSampleReductions> Reductions);
+
+    private static ScoreViews ComputeViews(
+        IReadOnlyList<ScorerDef> scorers,
+        IReadOnlyList<string> scorerNames,
+        IReadOnlyList<IReadOnlyDictionary<string, SampleScore>> sampleScores,
+        IReadOnlyList<ScoreReducer>? reducers,
         IReadOnlyList<MetricDef>? metricsOverride)
     {
         var result = new List<EvalScore>();
+        var reductions = new List<EvalSampleReductions>();
         for (var i = 0; i < scorers.Count; i++)
         {
             var name = scorerNames[i];
@@ -71,7 +140,9 @@ internal static class EvalResultsBuilder
                     : reducers.Select(reducer => (reducer, Reducers.NameOf(reducer))).ToList();
                 foreach (var (reducer, reducerName) in views)
                 {
-                    result.Add(ScoreForMetrics(name, ReduceScores(scores, reducer), reducedMetrics, reducerName));
+                    var reduced = ReduceScores(scores, reducer);
+                    reductions.Add(new EvalSampleReductions(name, reduced.Select(s => new EvalSampleScore(s.Score) { SampleId = s.SampleId }).ToList()) { Reducer = reducerName });
+                    result.Add(ScoreForMetrics(name, reduced, reducedMetrics, reducerName));
                 }
             }
 
@@ -81,7 +152,7 @@ internal static class EvalResultsBuilder
             }
         }
 
-        return result;
+        return new ScoreViews(result, reductions);
     }
 
     /// <summary>Port of <c>_has_repeated_sample_ids</c>: whether any sample id (ignoring null) occurs more than once.</summary>
