@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using InspectAzureAI.Eval.Concurrency;
 using InspectAzureAI.Eval.Context;
 using InspectAzureAI.Eval.Dataset;
+using InspectAzureAI.Eval.Hooks;
 using InspectAzureAI.Eval.Log;
 using InspectAzureAI.Eval.Model;
 using InspectAzureAI.Eval.Model.Cost;
@@ -28,8 +29,34 @@ public static class Eval
     /// Runs <paramref name="task"/>. With fail-on-error the first failing sample aborts the run (status
     /// <c>error</c>, the eval-level error set); otherwise failed samples are recorded and the run succeeds.
     /// Cancellation still cleans up every sandbox, writes a <c>cancelled</c> log and then propagates.
+    /// Lifecycle hooks (<see cref="HookRegistry"/> plus <see cref="EvalOptions.Hooks"/>) are notified of the run's
+    /// start and end — the end carries the exception when the run throws, as Python's <c>eval()</c> does.
     /// </summary>
     public static async Task<EvalLog> RunAsync(EvalTask task, EvalOptions options, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(task);
+        ArgumentNullException.ThrowIfNull(options);
+        var hooks = new HookRun(options);
+        try
+        {
+            HookStartup.InitHooks(options.Reporter is { } reporter ? reporter.Message : null);
+            var log = await RunCoreAsync(task, options, hooks, cancellationToken).ConfigureAwait(false);
+            await hooks.EndAsync(null).ConfigureAwait(false);
+            return log;
+        }
+        catch (Exception ex)
+        {
+            await hooks.EndAsync(ex).ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Runs <paramref name="task"/>. With fail-on-error the first failing sample aborts the run (status
+    /// <c>error</c>, the eval-level error set); otherwise failed samples are recorded and the run succeeds.
+    /// Cancellation still cleans up every sandbox, writes a <c>cancelled</c> log and then propagates.
+    /// </summary>
+    private static async Task<EvalLog> RunCoreAsync(EvalTask task, EvalOptions options, HookRun hooks, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(task);
         ArgumentNullException.ThrowIfNull(options);
@@ -72,7 +99,8 @@ public static class Eval
 
         var spec = new EvalSpec
         {
-            RunId = ShortUuid.Generate(),
+            EvalSetId = hooks.EvalSetId,
+            RunId = hooks.RunId,
             TaskId = ShortUuid.Generate(),
             Created = startedAt,
             Task = task.Name,
@@ -106,9 +134,17 @@ public static class Eval
             },
         };
 
+        // one plan instance for the task-start hook and the log, as Python's TaskLogger holds it (the port names its
+        // solver steps as the transcript spans do, since Solver delegates carry no registry name)
+        var plan = new EvalPlan
+        {
+            Steps = task.Setup is null ? [new EvalPlanStep("solver")] : [new EvalPlanStep("setup"), new EvalPlanStep("solver")],
+            Config = model.Config,
+        };
+        await hooks.StartAsync(spec, plan, cancellationToken).ConfigureAwait(false);
         var sandboxSpecs = samples.Select(sample => SandboxSetup.ResolveSpec(task.Sandbox, sample)).ToList();
         var providerSpecs = sandboxSpecs.OfType<SandboxSpec>().Distinct().ToList();
-        var runner = new SampleRunner(task, model, scorerNames, messageLimit, tokenLimit, timeLimit, options.Cleanup, costLimit, turnLimit: turnLimit, workingLimit: workingLimit);
+        var runner = new SampleRunner(task, model, scorerNames, messageLimit, tokenLimit, timeLimit, options.Cleanup, costLimit, turnLimit: turnLimit, workingLimit: workingLimit, hooks: hooks);
         var totalSamples = samples.Count * epochs;
         var results = new SampleResult?[totalSamples];
         var earlyStops = new EarlyStop?[totalSamples];
@@ -209,6 +245,7 @@ public static class Eval
         {
             Status = status,
             Eval = spec,
+            Plan = plan,
             Results = new EvalResults
             {
                 TotalSamples = totalSamples,
@@ -228,6 +265,7 @@ public static class Eval
             Location = LogPath(options.LogDir, task.Name, startedAt),
         };
         EvalLogWriter.Write(log, log.Location!);
+        await hooks.TaskEndAsync(log).ConfigureAwait(false);
         reporter?.Message($"Log written to {log.Location}");
 
         if (status == EvalStatus.Cancelled)

@@ -2,6 +2,7 @@ using InspectAzureAI.Eval.Concurrency;
 
 namespace InspectAzureAI.Eval.Runner;
 
+using Hooks = InspectAzureAI.Eval.Hooks.Hooks;
 using Model = InspectAzureAI.Eval.Model.Model;
 
 /// <summary>
@@ -68,4 +69,13 @@ public sealed record EvalOptions
     /// scorers look them up with <c>ModelRoles.GetModel(role, ...)</c>.
     /// </summary>
     public IReadOnlyDictionary<string, object>? ModelRoles { get; init; }
+
+    /// <summary>
+    /// Lifecycle hooks for this run only, notified after the process-wide <see cref="InspectAzureAI.Eval.Hooks.HookRegistry"/> hooks (Python
+    /// has only the registry; this is the port's per-run alternative to registering at import time).
+    /// </summary>
+    public IReadOnlyList<Hooks>? Hooks { get; init; }
+
+    /// <summary>Port of the internal <c>eval_set_id</c> argument of <c>eval()</c>: set by an eval set driver so the log header and every hook payload carry it.</summary>
+    public string? EvalSetId { get; init; }
 }
