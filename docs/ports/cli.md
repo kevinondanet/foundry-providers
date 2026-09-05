@@ -58,6 +58,9 @@ unknown task/model/argument, missing files, refused options); 3 sign-in, Azure, 
   (`Solvers`, `Scorers`, `Metrics`, `Reducers`) by their Python names with `-S` args bound by parameter; `exact` maps to
   the Eval port's `exact_match`. `score` without `--scorer` re-creates the header's scorers the same way.
 - **`--hooks` is this port's option** (Python has only the registry): registered names or `Hooks` type names.
+- **`--env NAME=value` keeps the raw text** after the first `=` (an empty value unsets the variable, as .NET stores no
+  empty values). Python YAML-parses the value and stores `str()` of the result, so `NAME=a,b` would become
+  `['a', 'b']`, `NAME=3.10` → `3.1` and `NAME=` → `None` — repr artifacts no consumer of a variable expects.
 - **Options accepted but inert or refused.** `--max-tasks` is accepted (`eval` runs tasks sequentially; `eval-set`
   honours it); `--log-level`, `--traceback-locals`, `--no-ansi` are inert (no Python logger / rich); `--display`
   selects the plain reporter or `none`; `--debug`, `--debug-port`, `--debug-errors` are refused (exit 2); `--limit`

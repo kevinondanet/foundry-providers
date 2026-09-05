@@ -29,25 +29,82 @@ internal sealed record HookChoice(string Name, string? Path)
         return new HookChoice(name, path);
     }
 
-    /// <summary>Creates the hook; a file destination is opened here and closed when the hook is disposed.</summary>
+    /// <summary>Creates the hook of a single run; a file destination is opened here (truncated) and closed when the hook is disposed.</summary>
     public Hooks Create(TextWriter console)
     {
         ArgumentNullException.ThrowIfNull(console);
-        if (Path is null)
-        {
-            return new SampleLoggingHooks(console);
-        }
+        return Path is null ? new SampleLoggingHooks(console) : new SampleLoggingHooks(HookFiles.OpenFile(Path), ownsWriter: true);
+    }
 
-        var directory = System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(Path));
+    /// <summary>
+    /// Creates the hook over a writer the caller owns: the console, or the writer a <see cref="HookFiles"/> shared by
+    /// several runs opened once for <see cref="Path"/>. The lines the caller prefixes (the matrix's deployment name)
+    /// reach the destination as they are, and runs in flight together never truncate each other's file.
+    /// </summary>
+    public Hooks CreateOn(TextWriter writer)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+        return new SampleLoggingHooks(writer);
+    }
+
+    public override string ToString() => Path is null ? Name : $"{Name}={Path}";
+}
+
+/// <summary>
+/// The files of the <c>--hooks name=FILE</c> destinations of runs that share a process: each path is opened once
+/// (truncated) on first use and shared by every hook that names it, so the matrix's parallel deployments append whole
+/// lines to one file instead of each re-creating it. Writers are synchronized and flush every line; dispose after the
+/// last run has ended.
+/// </summary>
+internal sealed class HookFiles : IDisposable
+{
+    /// <summary>Guards <see cref="_writers"/>: parallel deployments open their hooks from thread-pool threads.</summary>
+    private readonly Lock _gate = new();
+
+    private readonly Dictionary<string, TextWriter> _writers = new(StringComparer.Ordinal);
+
+    /// <summary>The shared writer of <paramref name="path"/>, opened on the first call.</summary>
+    public TextWriter Open(string path)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(path);
+        var key = System.IO.Path.GetFullPath(path);
+        lock (_gate)
+        {
+            if (!_writers.TryGetValue(key, out var writer))
+            {
+                writer = TextWriter.Synchronized(OpenFile(path));
+                _writers[key] = writer;
+            }
+
+            return writer;
+        }
+    }
+
+    /// <summary>Opens <paramref name="path"/> for writing (truncated, its directory created), flushing every line so the file can be followed while a run is in flight.</summary>
+    public static StreamWriter OpenFile(string path)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(path);
+        var directory = System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(path));
         if (!string.IsNullOrEmpty(directory))
         {
             Directory.CreateDirectory(directory);
         }
 
-        return new SampleLoggingHooks(new StreamWriter(Path, append: false, Encoding.UTF8), ownsWriter: true);
+        return new StreamWriter(path, append: false, Encoding.UTF8) { AutoFlush = true };
     }
 
-    public override string ToString() => Path is null ? Name : $"{Name}={Path}";
+    public void Dispose()
+    {
+        lock (_gate)
+        {
+            foreach (var writer in _writers.Values)
+            {
+                writer.Dispose();
+            }
+
+            _writers.Clear();
+        }
+    }
 }
 
 /// <summary>

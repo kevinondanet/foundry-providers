@@ -63,6 +63,7 @@ internal sealed class MatrixRunner(MatrixOptions options, TextWriter output)
 
         var rows = new MatrixRow[selection.Count];
         using var slots = new SemaphoreSlim(Math.Max(1, options.Parallel));
+        using var hookFiles = new HookFiles();
         var work = selection.Select(async (entry, index) =>
         {
             if (!entry.Selected)
@@ -75,7 +76,7 @@ internal sealed class MatrixRunner(MatrixOptions options, TextWriter output)
             await slots.WaitAsync(cancellationToken);
             try
             {
-                rows[index] = await RunOneAsync(entry, definition, agent, sandbox, settings, cancellationToken);
+                rows[index] = await RunOneAsync(entry, definition, agent, sandbox, settings, hookFiles, cancellationToken);
             }
             finally
             {
@@ -154,12 +155,12 @@ internal sealed class MatrixRunner(MatrixOptions options, TextWriter output)
         return Path.Combine(logDir, safe.Length == 0 ? "_" : safe);
     }
 
-    private async Task<MatrixRow> RunOneAsync(SelectedDeployment entry, ShowcaseTask definition, string agent, SandboxSpec sandbox, AzureAIClientSettings? settings, CancellationToken cancellationToken)
+    private async Task<MatrixRow> RunOneAsync(SelectedDeployment entry, ShowcaseTask definition, string agent, SandboxSpec sandbox, AzureAIClientSettings? settings, HookFiles hookFiles, CancellationToken cancellationToken)
     {
         var name = entry.Deployment.Name;
         Write($"{name}: started ({entry.Route} route, {entry.Deployment.Format})");
         var watch = Stopwatch.StartNew();
-        var hooks = RunWiring.CreateHooks(options.Run, new LineWriter(line => Write($"{name}: {line}")));
+        var hooks = RunWiring.CreateHooks(options.Run, choice => HookWriter(choice, name, hookFiles));
         try
         {
             var config = options.Run.GenerateConfig;
@@ -216,6 +217,24 @@ internal sealed class MatrixRunner(MatrixOptions options, TextWriter output)
         {
             RunWiring.DisposeHooks(hooks);
         }
+    }
+
+    /// <summary>The writer of one hook of a deployment: whole lines, prefixed with the deployment name, to the matrix console or to the hook's file shared by every deployment.</summary>
+    private TextWriter HookWriter(HookChoice choice, string deployment, HookFiles hookFiles)
+    {
+        var file = choice.Path is { } path ? hookFiles.Open(path) : null;
+        return new LineWriter(line =>
+        {
+            var text = $"{deployment}: {line}";
+            if (file is null)
+            {
+                Write(text);
+            }
+            else
+            {
+                file.WriteLine(text);
+            }
+        });
     }
 
     /// <summary>The log file of a task in a deployment directory (for a reused header that carries no location).</summary>

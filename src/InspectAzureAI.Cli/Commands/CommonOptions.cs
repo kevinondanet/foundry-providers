@@ -9,7 +9,8 @@ internal sealed record CommonValues(string LogDir, string LogLevel, string Displ
 /// <summary>
 /// Port of <c>_cli/common.py</c> <c>common_options</c> / <c>process_common_options</c>: <c>--log-level</c>,
 /// <c>--log-dir</c>, <c>--display</c>, <c>--no-ansi</c>, <c>--traceback-locals</c>, <c>--env</c>, <c>--debug</c>,
-/// <c>--debug-port</c> and <c>--debug-errors</c>. <c>--env</c> sets process environment variables; the debugger options
+/// <c>--debug-port</c> and <c>--debug-errors</c>. <c>--env</c> sets process environment variables to the raw text after
+/// <c>=</c> (see <see cref="CliArgs.ParseEnvArgs"/>; an empty value unsets the variable, as .NET stores none); the debugger options
 /// have no .NET equivalent and are refused; the display type only selects between the plain reporter and none.
 /// </summary>
 internal sealed class CommonOptions
@@ -55,9 +56,9 @@ internal sealed class CommonOptions
     /// <summary>Port of <c>process_common_options</c>: applies <c>--env</c>, refuses the debugger options, and returns the resolved values (the log dir stripped of trailing separators as <c>clean_log_dir</c> does).</summary>
     public CommonValues Process(ParseResult result)
     {
-        foreach (var (name, value) in CliArgs.ParseCliArgs(result.GetValue(Env)))
+        foreach (var (name, value) in CliArgs.ParseEnvArgs(result.GetValue(Env)))
         {
-            Environment.SetEnvironmentVariable(name, value is null ? null : Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture));
+            Environment.SetEnvironmentVariable(name, value.Length == 0 ? null : value);
         }
 
         if (result.GetValue(TracebackLocals))

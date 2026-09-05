@@ -139,6 +139,22 @@ public sealed class MatrixWiringTests : IDisposable
     }
 
     [Fact]
+    public async Task hook_file_is_shared_by_every_deployment_with_prefixed_lines()
+    {
+        var file = Path.Combine(_dir.FullName, "hooks", "sample.log");
+        var (exit, console, _) = await RunAsync("m.json", "--only", "fake-gpt,fake-claude", "--parallel", "2", "--hooks", $"sample-log={file}", "--cache", "off", "--log-format", "eval");
+
+        Assert.True(exit == 0, console);
+        Assert.DoesNotContain("[hook]", console);
+        var lines = await File.ReadAllLinesAsync(file);
+        Assert.All(lines, line => Assert.Matches(@"^fake-(gpt|claude): \[hook\] ", line));
+        Assert.Contains(lines, line => line.StartsWith("fake-gpt: [hook] task hello-swe end: success", StringComparison.Ordinal));
+        Assert.Contains(lines, line => line.StartsWith("fake-claude: [hook] task hello-swe end: success", StringComparison.Ordinal));
+        Assert.Equal(2, lines.Count(line => line.Contains(" end: 1 log(s)", StringComparison.Ordinal)));
+        Assert.Equal(2, lines.Count(line => line.Contains("[hook] run ", StringComparison.Ordinal) && line.Contains(" start: ", StringComparison.Ordinal)));
+    }
+
+    [Fact]
     public async Task compaction_is_refused_for_claude_code_and_new_flags_parse()
     {
         var output = new StringWriter();
