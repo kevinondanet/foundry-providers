@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Runtime.ExceptionServices;
 using InspectAzureAI.Eval.Context;
+using InspectAzureAI.Eval.Model.Cache;
 using InspectAzureAI.Eval.Tools;
 using InspectAzureAI.Provider.Core;
 
@@ -42,24 +43,33 @@ public sealed class Model
         IReadOnlyList<ToolInfo>? tools = null,
         ToolChoice? toolChoice = null,
         GenerateConfig? config = null,
+        CachePolicy? cache = null,
         StreamHandler? onStream = null,
         CancellationToken cancellationToken = default) =>
-        GenerateAsync([new ChatMessageUser(input)], tools, toolChoice, config, onStream, cancellationToken);
+        GenerateAsync([new ChatMessageUser(input)], tools, toolChoice, config, cache, onStream, cancellationToken);
 
     public Task<ModelOutput> GenerateAsync(
         IReadOnlyList<ChatMessage> input,
         IReadOnlyList<ToolDef> tools,
         ToolChoice? toolChoice = null,
         GenerateConfig? config = null,
+        CachePolicy? cache = null,
         StreamHandler? onStream = null,
         CancellationToken cancellationToken = default) =>
-        GenerateAsync(input, tools.Select(t => t.ToInfo()).ToArray(), toolChoice, config, onStream, cancellationToken);
+        GenerateAsync(input, tools.Select(t => t.ToInfo()).ToArray(), toolChoice, config, cache, onStream, cancellationToken);
 
+    /// <summary>
+    /// Port of <c>Model.generate</c>. <paramref name="cache"/> enables the prompt cache (<c>true</c> selects
+    /// <see cref="CachePolicy.Default"/>): a hit is returned without a provider call and recorded as a
+    /// <see cref="CacheMode.Read"/> event; otherwise every attempt is recorded as <see cref="CacheMode.Write"/> and the
+    /// output is stored after the call (and after the usage limit check, as in Python).
+    /// </summary>
     public async Task<ModelOutput> GenerateAsync(
         IReadOnlyList<ChatMessage> input,
         IReadOnlyList<ToolInfo>? tools = null,
         ToolChoice? toolChoice = null,
         GenerateConfig? config = null,
+        CachePolicy? cache = null,
         StreamHandler? onStream = null,
         CancellationToken cancellationToken = default)
     {
@@ -98,12 +108,23 @@ public sealed class Model
             messages = CollapseUserMessages(messages);
         }
 
+        var cacheMode = cache is null ? (CacheMode?)null : CacheMode.Write;
+        var cacheEntry = cache is null
+            ? null
+            : new CacheEntry(ModelApiHooks.BaseUrl(Api), resolvedConfig, messages, Name, cache, resolvedChoice, resolvedTools, context?.SampleState?.Epoch);
+
         var started = DateTimeOffset.UtcNow;
         var retries = 0;
         while (true)
         {
             var attemptStarted = DateTimeOffset.UtcNow;
             var stopwatch = Stopwatch.StartNew();
+            if (cacheEntry is not null && await PromptCache.FetchAsync(cacheEntry, cancellationToken).ConfigureAwait(false) is { } cached)
+            {
+                Record(messages, resolvedTools, resolvedChoice, resolvedConfig, cached, null, retries, null, attemptStarted, stopwatch.Elapsed.TotalSeconds, CacheMode.Read);
+                return cached;
+            }
+
             GenerateResult? result = null;
             Exception? thrown = null;
             try
@@ -124,10 +145,15 @@ public sealed class Model
             if (result?.Output is { } output)
             {
                 output = WithGenerateSource(output);
-                Record(messages, resolvedTools, resolvedChoice, resolvedConfig, output, result.Call, retries, null, attemptStarted, elapsed);
+                Record(messages, resolvedTools, resolvedChoice, resolvedConfig, output, result.Call, retries, null, attemptStarted, elapsed, cacheMode);
                 if (output.Usage is { } usage)
                 {
                     context?.Limits.AddUsage(usage, Name);
+                }
+
+                if (cacheEntry is not null)
+                {
+                    await PromptCache.StoreAsync(cacheEntry, output, cancellationToken).ConfigureAwait(false);
                 }
 
                 return output;
@@ -135,12 +161,12 @@ public sealed class Model
 
             if (result?.Error is { } terminal)
             {
-                Record(messages, resolvedTools, resolvedChoice, resolvedConfig, null, result.Call, retries, terminal.Message, attemptStarted, elapsed);
+                Record(messages, resolvedTools, resolvedChoice, resolvedConfig, null, result.Call, retries, terminal.Message, attemptStarted, elapsed, cacheMode);
                 throw new ModelGenerateException(terminal.Message, terminal, result.Call);
             }
 
             var failure = thrown ?? new InvalidOperationException("Model API returned neither an output nor an error.");
-            Record(messages, resolvedTools, resolvedChoice, resolvedConfig, null, null, retries, failure.Message, attemptStarted, elapsed);
+            Record(messages, resolvedTools, resolvedChoice, resolvedConfig, null, null, retries, failure.Message, attemptStarted, elapsed, cacheMode);
 
             var decision = thrown is null ? RetryDecision.No() : ModelApiHooks.ShouldRetry(Api, thrown);
             var budgetExhausted = Retry.Timeout is { } budget && DateTimeOffset.UtcNow - started >= budget;
@@ -253,7 +279,8 @@ public sealed class Model
         int retries,
         string? error,
         DateTimeOffset started,
-        double elapsed)
+        double elapsed,
+        CacheMode? cache = null)
     {
         var e = new ModelEvent
         {
@@ -269,6 +296,7 @@ public sealed class Model
             Error = error,
             Completed = DateTimeOffset.UtcNow,
             WorkingTime = elapsed,
+            Cache = cache,
         };
         SampleContext.Current?.Transcript.Add(e);
         EventSink?.OnModelEvent(e);

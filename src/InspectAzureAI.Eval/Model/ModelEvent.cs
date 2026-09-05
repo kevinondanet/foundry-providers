@@ -1,4 +1,5 @@
 using InspectAzureAI.Eval.Context;
+using InspectAzureAI.Eval.Model.Cache;
 using InspectAzureAI.Provider.Core;
 
 namespace InspectAzureAI.Eval.Model;
@@ -27,6 +28,9 @@ public sealed record ModelEvent : TranscriptEvent
     public int? Retries { get; init; }
 
     public string? Error { get; init; }
+
+    /// <summary>Port of <c>cache</c>: <see cref="CacheMode.Read"/> when the output came from the prompt cache, <see cref="CacheMode.Write"/> when the attempt ran under a cache policy, null otherwise.</summary>
+    public CacheMode? Cache { get; init; }
 
     public DateTimeOffset? Completed { get; init; }
 

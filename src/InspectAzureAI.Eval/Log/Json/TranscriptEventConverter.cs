@@ -3,6 +3,7 @@ using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using InspectAzureAI.Eval.Context;
 using InspectAzureAI.Eval.Model;
+using InspectAzureAI.Eval.Model.Cache;
 using InspectAzureAI.Eval.Scorers;
 using InspectAzureAI.Provider.Core;
 
@@ -40,6 +41,13 @@ internal sealed class TranscriptEventConverterFactory : JsonConverterFactory
                     Call = Get<ModelCall>(e, "call", options),
                     Retries = GetInt(e, "retries"),
                     Error = Get<string>(e, "error", options),
+                    Cache = Get<string>(e, "cache", options) switch
+                    {
+                        null => null,
+                        "read" => CacheMode.Read,
+                        "write" => CacheMode.Write,
+                        var other => throw new JsonException($"Unknown model event cache mode '{other}'."),
+                    },
                     Completed = Get<DateTimeOffset?>(e, "completed", options),
                     WorkingTime = GetDouble(e, "working_time"),
                 },
@@ -110,6 +118,11 @@ internal sealed class TranscriptEventConverterFactory : JsonConverterFactory
                     if (model.Error is { } error)
                     {
                         writer.WriteString("error", error);
+                    }
+
+                    if (model.Cache is { } cache)
+                    {
+                        writer.WriteString("cache", cache.ToWire());
                     }
 
                     if (model.Completed is { } completed)
