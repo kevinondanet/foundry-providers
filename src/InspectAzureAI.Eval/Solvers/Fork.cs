@@ -38,28 +38,21 @@ public static partial class Solvers
         return await Task.WhenAll(branches).ConfigureAwait(false);
     }
 
-    /// <summary>Port of <c>solver_subtask</c>: the copy, the branch context and the span; a chain is named "chain" like Python, any other solver "fork".</summary>
+    /// <summary>
+    /// Port of <c>solver_subtask</c>: the copy runs as a <see cref="Subtask"/> of type <c>fork</c> (own store, branch
+    /// context, <c>subtask</c> span and <see cref="SubtaskEvent"/>); a plain solver also gets its <c>solver</c> span and
+    /// <see cref="StateEvent"/> like Python, a chain records those per step. The subtask is named "chain" for a chain
+    /// like Python and "fork" otherwise (Python uses the solver's registry name).
+    /// </summary>
     private static async Task<TaskState> SolverSubtaskAsync(TaskState state, Solver solver, Generate generate, CancellationToken cancellationToken)
     {
         var copy = state.Copy();
-        var parent = SampleContext.Current;
-        if (parent is null)
-        {
-            return await solver(copy, generate, cancellationToken).ConfigureAwait(false);
-        }
-
-        var branch = new SampleContext
-        {
-            ActiveModel = parent.ActiveModel,
-            Store = copy.Store,
-            Transcript = parent.Transcript,
-            Limits = parent.Limits,
-            Sandboxes = parent.Sandboxes,
-            SampleState = parent.SampleState,
-            Scorer = parent.Scorer,
-        };
-        using var scope = SampleContext.Begin(branch);
-        using var span = parent.Transcript.Span(solver.Target is ChainSolver ? "chain" : "fork", "subtask");
-        return await solver(copy, generate, cancellationToken).ConfigureAwait(false);
+        var isChain = solver.Target is ChainSolver;
+        return await Subtask.RunAsync(
+            isChain ? "chain" : "fork",
+            ct => isChain ? solver(copy, generate, ct) : SolverTranscript.RunAsync(solver, copy, generate, ct),
+            store: copy.Store,
+            type: "fork",
+            cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 }

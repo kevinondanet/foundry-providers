@@ -1,3 +1,4 @@
+using InspectAzureAI.Eval.Context;
 using InspectAzureAI.Eval.Tools;
 using InspectAzureAI.Provider.Core;
 
@@ -74,7 +75,7 @@ public static partial class Solvers
         {
             foreach (var solver in Solvers)
             {
-                state = await solver(state, generate, cancellationToken).ConfigureAwait(false);
+                state = await SolverTranscript.RunAsync(solver, state, generate, cancellationToken).ConfigureAwait(false);
                 if (state.Completed)
                 {
                     break;

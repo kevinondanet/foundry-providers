@@ -818,7 +818,8 @@ public sealed class MultipleChoiceTests : IDisposable
 
         var begins = scope.Transcript.Events.OfType<SpanBeginEvent>().Where(e => e.Type == "subtask").ToList();
         Assert.Equal(["fork", "chain", "fork", "fork"], begins.Select(e => e.Name));
-        Assert.Equal(begins.Select(e => e.Id).Order(), scope.Transcript.Events.OfType<SpanEndEvent>().Select(e => e.Id).Order());
+        // every span (the subtask spans and the solver spans forked solvers open inside them) ends, even on failure or cancellation
+        Assert.Equal(scope.Transcript.Events.OfType<SpanBeginEvent>().Select(e => e.Id).Order(), scope.Transcript.Events.OfType<SpanEndEvent>().Select(e => e.Id).Order());
         Assert.Null(scope.Transcript.CurrentSpanId);
     }
 

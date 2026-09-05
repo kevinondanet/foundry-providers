@@ -33,6 +33,12 @@ public sealed record StateEvent(JsonElement Changes) : TranscriptEvent
 
     /// <summary>Builds the event from a patch array.</summary>
     public static StateEvent FromChanges(JsonArray changes) => new(TranscriptEventJson.ToElement(changes));
+
+    /// <summary>Builds the event from <see cref="JsonChange"/>s (the output of <see cref="JsonChanges.Diff"/>).</summary>
+    public static StateEvent FromChanges(IEnumerable<JsonChange> changes) => FromChanges(JsonChanges.ToJson(changes));
+
+    /// <summary>Port of <c>StateEvent.changes</c>: <see cref="Changes"/> parsed as <see cref="JsonChange"/>s.</summary>
+    public IReadOnlyList<JsonChange> GetChanges() => JsonChanges.FromJson(Changes);
 }
 
 /// <summary>Port of <c>event/_store.py</c> <c>StoreEvent</c>: a change to the <c>Store</c> as a raw RFC 6902 patch (see <see cref="StateEvent"/>).</summary>
@@ -42,6 +48,12 @@ public sealed record StoreEvent(JsonElement Changes) : TranscriptEvent
 
     /// <summary>Builds the event from a patch array.</summary>
     public static StoreEvent FromChanges(JsonArray changes) => new(TranscriptEventJson.ToElement(changes));
+
+    /// <summary>Builds the event from <see cref="JsonChange"/>s (the output of <see cref="JsonChanges.Diff"/>).</summary>
+    public static StoreEvent FromChanges(IEnumerable<JsonChange> changes) => FromChanges(JsonChanges.ToJson(changes));
+
+    /// <summary>Port of <c>StoreEvent.changes</c>: <see cref="Changes"/> parsed as <see cref="JsonChange"/>s.</summary>
+    public IReadOnlyList<JsonChange> GetChanges() => JsonChanges.FromJson(Changes);
 }
 
 /// <summary>Port of <c>tool/_tool_call.py</c> <c>ToolCallContent</c>: a custom rendering of a tool call (<see cref="Format"/> is "text" or "markdown").</summary>

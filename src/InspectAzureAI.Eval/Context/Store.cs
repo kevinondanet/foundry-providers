@@ -91,4 +91,22 @@ public sealed class Store
             return new Dictionary<string, object?>(_data, StringComparer.Ordinal);
         }
     }
+
+    /// <summary>The value under <paramref name="key"/> when present (Python's <c>key in store</c> plus the lookup), without initialising a default.</summary>
+    public bool TryGetValue(string key, out object? value)
+    {
+        lock (_sync)
+        {
+            return _data.TryGetValue(key, out value);
+        }
+    }
+
+    /// <summary>Port of <c>model_cls(store=store, instance=instance)</c>: a <see cref="StoreModel"/> bound to this store (see <see cref="StoreModel.Create{TModel}"/>).</summary>
+    public TModel As<TModel>(string? instance = null) where TModel : StoreModel, new() => StoreModel.Create<TModel>(this, instance);
+
+    /// <summary>
+    /// Port of <c>store_as(model_cls, instance)</c>: a <see cref="StoreModel"/> bound to the ambient sample store. Outside a
+    /// <see cref="SampleContext"/> this is an <see cref="InvalidOperationException"/> (Python falls back to a process-wide default store).
+    /// </summary>
+    public static TModel StoreAs<TModel>(string? instance = null) where TModel : StoreModel, new() => SampleContext.Require().Store.As<TModel>(instance);
 }

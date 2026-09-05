@@ -299,7 +299,11 @@ internal sealed class SampleRunner(
         try
         {
             using var span = transcript.Span(name, "solver");
-            return await solver(state, generate, cancellationToken).ConfigureAwait(false);
+            // a chain records a StateEvent per step (Python unrolls the plan into steps), so only a plain solver gets one here
+            var solverTranscript = InspectAzureAI.Eval.Solvers.Solvers.IsChain(solver) ? null : new SolverTranscript(state, transcript);
+            var result = await solver(state, generate, cancellationToken).ConfigureAwait(false);
+            solverTranscript?.Complete(result);
+            return result;
         }
         finally
         {
