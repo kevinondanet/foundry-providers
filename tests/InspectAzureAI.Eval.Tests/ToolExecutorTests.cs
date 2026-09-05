@@ -132,6 +132,22 @@ public class ToolExecutorTests
     }
 
     [Fact]
+    public async Task arguments_are_validated_against_the_schema_before_the_tool_runs()
+    {
+        var ran = false;
+        var tool = Tool("echo", (_, _) => { ran = true; return Task.FromResult<ToolResult>("ran"); }, required: "text");
+
+        var wrongType = await Single(tool, Call("echo", args: new { text = 5 }));
+        var extra = await Single(tool, Call("echo", id: "c2", args: new { text = "hi", extra = 1 }));
+
+        Assert.False(ran);
+        Assert.Equal("parsing", wrongType.Error!.Type);
+        Assert.Equal("Found 1 validation errors parsing tool input arguments:\n- 5 is not of type 'string'", wrongType.Error.Message);
+        Assert.Equal("parsing", extra.Error!.Type);
+        Assert.Equal("Found 1 validation errors parsing tool input arguments:\n- Additional properties are not allowed ('extra' was unexpected)", extra.Error.Message);
+    }
+
+    [Fact]
     public async Task long_text_output_is_truncated_keeping_the_tail_with_the_python_template()
     {
         var tool = Tool("big", (_, _) => Task.FromResult<ToolResult>(new string('a', 90) + "0123456789"), maxOutput: 10);

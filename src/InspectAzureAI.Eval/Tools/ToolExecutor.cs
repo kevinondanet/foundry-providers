@@ -4,6 +4,7 @@ using System.Text.Json.Nodes;
 using InspectAzureAI.Eval.Approval;
 using InspectAzureAI.Eval.Context;
 using InspectAzureAI.Eval.Sandbox;
+using InspectAzureAI.Eval.Tools.Builtin;
 using InspectAzureAI.Provider.Core;
 
 namespace InspectAzureAI.Eval.Tools;
@@ -14,6 +15,7 @@ public sealed record ExecuteToolsResult(IReadOnlyList<ChatMessage> Messages, Mod
 /// <summary>
 /// Port of <c>model/_call_tools.py</c> <c>execute_tools</c>: runs the tool calls of the last assistant
 /// message in ordered stages (consecutive parallel-safe calls concurrently, a serial call as a barrier),
+/// validates each call's arguments against the tool's schema (<c>validate_tool_input</c>, jsonschema messages),
 /// maps tool failures to <see cref="ToolCallError"/>s, truncates text output and records a
 /// <see cref="ToolEvent"/> per call on the current transcript.
 /// </summary>
@@ -155,6 +157,7 @@ public static class ToolExecutor
                     }
                 }
 
+                ToolInputValidator.Validate(executeCall.Arguments, tool.Parameters);
                 if (tool.Handoff is { } handoff)
                 {
                     var handoffResult = await Agents.Agents.ExecuteHandoffAsync(handoff, executeCall, conversation, cancellationToken).ConfigureAwait(false);

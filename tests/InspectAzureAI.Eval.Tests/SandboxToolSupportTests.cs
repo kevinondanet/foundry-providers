@@ -1258,6 +1258,19 @@ public class BashSessionToolTests
     }
 
     [Fact]
+    public async Task type_submit_without_input_sends_only_the_return_key()
+    {
+        // Documented deviation (docs/ports/sandbox-tools.md): Python's f"{input}\n" would type the literal "None\n".
+        var scripted = Scripted();
+        using var scope = new SampleContextScope(sandbox: scripted.Sandbox);
+        var tool = BashSession.Create(support: new SandboxToolSupport(new FakeBinaries()));
+
+        await tool.Execute(SandboxToolsFixtures.Args(new { action = "type_submit" }), CancellationToken.None);
+
+        Assert.Equal("\n", scripted.Params(1)!["input"]!.GetValue<string>());
+    }
+
+    [Fact]
     public async Task instances_have_their_own_sessions()
     {
         var names = new Queue<string>(["BashSession-1", "BashSession-2"]);
