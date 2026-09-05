@@ -20,6 +20,20 @@ public sealed class Transcript
 
     private readonly Stopwatch _working = Stopwatch.StartNew();
 
+    public Transcript()
+    {
+    }
+
+    /// <summary>
+    /// Port of <c>Transcript(events)</c>: a transcript seeded with existing events (a re-scored sample's), kept verbatim —
+    /// no span or working-time stamping — so the events added afterwards start at index <c>events.Count</c>.
+    /// </summary>
+    public Transcript(IEnumerable<TranscriptEvent> events)
+    {
+        ArgumentNullException.ThrowIfNull(events);
+        _events.AddRange(events);
+    }
+
     /// <summary>Snapshot of the events recorded so far.</summary>
     public IReadOnlyList<TranscriptEvent> Events
     {

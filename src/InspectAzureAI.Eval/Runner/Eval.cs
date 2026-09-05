@@ -101,7 +101,7 @@ public static class Eval
                 Limit = options.Limit,
                 SampleId = options.SampleIds,
                 Epochs = epochs,
-                EpochsReducer = EvalSetLogs.EpochsReducerNames(task.Epochs),
+                EpochsReducer = EvalResultsBuilder.EpochsReducerNames(task.Epochs?.Reducers),
                 FailOnError = failOnError,
                 ContinueOnFail = continueOnFail,
                 RetryOnError = retryOnError,
@@ -229,18 +229,21 @@ public static class Eval
             }
         }
 
+        var computed = EvalResultsBuilder.ComputeResults(
+            totalSamples,
+            completed.Select(result => result.Scores).ToList(),
+            task.Scorers,
+            scorerNames,
+            task.Epochs?.Reducers,
+            task.Metrics,
+            earlyStopping: stoppingSummary,
+            completedSamples: evalSamples.Count(sample => sample.Error is null));
         var log = new EvalLog
         {
             Status = status,
             Eval = spec,
             Plan = new EvalPlan { Config = task.Config.Merge(options.Model.Config) },
-            Results = new EvalResults
-            {
-                TotalSamples = totalSamples,
-                CompletedSamples = evalSamples.Count(sample => sample.Error is null),
-                EarlyStopping = stoppingSummary,
-                Scores = EvalResultsBuilder.BuildScores(task.Scorers, scorerNames, completed.Select(result => result.Scores).ToList(), task.Epochs?.Reducers, task.Metrics),
-            },
+            Results = computed.Results,
             Stats = new EvalStats
             {
                 StartedAt = startedAt,
@@ -250,6 +253,7 @@ public static class Eval
             },
             Error = error,
             Samples = evalSamples,
+            Reductions = computed.Reductions,
             Location = logLocation,
         };
         await recorder.LogFinishAsync(spec, status, log.Stats, log.Results, log.Reductions, error, cancellationToken: CancellationToken.None).ConfigureAwait(false);

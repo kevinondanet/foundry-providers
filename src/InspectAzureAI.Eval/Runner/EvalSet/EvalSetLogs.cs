@@ -253,26 +253,7 @@ public static partial class EvalSetLogs
     }
 
     /// <summary>Port of <c>reducer_log_names</c> for a task's epochs: the reducer names, or null when there are none or one is unnamed (a custom delegate).</summary>
-    public static IReadOnlyList<string>? EpochsReducerNames(Epochs? epochs)
-    {
-        if (epochs?.Reducers is not { Count: > 0 } reducers)
-        {
-            return null;
-        }
-
-        var names = new List<string>(reducers.Count);
-        foreach (var reducer in reducers)
-        {
-            if (Reducers.NameOf(reducer) is not { } name)
-            {
-                return null;
-            }
-
-            names.Add(name);
-        }
-
-        return names;
-    }
+    public static IReadOnlyList<string>? EpochsReducerNames(Epochs? epochs) => EvalResultsBuilder.EpochsReducerNames(epochs?.Reducers);
 
     /// <summary>Port of <c>all_evals_succeeded</c>.</summary>
     public static bool AllEvalsSucceeded(IEnumerable<EvalLog> logs)
