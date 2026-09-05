@@ -48,6 +48,9 @@ failures, retry attempts, and the `ModelEvent.cache` round trip through the log 
 - The lookup runs on every attempt of the retry loop (a concurrent identical call may have cached between attempts).
 - A hit is not counted against the sample's token limits; a store happens after the usage limit check, so an output
   that breaches the token limit is not cached.
+- A hit still runs the outer frame of `generate`: it records a turn against the active turn limits (a hit advances the
+  conversation by one assistant message, so a `cache: true` loop under a `turn_limit` trips like an uncached one) and
+  adds the cached output's `fallback` to the sample's model-fallback rollup (`Model.CompleteGenerate`).
 - `content_filter` outputs are never stored (a cached refusal would be replayed on every refusal retry).
 - An expired entry is deleted on fetch. `CacheClear` / `CacheListExpired` refuse model names that resolve outside
   the cache (`../..`). `CacheListExpired(filterBy)` lists only entries directly inside the named model directories.
