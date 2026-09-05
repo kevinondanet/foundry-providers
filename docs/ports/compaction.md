@@ -16,7 +16,7 @@ Tests: `tests/InspectAzureAI.Eval.Tests/CompactionTests.cs` (41 tests).
 | `model/_compaction/native.py` | `CompactionNative` |
 | `model/_compaction/auto.py` | `CompactionAuto` (native first, summary fallback) |
 | `model/_compaction/_compaction.py` (`compaction()`, `_perform_compaction`, `_resolve_threshold`, `_redacted_reasoning_tokens_total`) | `Compaction.Create/Hook/TryRecoverOverflowAsync/ResolveThreshold/RedactedReasoningTokensTotal`, private `CompactionHandler` |
-| `event/_compaction.py` | `CompactionEvent` (+ `compaction` case in `Log/Json/TranscriptEventConverter.cs`) |
+| `event/_compaction.py` | `Context.CompactionEvent` (log-schema's record; `metadata` is the base `TranscriptEvent.Metadata`) (+ `compaction` case in `Log/Json/TranscriptEventConverter.cs`) |
 | `model/_tokens.py` | `TokenEstimator` |
 | `Model.count_tokens/count_tool_tokens/compact`, `get_model_input_tokens`, `set_model_info` | `ModelCompactionExtensions`, `ICompactionModelApi`, `CompactionModelInfo` |
 | `agent/_react.py` `_agent_compact`, `_model_generate`, `_handle_overflow` | `CompactionHook`, `Compaction.Hook`, `Compaction.TryRecoverOverflowAsync`; wired into `Solvers.BasicAgent(compaction:)` |
@@ -42,14 +42,14 @@ An agent loop invokes the hook once with its starting messages, tools and model 
 
 ## Deviations from Python, and why
 
-- **Token counting is a heuristic.** Python counts text with tiktoken `o200k_base` (+10%); no tokenizer package is allowed here, so `TokenEstimator.CountTextTokens` is `ceil(chars / 4) * 1.1` (min 1). Media, tool-call and message aggregation mirror `_tokens.py`. Providers can supply real counts by implementing `ICompactionModelApi.CountTokensAsync`. Absolute thresholds therefore trigger at different points than in Python for the same text.
+- **Token counting is a heuristic.** Python counts text with tiktoken `o200k_base` (+10%); no tokenizer package is allowed here, so `TokenEstimator.CountTextTokens` is `ceil(chars / 4) * 1.1` (min 1). Media, tool-call and message aggregation mirror `_tokens.py`. Providers can supply real counts by implementing `ICompactionModelApi.CountTokensAsync`, which `Model.CountTokensAsync` defers to (any other api gets the model-extras `TokenEstimation` estimate). Absolute thresholds therefore trigger at different points than in Python for the same text.
 - **Context window resolution.** There is no model-info catalog in the .NET tree: `Model.ContextWindow()` checks the `CompactionModelInfo` registry (port of `set_model_info`), then `ICompactionModelApi.ContextWindow`, then 128,000 for `ScriptedModelApi` (Python's `mockllm`), else null, which makes a fractional threshold warn and assume 128,000 exactly as Python does.
 - **Native compaction is unavailable.** Neither Azure provider has a compaction endpoint; `CompactionNative` (and `Model.CompactAsync`) throw `NotSupportedException` (Python `NotImplementedError`) with the same message text, token count and `CompactionAuto` suggestion. `CompactionAuto` falls back to summary. An api can opt in through `ICompactionModelApi.CompactAsync`.
 - **Server-side tool uses (`ContentToolUse`) are not in the .NET content model**, so `CompactionEdit` clears only client-side tool results; `MCP_LIST_TOOLS_NAME` is kept as a constant. Likewise `ContentReasoning` has no `internal` dict, so Google replay anchors are not preserved (irrelevant to the Azure providers), and `ContentDocument` does not exist.
 - **Citations**: `ContentText` has no `citations`, so `StripCitations` returns its input unchanged (kept so call sites mirror Python).
 - **Consecutive-message collapse** uses the existing `Model.CollapseUserMessages` gated by `ModelApiHooks.CollapseUserMessages`; the assistant/system collapses Python also applies are not in the .NET `Model`.
 - **Redacted reasoning accounting** applies Python's `"all"` mode; the .NET `GenerateConfig` has no `reasoning_history`, and `ApplyRedactedReasoningTokensToInput` is false unless an api opts in.
-- `CompactionEvent.role` is always null (the .NET `Model` has no role). Base-event `uuid`/`working_start`/`pending` are absent from every .NET event, not just this one.
+- `CompactionEvent.role` is always null (the .NET `Model` has no role). Base-event `uuid`/`working_start`/`pending`/`metadata` come from log-schema's `TranscriptEvent` base.
 - `CompactionSummary.prompt` substitutes `{addendums}` by plain replacement rather than `str.format` (no `{{` escaping).
 - Errors are `InvalidOperationException` where Python raises `RuntimeError` (insufficient compaction, summary overflow) and `NotSupportedException` for `NotImplementedError`.
 - The handler's lock is a `SemaphoreSlim`; the ambient `Transcript` is the only event sink.

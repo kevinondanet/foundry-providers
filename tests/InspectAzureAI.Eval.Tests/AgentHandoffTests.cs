@@ -684,6 +684,21 @@ public class AgentHandoffTests
     }
 
     [Fact]
+    public async Task run_does_not_catch_a_scoped_sample_limit_it_nests_under()
+    {
+        using var scope = new SampleContextScope(Hello());
+        // the sample-level scoped limit of the runner: the agent's own scope nests under it on the same tree
+        using var sample = Limit.Apply(new TokenLimit(10));
+
+        var ex = await Assert.ThrowsAsync<LimitExceededException>(() => Agents.RunAsync(LoopingAgent, "This is the input", new AgentLimits(TokenLimit: 100)));
+
+        Assert.Equal("token", ex.Type);
+        Assert.Same(sample.Limits[0], ex.SourceLimit);
+        Assert.Equal(11, ((TokenLimit)sample.Limits[0]).Usage);
+        Assert.Contains(scope.Transcript.Events.OfType<SampleLimitEvent>(), e => e.Type == "token" && e.Limit == 10);
+    }
+
+    [Fact]
     public async Task run_does_not_catch_the_sample_limit()
     {
         using var scope = new SampleContextScope(Hello(), limits: new Limits { MessageLimit = 5 });

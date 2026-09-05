@@ -7,9 +7,9 @@
 | `_eval/task/error.py` (`SampleErrorHandler`, `_should_eval_fail`) | `Runner/FailOnError.cs` (the `bool | float` policy value with its JSON form), `Runner/SampleErrorHandler.cs` |
 | `_eval/task/run.py` — `SampleAttempt`, the attempt loop of `task_run_sample`, `retry_on_error`, `_eval_retry_error`, the early-stopping calls, `monitor_working_limit`, `create_eval_sample` timing | `Runner/SampleRunner.cs` (rewritten: one attempt per call, `SampleAttempt`, `SampleResult.Retry`), `Runner/Eval.cs` (attempt loop, `SampleErrorHandler`, early stopping, end-of-run status) |
 | `_eval/task/util.py` (`sample_id_filter`, `resolve_task_sample_ids`, `slice_dataset`), `dataset/_util.py` `normalise_sample_id` | `Runner/SampleIdFilter.cs` |
-| `util/_early_stopping.py` | `Context/EarlyStopping.cs` (`IEarlyStopping`, `EarlyStop`, `EarlyStoppingSummary`), `EvalResults.EarlyStopping`, `EvalTask.EarlyStopping` |
+| `util/_early_stopping.py` | `Context/EarlyStopping.cs` (`IEarlyStopping`; `EarlyStop` and `EarlyStoppingSummary` are the `Log` records), `EvalResults.EarlyStopping`, `EvalTask.EarlyStopping` |
 | `util/_limit.py` — `Limit`, `_Tree`, `apply_limits`/`LimitScope`, token/message/turn/time/working limits, the module functions, `sample_limits()` and its snapshot | `Context/Limit.cs`, `LimitTree.cs`, `LimitScope.cs`, `TokenLimit.cs`, `MessageLimit.cs`, `TurnLimit.cs`, `TimeLimit.cs`, `WorkingLimit.cs`, `SampleLimits.cs` |
-| `event/_sample_limit.py` | `Context/SampleLimitEvent.cs` (+ `sample_limit` in `TranscriptEventConverter`) |
+| `event/_sample_limit.py` | `SampleLimitEvent` in `Context/TranscriptEventTypes.cs` (+ `sample_limit` in `TranscriptEventConverter`) |
 | `_util/working.py` (`report_sample_waiting_time`, `sample_waiting_time`) | `WorkingLimit.ReportSampleWaitingTime`, `Limits.WaitingTime` |
 | `log/_log.py` fields | `EvalConfig.FailOnError/ContinueOnFail/RetryOnError/TurnLimit/WorkingLimit`, `EvalSample.ErrorRetries`, `EvalRetryError` |
 

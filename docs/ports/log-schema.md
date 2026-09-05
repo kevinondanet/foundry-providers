@@ -48,8 +48,9 @@ the inspect_ai venv, plus inspect_ai's own legacy logs under `python/`).
   rejects a timeline whose uuid does not resolve, this port keeps it.
 - `SandboxEvent` carries Python's fields (`cmd`, `options`, `file`, `input`, `result: int`, `output`); the
   pre-port `(action, input, result)` constructor is kept as a secondary constructor that maps the raw shapes.
-- `EvalConfig` splits Python's unions into typed pairs (`Limit`/`LimitRange`, `FailOnError`/`FailOnErrorThreshold`,
-  `SampleShuffle`/`SampleShuffleSeed`); `notification` and `acp_server` stay `object`.
+- `EvalConfig` splits Python's unions into typed pairs (`Limit`/`LimitRange`,
+  `SampleShuffle`/`SampleShuffleSeed`); `fail_on_error` is the `Runner.FailOnError` struct (one bool-or-number value,
+  shared with `EvalTask`/`EvalOptions`); `notification` and `acp_server` stay `object`.
 - `ApprovalPolicyConfig`, `ViewerConfig`, `EvalSpec.metrics`, `EvalScorer.metrics`, `SampleInitEvent.state`,
   `events_data` and the RFC 6902 `changes` of `StateEvent`/`StoreEvent` are raw JSON (patching is another agent's).
 - A log whose `eval_id` is empty gets a fresh short uuid on read; Python derives a stable `base57_id_hash`
