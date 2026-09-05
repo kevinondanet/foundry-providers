@@ -259,6 +259,41 @@ public class ToolExecutorTests
     }
 
     [Fact]
+    public async Task a_tool_event_is_stamped_with_completion_and_the_tool_message_id()
+    {
+        using var scope = new SampleContextScope();
+        var before = DateTimeOffset.UtcNow;
+
+        var message = await Single(Echo(), Call("echo", "id-2", new { text = "hey" }));
+
+        var toolEvent = Assert.Single(scope.Transcript.Events.OfType<ToolEvent>());
+        Assert.NotNull(toolEvent.Completed);
+        Assert.InRange(toolEvent.Timestamp, before, DateTimeOffset.UtcNow);
+        Assert.InRange(toolEvent.Completed.Value, toolEvent.Timestamp, DateTimeOffset.UtcNow);
+        Assert.NotNull(message.Id);
+        Assert.Equal(message.Id, toolEvent.MessageId);
+        Assert.Null(toolEvent.Failed);
+        Assert.Null(toolEvent.Pending);
+    }
+
+    [Fact]
+    public async Task an_unmapped_exception_marks_the_tool_event_failed()
+    {
+        using var scope = new SampleContextScope();
+        var tool = Tool("t", (_, _) => throw new InvalidOperationException("fatal"));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => Single(tool, Call("t", "id-3")));
+
+        var toolEvent = Assert.Single(scope.Transcript.Events.OfType<ToolEvent>());
+        Assert.True(toolEvent.Failed);
+        Assert.NotNull(toolEvent.Completed);
+        Assert.NotNull(toolEvent.MessageId);
+        // As in Python, an unhandled exception carries no ToolCallError; `failed` is what distinguishes it from an empty result.
+        Assert.Null(toolEvent.Error);
+        Assert.Equal("", toolEvent.Result);
+    }
+
+    [Fact]
     public async Task bash_tool_runs_in_the_sample_sandbox_with_stderr_first()
     {
         using var scope = new SampleContextScope(withLocalSandbox: true);

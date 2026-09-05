@@ -97,7 +97,9 @@ public sealed class EvalRunnerTests : IDisposable
 
         Assert.NotNull(log.Location);
         Assert.StartsWith(_logDir, log.Location);
-        Assert.Matches(new Regex(@"^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}_geo-quiz_[0-9a-f]{6}\.json$"), Path.GetFileName(log.Location));
+        Assert.Equal(LogFileNaming.LogFileKey(log.Eval) + ".json", Path.GetFileName(log.Location));
+        Assert.Matches(new Regex(@"^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-00-00_geo quiz_" + Regex.Escape(log.Eval.TaskId) + @"\.json$"), Path.GetFileName(log.Location));
+        Assert.Null(log.Eval.Metadata);
         var read = EvalLogWriter.Read(log.Location);
         Assert.Equal(EvalStatus.Success, read.Status);
         Assert.Equal(log.Location, read.Location);
@@ -324,6 +326,105 @@ public sealed class EvalRunnerTests : IDisposable
         var score = Assert.Single(log.Results.Scores);
         Assert.Equal(1, score.ScoredSamples);
         Assert.Equal(1.0, score.Metrics["accuracy"].Value);
+    }
+
+    [Fact]
+    public async Task task_and_eval_metadata_are_written_to_the_log_header()
+    {
+        var api = new ScriptedModelApi(ScriptedTurn.Text("Paris"));
+        var task = new EvalTask
+        {
+            Name = "meta",
+            Dataset = new MemoryDataset([new Sample("capital?") { Target = "Paris" }]),
+            Scorers = [Scorers.Includes()],
+            Metadata = new Dictionary<string, object?> { ["origin"] = "task", ["shared"] = "task" },
+        };
+        var options = Options(api) with { Metadata = new Dictionary<string, object?> { ["run"] = 7, ["shared"] = "eval" } };
+
+        var log = await Eval.RunAsync(task, options);
+
+        Assert.NotNull(log.Eval.Metadata);
+        Assert.Equal("task", log.Eval.Metadata["origin"]);
+        Assert.Equal(7, log.Eval.Metadata["run"]);
+        Assert.Equal("task", log.Eval.Metadata["shared"]);
+        Assert.Equal("task", log.Metadata["shared"]);
+        var read = EvalLogWriter.Read(log.Location!);
+        Assert.Equal("task", read.Eval.Metadata!["origin"]);
+        Assert.Equal(7, read.Eval.Metadata["run"]);
+        Assert.Equal("task", read.Eval.Metadata["shared"]);
+        Assert.Equal("task", read.Metadata["shared"]);
+    }
+
+    [Fact]
+    public async Task log_file_name_follows_python_naming_so_task_and_id_parse_from_it()
+    {
+        var api = new ScriptedModelApi(ScriptedTurn.Text("Paris"));
+        var task = new EvalTask { Name = "interop_task", Dataset = new MemoryDataset([new Sample("capital?") { Target = "Paris" }]), Scorers = [Scorers.Includes()] };
+
+        var log = await Eval.RunAsync(task, Options(api) with { TaskId = "W7qFmAU6DiXJqvEfo7Pmt4" });
+
+        Assert.Equal("interop_task", log.Eval.Task);
+        Assert.EndsWith("_interop-task_W7qFmAU6DiXJqvEfo7Pmt4.json", log.Location);
+        var info = Assert.Single(EvalLogFiles.ListEvalLogs(_logDir));
+        Assert.Equal("interop-task", info.Task);
+        Assert.Equal("W7qFmAU6DiXJqvEfo7Pmt4", info.TaskId);
+    }
+
+    [PythonFact]
+    public async Task python_reads_metadata_tool_completion_and_file_name_from_a_runner_log()
+    {
+        var echo = new ToolDef("echo", "Echoes text.", new ToolParams { Properties = new Dictionary<string, ToolParam> { ["text"] = ToolParam.Of("string") }, Required = ["text"] }, (args, _) => Task.FromResult<ToolResult>(args["text"]?.GetValue<string>() ?? ""));
+        var boom = new ToolDef("boom", "Throws.", new ToolParams(), (_, _) => throw new InvalidOperationException("tool exploded"));
+        var api = new ScriptedModelApi(ScriptedTurn.ToolCall("echo", new { text = "hi" }), ScriptedTurn.Text("hi"), ScriptedTurn.ToolCall("boom", new { }));
+        var task = new EvalTask
+        {
+            Name = "interop_task",
+            Dataset = new MemoryDataset([new Sample("say hi") { Id = "a", Target = "hi" }, new Sample("explode") { Id = "b", Target = "x" }]),
+            Solver = Solvers.Chain(Solvers.UseTools(echo, boom), Solvers.Generate()),
+            Scorers = [Scorers.Includes()],
+            FailOnError = false,
+            Metadata = new Dictionary<string, object?> { ["origin"] = "csharp" },
+        };
+
+        var log = await Eval.RunAsync(task, Options(api) with { Metadata = new Dictionary<string, object?> { ["run"] = 7 } });
+
+        Assert.Equal(2, log.Samples!.Count);
+        Assert.NotNull(log.Samples[1].Error);
+        var result = System.Text.Json.Nodes.JsonNode.Parse(PythonReference.Run($$"""
+            import json
+            from inspect_ai.log import read_eval_log, list_eval_logs
+            log = read_eval_log(r'''{{log.Location}}''')
+            def tools(sample):
+                return [{
+                    "function": e.function,
+                    "completed": e.completed is not None and e.completed >= e.timestamp,
+                    "failed": e.failed,
+                    "has_message_id": e.message_id is not None,
+                    "message_matches": any(m.id == e.message_id for m in sample.messages),
+                } for e in sample.events if e.event == "tool"]
+            print(json.dumps({
+                "metadata": log.eval.metadata,
+                "task_id": log.eval.task_id,
+                "tools": {str(s.id): tools(s) for s in log.samples},
+                "infos": [[i.task, i.task_id] for i in list_eval_logs(r'''{{_logDir}}''')],
+            }))
+            """))!.AsObject();
+
+        Assert.Equal("csharp", (string?)result["metadata"]!["origin"]);
+        Assert.Equal(7, (int?)result["metadata"]!["run"]);
+        var ok = Assert.Single(result["tools"]!["a"]!.AsArray())!.AsObject();
+        Assert.Equal("echo", (string?)ok["function"]);
+        Assert.True((bool?)ok["completed"]);
+        Assert.Null(ok["failed"]);
+        Assert.True((bool?)ok["message_matches"]);
+        var failed = Assert.Single(result["tools"]!["b"]!.AsArray())!.AsObject();
+        Assert.Equal("boom", (string?)failed["function"]);
+        Assert.True((bool?)failed["completed"]);
+        Assert.True((bool?)failed["failed"]);
+        Assert.True((bool?)failed["has_message_id"]);
+        var info = Assert.Single(result["infos"]!.AsArray())!.AsArray();
+        Assert.Equal("interop-task", (string?)info[0]);
+        Assert.Equal(log.Eval.TaskId, (string?)info[1]);
     }
 
     [Fact]

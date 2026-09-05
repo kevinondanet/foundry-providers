@@ -1280,7 +1280,7 @@ Sample identity follows Python's value semantics: the int `1` and the string `"1
         options.MakeReadOnly(populateMissingResolver: true);
 ```
 
-The output is valid JSON where Python's is not: NaN and Infinity are written as `null` and read back as NaN. `EvalLog.Version` is 1. The log path is `<logDir>/<local timestamp>_<task>_<6 hex>.json`.
+The output is valid JSON where Python's is not: NaN and Infinity are written as `null` and read back as NaN. `EvalLog.Version` is 1. The log path is `LogFileNaming.LogFilePath(logDir, spec, format)`: `<logDir>/<created>_<task>_<task_id>.<ext>` with Python's `clean_filename_component` applied to each part (`_`, `/`, `:`, `+` become `-`).
 
 ### 4.6 Sandboxes: Docker and local
 

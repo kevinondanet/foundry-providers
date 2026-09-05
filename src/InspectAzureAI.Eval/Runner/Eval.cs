@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Security.Cryptography;
 using InspectAzureAI.Eval.Approval;
 using InspectAzureAI.Eval.Concurrency;
 using InspectAzureAI.Eval.Context;
@@ -136,6 +135,7 @@ public static class Eval
             TaskVersion = task.Version,
             TaskArgs = task.TaskArgs ?? new Dictionary<string, object?>(StringComparer.Ordinal),
             TaskArgsPassed = task.TaskArgs,
+            Metadata = EvalMetadata(options.Metadata, task.Metadata),
             Dataset = new EvalDataset
             {
                 Name = task.Dataset.Name,
@@ -180,7 +180,7 @@ public static class Eval
         var logFormat = options.LogFormat ?? LogFormats.FromEnvironment() ?? LogFormats.Default;
         var recorder = LogRecorders.CreateForFormat(logFormat, options.LogDir);
         await using var recorderScope = recorder.ConfigureAwait(false);
-        var logLocation = await recorder.LogInitAsync(spec, LogPath(options.LogDir, task.Name, startedAt, logFormat), cancellationToken: cancellationToken).ConfigureAwait(false);
+        var logLocation = await recorder.LogInitAsync(spec, LogFileNaming.LogFilePath(options.LogDir, spec, logFormat), cancellationToken: cancellationToken).ConfigureAwait(false);
         await recorder.LogStartAsync(spec, plan, cancellationToken).ConfigureAwait(false);
         var flushBuffer = recorder.DefaultLogBuffer(totalSamples, highThroughput: false);
         var pendingFlush = 0;
@@ -299,7 +299,8 @@ public static class Eval
             task.Metrics,
             earlyStopping: stoppingSummary,
             completedSamples: evalSamples.Count(sample => sample.Error is null));
-        var log = new EvalLog
+        // Python's EvalLog validator recomputes tags/metadata on construction, so the returned log carries eval.metadata too
+        var log = EvalLogEditing.RecomputeTagsAndMetadata(new EvalLog
         {
             Status = status,
             Eval = spec,
@@ -316,7 +317,7 @@ public static class Eval
             Samples = evalSamples,
             Reductions = computed.Reductions,
             Location = logLocation,
-        };
+        });
         await recorder.LogFinishAsync(spec, status, log.Stats, log.Results, log.Reductions, error, cancellationToken: CancellationToken.None).ConfigureAwait(false);
         await hooks.TaskEndAsync(log).ConfigureAwait(false);
         reporter?.Message($"Log written to {log.Location}");
@@ -597,12 +598,28 @@ public static class Eval
         return carried;
     }
 
-    /// <summary>Port of the log file naming of <c>_eval/eval.py</c>: <c>&lt;local time&gt;_&lt;task&gt;_&lt;id&gt;</c> plus the format's extension, with a filename-safe task name.</summary>
-    private static string LogPath(string logDir, string taskName, DateTimeOffset created, LogFormat format)
+    /// <summary>
+    /// Port of <c>_eval/run.py</c>'s <c>metadata=((metadata or {}) | (task.metadata or {})) or None</c>: the eval-level
+    /// metadata with the task's own merged over it, or null when both are empty (Python writes <c>null</c>, not <c>{}</c>).
+    /// </summary>
+    private static IReadOnlyDictionary<string, object?>? EvalMetadata(IReadOnlyDictionary<string, object?>? evalMetadata, IReadOnlyDictionary<string, object?>? taskMetadata)
     {
-        var stamp = created.ToLocalTime().ToString("yyyy-MM-dd'T'HH-mm-ss", CultureInfo.InvariantCulture);
-        var suffix = Convert.ToHexString(RandomNumberGenerator.GetBytes(3)).ToLowerInvariant();
-        var name = new string(taskName.Select(c => char.IsLetterOrDigit(c) || c is '-' or '_' or '.' ? c : '-').ToArray());
-        return Path.Combine(logDir, $"{stamp}_{name}_{suffix}{format.Extension()}");
+        if (evalMetadata is not { Count: > 0 } && taskMetadata is not { Count: > 0 })
+        {
+            return null;
+        }
+
+        var merged = new Dictionary<string, object?>(StringComparer.Ordinal);
+        foreach (var (key, value) in evalMetadata ?? new Dictionary<string, object?>())
+        {
+            merged[key] = value;
+        }
+
+        foreach (var (key, value) in taskMetadata ?? new Dictionary<string, object?>())
+        {
+            merged[key] = value;
+        }
+
+        return merged;
     }
 }

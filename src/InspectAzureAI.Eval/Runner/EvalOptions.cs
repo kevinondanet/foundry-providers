@@ -83,6 +83,9 @@ public sealed record EvalOptions
     /// <summary>Port of <c>eval_set_id</c>: the eval set this run belongs to (set by an eval set driver), written to the log's <c>eval_set_id</c> and carried by every hook payload.</summary>
     public string? EvalSetId { get; init; }
 
+    /// <summary>Port of <c>metadata</c>: metadata to associate with this run, written to the log's <c>eval.metadata</c> merged under the task's own <c>EvalTask.Metadata</c> (task keys win, as in Python).</summary>
+    public IReadOnlyDictionary<string, object?>? Metadata { get; init; }
+
     /// <summary>
     /// Port of <c>ResolvedTask.sample_source</c>: a previous attempt's samples (see <see cref="EvalSampleSource.FromLog"/>).
     /// A completed sample found there is reused as logged instead of being run; an errored one is re-run with its
