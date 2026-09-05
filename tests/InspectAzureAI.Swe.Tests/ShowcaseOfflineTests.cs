@@ -128,7 +128,7 @@ public sealed class ShowcaseOfflineTests : IDisposable
     {
         var written = await RunAsync("run", "--fake", "--task", "hello-swe", "--agent", "basic", "--limit", "1", "--log-dir", _logDir);
         Assert.True(written.ExitCode == 0, written.Stderr + written.Stdout);
-        var path = Assert.Single(Directory.GetFiles(_logDir, "*.json"));
+        var path = Assert.Single(Directory.GetFiles(_logDir, "*.eval"));
 
         var run = await RunAsync("show", path);
 
@@ -204,7 +204,7 @@ public sealed class ShowcaseOfflineTests : IDisposable
         }
     }
 
-    private EvalLog ReadSingleLog() => EvalLogWriter.Read(Assert.Single(Directory.GetFiles(_logDir, "*.json")));
+    private EvalLog ReadSingleLog() => EvalLogWriter.Read(Assert.Single(Directory.GetFiles(_logDir, "*.eval")));
 
     private static double Accuracy(EvalLog log, string scorer) =>
         log.Results!.Scores.Single(score => score.Name == scorer).Metrics["accuracy"].Value;

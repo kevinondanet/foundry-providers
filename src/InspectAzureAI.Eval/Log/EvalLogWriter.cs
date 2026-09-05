@@ -3,6 +3,7 @@ using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
+using InspectAzureAI.Eval.Log.EvalFormat;
 using InspectAzureAI.Eval.Log.Json;
 
 namespace InspectAzureAI.Eval.Log;
@@ -34,6 +35,12 @@ public static class EvalLogWriter
     {
         ArgumentNullException.ThrowIfNull(log);
         ArgumentException.ThrowIfNullOrEmpty(path);
+        if (EvalRecorder.HandlesLocation(path))
+        {
+            EvalRecorder.WriteLog(path, log);
+            return;
+        }
+
         if (Path.GetDirectoryName(Path.GetFullPath(path)) is { Length: > 0 } directory)
         {
             Directory.CreateDirectory(directory);
@@ -46,6 +53,12 @@ public static class EvalLogWriter
     {
         ArgumentNullException.ThrowIfNull(log);
         ArgumentException.ThrowIfNullOrEmpty(path);
+        if (EvalRecorder.HandlesLocation(path))
+        {
+            await EvalRecorder.WriteLogAsync(path, log, cancellationToken: cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
         if (Path.GetDirectoryName(Path.GetFullPath(path)) is { Length: > 0 } directory)
         {
             Directory.CreateDirectory(directory);
@@ -57,6 +70,11 @@ public static class EvalLogWriter
     public static EvalLog Read(string path)
     {
         ArgumentException.ThrowIfNullOrEmpty(path);
+        if (EvalRecorder.HandlesLocation(path))
+        {
+            return EvalLogFiles.ReadEvalLog(path);
+        }
+
         return Deserialize(File.ReadAllText(path, Encoding.UTF8)) with { Location = path };
     }
 
@@ -66,6 +84,11 @@ public static class EvalLogWriter
     public static async Task<EvalLog> ReadAsync(string path, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrEmpty(path);
+        if (EvalRecorder.HandlesLocation(path))
+        {
+            return await EvalLogFiles.ReadEvalLogAsync(path, cancellationToken: cancellationToken).ConfigureAwait(false);
+        }
+
         return Deserialize(await File.ReadAllTextAsync(path, Encoding.UTF8, cancellationToken).ConfigureAwait(false)) with { Location = path };
     }
 
@@ -73,10 +96,13 @@ public static class EvalLogWriter
         ResolveAttachments(await ReadAsync(path, cancellationToken).ConfigureAwait(false), resolveAttachments);
 
     /// <summary>Port of <c>read_eval_log(location, header_only=True)</c>: the log without <see cref="EvalLog.Samples"/> and <see cref="EvalLog.Reductions"/>.</summary>
-    public static EvalLog ReadHeader(string path) => Read(path) with { Samples = null, Reductions = null };
+    public static EvalLog ReadHeader(string path) =>
+        EvalRecorder.HandlesLocation(path) ? EvalLogFiles.ReadEvalLog(path, headerOnly: true) : Read(path) with { Samples = null, Reductions = null };
 
     public static async Task<EvalLog> ReadHeaderAsync(string path, CancellationToken cancellationToken = default) =>
-        await ReadAsync(path, cancellationToken).ConfigureAwait(false) with { Samples = null, Reductions = null };
+        EvalRecorder.HandlesLocation(path)
+            ? await EvalLogFiles.ReadEvalLogAsync(path, headerOnly: true, cancellationToken: cancellationToken).ConfigureAwait(false)
+            : await ReadAsync(path, cancellationToken).ConfigureAwait(false) with { Samples = null, Reductions = null };
 
     /// <summary>Every sample of <paramref name="log"/> passed through <see cref="LogAttachments.ResolveSampleAttachments"/>.</summary>
     public static EvalLog ResolveAttachments(EvalLog log, ResolveAttachments mode)

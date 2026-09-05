@@ -2,6 +2,7 @@ using System.Text.Json;
 using InspectAzureAI.Eval.Context;
 using InspectAzureAI.Eval.Dataset;
 using InspectAzureAI.Eval.Log;
+using InspectAzureAI.Eval.Log.EvalFormat;
 using InspectAzureAI.Eval.Model;
 using InspectAzureAI.Eval.Runner;
 using InspectAzureAI.Eval.Sandbox;
@@ -42,7 +43,7 @@ public sealed class RunnerExtrasTests : IDisposable
     }
 
     private EvalOptions Options(ScriptedModelApi? api = null, ModelRetryOptions? retry = null) =>
-        new() { Model = new Model(api ?? new ScriptedModelApi(), retry: retry), LogDir = _logDir, MaxSamples = 1 };
+        new() { Model = new Model(api ?? new ScriptedModelApi(), retry: retry), LogDir = _logDir, MaxSamples = 1, LogFormat = LogFormat.Json };
 
     private static Solver Failing(Func<TaskState, bool> fail) =>
         (state, _, _) => fail(state) ? throw new InvalidOperationException("Eval failed!") : Task.FromResult(state);

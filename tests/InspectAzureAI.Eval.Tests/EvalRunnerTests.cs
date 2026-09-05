@@ -2,6 +2,7 @@ using System.Text.RegularExpressions;
 using InspectAzureAI.Eval.Context;
 using InspectAzureAI.Eval.Dataset;
 using InspectAzureAI.Eval.Log;
+using InspectAzureAI.Eval.Log.EvalFormat;
 using InspectAzureAI.Eval.Model;
 using InspectAzureAI.Eval.Runner;
 using InspectAzureAI.Eval.Sandbox;
@@ -39,7 +40,7 @@ public sealed class EvalRunnerTests : IDisposable
         }
     }
 
-    private EvalOptions Options(ScriptedModelApi api) => new() { Model = new Model(api), LogDir = _logDir, MaxSamples = 1 };
+    private EvalOptions Options(ScriptedModelApi api) => new() { Model = new Model(api), LogDir = _logDir, MaxSamples = 1, LogFormat = LogFormat.Json };
 
     [Fact]
     public async Task run_scores_every_sample_and_writes_a_readable_log()

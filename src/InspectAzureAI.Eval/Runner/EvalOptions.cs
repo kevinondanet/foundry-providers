@@ -1,4 +1,5 @@
 using InspectAzureAI.Eval.Concurrency;
+using InspectAzureAI.Eval.Log.EvalFormat;
 
 namespace InspectAzureAI.Eval.Runner;
 
@@ -39,7 +40,11 @@ public sealed record EvalOptions
     /// <summary>Port of <c>retry_on_error</c>: how many times a sample that errors is re-run (from scratch, same uuid) before its error counts.</summary>
     public int? RetryOnError { get; init; }
 
-    public string LogDir { get; init; } = "logs";
+    /// <summary>Port of <c>log_dir</c>: defaults to <c>INSPECT_LOG_DIR</c>, else <c>logs</c>.</summary>
+    public string LogDir { get; init; } = LogFormats.DefaultLogDir;
+
+    /// <summary>Port of <c>log_format</c>: <c>eval</c> (the native zip) or <c>json</c>; null reads <c>INSPECT_LOG_FORMAT</c> / <c>INSPECT_EVAL_LOG_FORMAT</c> and otherwise uses <c>eval</c>, as Python does.</summary>
+    public LogFormat? LogFormat { get; init; }
 
     public bool Cleanup { get; init; } = true;
 
