@@ -1,4 +1,5 @@
 using InspectAzureAI.Eval.Agents;
+using InspectAzureAI.Eval.Model.Cache;
 
 namespace InspectAzureAI.Swe.ClaudeCode;
 
@@ -79,6 +80,12 @@ public sealed record ClaudeCodeOptions
 
     /// <summary>Bridge port; 0 picks a free port.</summary>
     public int Port { get; init; }
+
+    /// <summary>
+    /// Prompt cache policy for the generations the CLI makes through the bridge (port-only; Python's bridge takes
+    /// no cache). Null disables the cache.
+    /// </summary>
+    public CachePolicy? Cache { get; init; }
 
     /// <summary>Port of the validation in <c>claude_code()</c> (<c>claude_code.py:107-111, 267-270</c>).</summary>
     public void Validate()

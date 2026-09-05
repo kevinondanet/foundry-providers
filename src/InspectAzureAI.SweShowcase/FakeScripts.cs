@@ -25,7 +25,10 @@ internal static class FakeScripts
     /// <summary>Turns per run; every turn is the same conversation-driven factory, so the budget only bounds a pathological loop.</summary>
     private const int TurnBudget = 512;
 
-    public static ScriptedModelApi For(string task, string agent)
+    /// <param name="task">The built-in task whose sample 1 the script solves.</param>
+    /// <param name="agent">The agent whose tool-call shape the turns take.</param>
+    /// <param name="modelName">The model name the api reports (the matrix names one per fake deployment so their logs and eval-set identifiers differ).</param>
+    public static ScriptedModelApi For(string task, string agent, string modelName = ModelName)
     {
         var solution = SolutionFor(task);
         Func<IReadOnlyList<ChatMessage>, IReadOnlyList<ToolInfo>, ModelOutput> respond = agent switch
@@ -37,7 +40,7 @@ internal static class FakeScripts
                 + "Use --agent mini-swe or --agent basic with --fake, or drop --fake."),
             _ => throw new UsageError($"--agent expects {string.Join("|", AgentChoice.Names)}, got '{agent}'"),
         };
-        return new ScriptedModelApi(Enumerable.Repeat(ScriptedTurn.From(respond), TurnBudget), ModelName);
+        return new ScriptedModelApi(Enumerable.Repeat(ScriptedTurn.From(respond), TurnBudget), modelName);
     }
 
     private static ModelOutput MiniSweTurn(FakeSolution solution, IReadOnlyList<ChatMessage> messages)

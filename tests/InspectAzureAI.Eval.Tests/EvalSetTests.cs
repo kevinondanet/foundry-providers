@@ -2,6 +2,7 @@ using System.Text.RegularExpressions;
 using InspectAzureAI.Eval.Concurrency;
 using InspectAzureAI.Eval.Dataset;
 using InspectAzureAI.Eval.Log;
+using InspectAzureAI.Eval.Log.EvalFormat;
 using InspectAzureAI.Eval.Runner;
 using InspectAzureAI.Eval.Runner.EvalSet;
 using InspectAzureAI.Eval.Tasks;
@@ -350,6 +351,29 @@ public sealed class EvalSetTests : IDisposable
     }
 
     // ---- sample source and carry-forward ----------------------------------------------------------------------
+
+    [Fact]
+    public async Task a_reused_sample_is_re_logged_into_the_retry_log_file()
+    {
+        var task = QuizTask(samples: 2) with { FailOnError = FailOnError.Never };
+        var previous = await Eval.RunAsync(task, Options(new ScriptedModelApi(ScriptedTurn.Text("answer1"), ScriptedTurn.Throw(Boom("q2")))) with { LogFormat = LogFormat.Eval });
+        Assert.Null(previous.Samples![0].Error);
+        Assert.NotNull(previous.Samples[1].Error);
+        Assert.Equal(2, previous.Eval.Dataset.Samples);
+
+        var retry = await Eval.RunAsync(
+            task,
+            Options(new ScriptedModelApi(ScriptedTurn.Text("answer2"))) with { LogFormat = LogFormat.Eval, SampleSource = EvalSampleSource.FromLog(previous, task.Dataset), TaskId = previous.Eval.TaskId });
+
+        Assert.Equal(EvalStatus.Success, retry.Status);
+        // the .eval recorder writes samples as they are logged: a reused one must be re-logged (Python's reuse sweep) or the file lacks it
+        var written = EvalLogWriter.Read(retry.Location!);
+        Assert.Equal(2, written.Samples!.Count);
+        Assert.Equal(previous.Samples[0].Uuid, written.Samples.Single(sample => (int)sample.Id == 1).Uuid);
+        Assert.Equal("answer1", written.Samples.Single(sample => (int)sample.Id == 1).Output.Completion);
+        Assert.Equal("answer2", written.Samples.Single(sample => (int)sample.Id == 2).Output.Completion);
+        Assert.Null(written.Samples.Single(sample => (int)sample.Id == 2).Error);
+    }
 
     [Fact]
     public async Task an_aborted_attempt_carries_forward_the_error_history_of_samples_it_never_ran()

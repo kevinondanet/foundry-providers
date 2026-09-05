@@ -107,7 +107,7 @@ sign-in problem is detected before any sample starts (a token is acquired up fro
 ```
 swe-showcase list
 swe-showcase run --task <name> --agent mini-swe|claude-code|basic [options]
-swe-showcase show <log.json>
+swe-showcase show <log.eval|log.json>
 ```
 
 (`swe-showcase` stands for `dotnet run --project src/InspectAzureAI.SweShowcase --`.)
@@ -124,17 +124,26 @@ swe-showcase show <log.json>
 | `--max-samples N` | Samples in flight at once (default 4). |
 | `--attempts N` | Submissions the agent may make; an incorrect one is scored through `score()` and the agent is told to retry (default 1). |
 | `--sandbox docker\|local` | `docker` (default) builds the showcase image and runs one container per sample; `local` runs the sample on this host in a fresh temp directory — **demo only**: the agent's commands run unconfined on your machine, and the checks need `python3` (and `pytest` for `pytest-fix`) on the PATH. With `--fake` the default is `local`. |
-| `--log-dir DIR` | Where the JSON eval log goes (default `logs`). |
+| `--log-dir DIR` | Where the eval log goes (default `logs`, or `$INSPECT_LOG_DIR`). |
+| `--log-format eval\|json` | The log format: `eval` (default, the `.eval` zip Inspect's viewer reads; `$INSPECT_LOG_FORMAT` overrides) or `json`. |
 | `--no-cleanup` | Keep the containers / temp directories for inspection (their names are logged). |
 | `--max-tokens <n\|none>` | `max_tokens` sent; default the provider's `max_tokens()`. |
 | `--reasoning-effort <lvl>` | Inspect's `reasoning_effort` (`none\|minimal\|low\|medium\|high\|xhigh\|max`), applied through the model's `GenerateConfig` for all agents. |
 | `--model-arg key=value` | Repeatable; the Python `-M` model args (JSON values are parsed). |
+| `--approval <policy>` | Tool-call approval: a JSON policy file (`{"approvers": [{"name", "tools", ...}]}`, the structure of Inspect's YAML policies) or a registered approver name (`auto`, `human`). Applied to the bash calls of `mini-swe` and `basic` and to Claude Code's tool calls through the bridge; `reject` answers the call with an approval error, `terminate` ends the sample with the `operator` limit. |
+| `--cache <expiry\|off>` | Inspect's prompt cache (`generate(cache=)`) for every model call: `1W`, `3D`, `12h`, ... (`on` = `1W`). A hit replays the stored output without a provider call and is recorded as `cache: read` on the model event; entries live under `$INSPECT_CACHE_DIR` or the user cache directory. |
+| `--compaction <strategy>` | `edit\|summary\|trim\|auto[:threshold]` — compact the conversation once it reaches the threshold (a token count, or a fraction of the context window; default 0.9), as `react(compaction=)` does. `mini-swe` and `basic` only; Claude Code compacts its own context, so the flag is a usage error there. |
+| `--hooks <name[=file]>` | Lifecycle hooks: `sample-log` prints one `[hook]` line per run, task, sample and model event (`sample-log=FILE` writes them to a file). Repeatable / comma-separated. |
+| `--cost-limit <dollars>` | Stop a sample once its priced model usage exceeds this; needs prices for the model (a limit without prices is exit 2). |
+| `--model-cost-config FILE` | JSON prices per model (`{"<deployment>": {"input", "output", "input_cache_write", "input_cache_read"}}` in $/million tokens; `$INSPECT_AZUREAI_MODEL_COST_CONFIG` applies one to every run). Costs then appear on the log's usage (`total_cost`), in the summary and in `show`. |
 | `--fake` | A scripted model that solves sample 1 of the task offline (see below). |
 | `--debug` | Claude Code debug capture (stdout/stderr into the sample store) and full exception traces. |
 
-`list` prints the tasks (sample count, scorer), the agents and the sandbox Dockerfile path. `show` prints the
-run's status, token usage, the metrics table and one line per sample (scores, tokens, time, model/tool call
-counts, limit, error), the first line of the submitted answer and the last line of each score's explanation.
+`list` prints the tasks (sample count, scorer), the agents and the sandbox Dockerfile path. `show` reads either
+log format (`read_eval_log`) and prints the run's status, token usage and cost, the recorded approval policy and
+cost limit, the metrics table and one line per sample (scores, tokens, cost, time, model/tool call counts, what
+the cache, approvals and compaction did, limit, error), the first line of the submitted answer and the last line
+of each score's explanation.
 
 ### `--fake`: the offline mode
 
@@ -153,8 +162,11 @@ is a useful smoke test of the Docker provider without any model cost.
 `src/InspectAzureAI.ModelMatrix` is a second console app on the same runner: it discovers every deployment on the
 Foundry resource behind `AZUREAI_BASE_URL` (through Azure Resource Manager, the same `FoundryCatalog` the sample's
 `models` command uses), runs one showcase task with one agent against each of them — Claude Code on `hello-swe` by
-default — and prints a results matrix. Each deployment gets its own eval and JSON log; the run's summary goes to
-`<log-dir>/<timestamp>_matrix_<task>.json` (or `--out`) and, with `--markdown`, to a Markdown table.
+default — and prints a results matrix. Each deployment is its own **eval set** in `<log-dir>/<deployment>/`
+(`EvalSet.RunAsync`, the port of `inspect eval-set`): running the matrix again with the same `--log-dir` resumes
+it — a complete log is reused without running (the row says `reused`), an incomplete one is re-run reusing its
+completed samples, and an eval that errors is retried immediately (`--retry-attempts`, default 2). The run's
+summary goes to `<log-dir>/<timestamp>_matrix_<task>.json` (or `--out`) and, with `--markdown`, to a Markdown table.
 
 ```bash
 # Claude Code × every chat deployment, one sample each, three deployments at a time
@@ -173,6 +185,8 @@ dotnet run --project src/InspectAzureAI.ModelMatrix -- --fake
 | `--format OpenAI,Anthropic` | Keep only these ARM model formats. |
 | `--include-non-chat` | Also try deployments whose capabilities say `chatCompletion=false` (image, parsing and embedding models are skipped otherwise). |
 | `--parallel N` | Deployments evaluated at the same time (default 1). The sandbox image is built once and shared. |
+| `--retry-attempts N` | Immediate eval-set retries of a deployment whose eval errors, reusing its completed samples (default 2; Python's `eval_set` defaults to 10). |
+| `--model-cost-config FILE`, `--cost-limit`, `--cache`, `--compaction`, `--hooks`, `--approval`, `--log-format` | The showcase flags above, applied to every deployment; with prices the matrix reports a `cost` column and total, and hook lines are prefixed with the deployment name. |
 | `--out FILE`, `--markdown FILE` | The JSON summary and an optional Markdown table. |
 | `--resume FILE` | Rerun only the deployments that errored in a previous matrix JSON (same task and agent) and carry its other rows over — for transient failures, so a 20-model run is not repeated for one network blip. Not with `--only`. |
 | `--show FILE` | Print a saved matrix JSON (and re-render its Markdown with `--markdown`) without running anything. |
@@ -180,7 +194,8 @@ dotnet run --project src/InspectAzureAI.ModelMatrix -- --fake
 
 Each row records the deployment's status — `ok` (accuracy 1), `partial`, `incorrect`, `unscored`, `error`
 (the eval or a sample failed; the first line of the error is the note) or `skipped` (with the reason) — plus
-accuracy, tokens, wall time and the eval log path. A failing deployment never stops the matrix; only a sign-in
+accuracy, tokens, cost (when the model is priced), throughput (`tok/s`: tokens over wall time), wall time,
+whether the row was reused from an earlier run, and the eval log path. A failing deployment never stops the matrix; only a sign-in
 failure or Ctrl-C does. Exit codes: **0** every selected deployment completed (incorrect answers are results,
 not errors), **1** at least one deployment errored, **2** usage or missing prerequisite, **3** sign-in, Azure or
 runtime failure. The last full run is in [model-matrix-results.md](model-matrix-results.md).

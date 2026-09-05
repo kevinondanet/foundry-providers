@@ -1,6 +1,7 @@
 using System.Text.Json.Nodes;
 using InspectAzureAI.Eval.Approval;
 using InspectAzureAI.Eval.Model;
+using InspectAzureAI.Eval.Model.Cache;
 using InspectAzureAI.Provider.Core;
 using InspectAzureAI.Provider.Util;
 
@@ -45,7 +46,8 @@ public sealed class AgentBridge
         int? retryRefusals = null,
         bool forwardGenerationConfig = false,
         IModelEventSink? modelEventSink = null,
-        IReadOnlyList<ApprovalPolicy>? approval = null)
+        IReadOnlyList<ApprovalPolicy>? approval = null,
+        CachePolicy? cache = null)
     {
         ArgumentNullException.ThrowIfNull(state);
         ArgumentNullException.ThrowIfNull(model);
@@ -56,6 +58,7 @@ public sealed class AgentBridge
         ForwardGenerationConfig = forwardGenerationConfig;
         ModelEventSink = modelEventSink;
         Approval = approval;
+        Cache = cache;
 
         var initialMessages = state.Messages.Where(m => m.Role != "system").ToList();
         _initialFps = initialMessages.Select(MessageFingerprint.Of).ToList();
@@ -93,6 +96,12 @@ public sealed class AgentBridge
     /// <see cref="ToolApproval.Begin"/> scope entered later inside the agent body is invisible to them.
     /// </summary>
     public IReadOnlyList<ApprovalPolicy>? Approval { get; }
+
+    /// <summary>
+    /// Prompt cache policy for every bridged generation (port-only: Python's <c>bridge_generate</c> takes no cache;
+    /// the .NET showcase's <c>--cache</c> flag reaches the bridged Claude Code CLI through it).
+    /// </summary>
+    public CachePolicy? Cache { get; }
 
     /// <summary>
     /// Port of <c>request_terminate</c>: terminates the sample from a bridged generation by throwing
@@ -180,7 +189,7 @@ public sealed class AgentBridge
         {
             using (ModelEventSink is null ? null : ModelEventSinks.Install(ModelEventSink))
             {
-                output = await model.GenerateAsync(generateInput, tools, toolChoice, config, cancellationToken: cancellationToken).ConfigureAwait(false);
+                output = await model.GenerateAsync(generateInput, tools, toolChoice, config, cache: Cache, cancellationToken: cancellationToken).ConfigureAwait(false);
             }
 
             if (!output.Empty && output.StopReason == StopReason.ContentFilter && RetryRefusals is { } limit && refusals < limit)

@@ -119,7 +119,8 @@ public static class Eval
             {
                 Name = task.Dataset.Name,
                 Location = task.Dataset.Location,
-                Samples = samples.Count,
+                // Python records len(task.dataset), the whole dataset; the selection is sample_ids (eval-set sample reuse compares against this)
+                Samples = task.Dataset.Count,
                 SampleIds = samples.Select(sample => sample.Id!).ToArray(),
                 Shuffled = task.Dataset.Shuffled,
             },
@@ -226,7 +227,11 @@ public static class Eval
         if (options.SampleSource is { } sampleSource
             && (cancellationToken.IsCancellationRequested || failure is not null || SampleErrorHandler.ShouldEvalFail(errorHandler.ErrorCount, totalSamples, failOnError)))
         {
-            CarryForwardUnloggedSamples(sampleSource, samples, epochs, results, reused);
+            foreach (var index in CarryForwardUnloggedSamples(sampleSource, samples, epochs, results, reused))
+            {
+                // Python's carry-forward completes the sample on the logger too, so the file carries the error history
+                await LogSampleAsync(results[index]!.Sample).ConfigureAwait(false);
+            }
         }
 
         var completed = results.OfType<SampleResult>().ToList();
@@ -326,6 +331,8 @@ public static class Eval
                     var reusedResult = ReusedSampleResult(reusable.Sample);
                     results[index] = reusedResult;
                     reused[index] = true;
+                    // Python re-logs a reused sample into this attempt's log (the reuse sweep), so the file is complete on its own
+                    await LogSampleAsync(reusable.Sample).ConfigureAwait(false);
                     reporter?.SampleCompleted(reusable.Sample);
                     if (earlyStopping is not null)
                     {
@@ -538,10 +545,12 @@ public static class Eval
     /// <summary>
     /// Port of <c>carry_forward_unlogged_samples</c>: on a non-success finish, a planned sample that errored in the
     /// previous attempt but never ran in this one (a sibling's failure stopped the run first) is re-logged from the
-    /// previous record, so the next attempt's sample source still sees its error history.
+    /// previous record, so the next attempt's sample source still sees its error history. Returns the result
+    /// indices it filled, for the caller to re-log.
     /// </summary>
-    private static void CarryForwardUnloggedSamples(EvalSampleSource source, IReadOnlyList<Sample> samples, int epochs, SampleResult?[] results, bool[] reused)
+    private static List<int> CarryForwardUnloggedSamples(EvalSampleSource source, IReadOnlyList<Sample> samples, int epochs, SampleResult?[] results, bool[] reused)
     {
+        var carried = new List<int>();
         var positions = new Dictionary<string, int>(StringComparer.Ordinal);
         for (var i = 0; i < samples.Count; i++)
         {
@@ -560,8 +569,11 @@ public static class Eval
             {
                 results[index] = ReusedSampleResult(previous.Sample);
                 reused[index] = true;
+                carried.Add(index);
             }
         }
+
+        return carried;
     }
 
     /// <summary>Port of the log file naming of <c>_eval/eval.py</c>: <c>&lt;local time&gt;_&lt;task&gt;_&lt;id&gt;</c> plus the format's extension, with a filename-safe task name.</summary>
