@@ -49,4 +49,11 @@ public sealed record EvalOptions
     public string? ModelCostConfig { get; init; }
 
     public IEvalReporter? Reporter { get; init; }
+
+    /// <summary>
+    /// Port of <c>model_roles</c>: role name → a model name, a <see cref="Model"/>, or a list of these, resolved by
+    /// <c>ModelRoles.Resolve</c> and merged over the task's own roles (eval-level roles win per role). Solvers and
+    /// scorers look them up with <c>ModelRoles.GetModel(role, ...)</c>.
+    /// </summary>
+    public IReadOnlyDictionary<string, object>? ModelRoles { get; init; }
 }

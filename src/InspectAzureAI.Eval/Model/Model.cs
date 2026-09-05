@@ -4,6 +4,7 @@ using InspectAzureAI.Eval.Concurrency;
 using InspectAzureAI.Eval.Agents;
 using InspectAzureAI.Eval.Context;
 using InspectAzureAI.Eval.Model.Cache;
+using InspectAzureAI.Eval.Model.Compaction;
 using InspectAzureAI.Eval.Model.Cost;
 using InspectAzureAI.Eval.Tools;
 using InspectAzureAI.Provider.Core;
@@ -42,8 +43,10 @@ public sealed class Model
 
     /// <summary>
     /// Port of <c>GenerateConfig.adaptive_connections</c>: null (the default) and <see cref="AdaptiveConnections.Default"/>
-    /// gate generates with an adaptive controller; <see cref="AdaptiveConnections.Disabled"/> is the opt-out. An
-    /// explicit <c>MaxConnections</c> in the config silently wins either way.
+    /// gate generates with an adaptive controller; <see cref="AdaptiveConnections.Disabled"/> is the opt-out. When
+    /// unset, the value carried on the resolved config's <see cref="GenerateConfig.AdaptiveConnections"/> applies
+    /// (see <see cref="AdaptiveConnections.FromConfigValue"/>). An explicit <c>MaxConnections</c> in the config
+    /// silently wins either way.
     /// </summary>
     public AdaptiveConnections? AdaptiveConnections { get; init; }
 
@@ -51,7 +54,44 @@ public sealed class Model
     public string ConcurrencyKey => ModelConcurrency.Key(Api);
 
     /// <summary>A copy of this model that also delivers events to <paramref name="sink"/>.</summary>
-    public Model WithEventSink(IModelEventSink sink) => new(Api, Config, Retry) { EventSink = sink, AdaptiveConnections = AdaptiveConnections };
+    public Model WithEventSink(IModelEventSink sink) => new(Api, Config, Retry) { EventSink = sink, AdaptiveConnections = AdaptiveConnections, Role = Role };
+
+    /// <summary>Port of <c>Model.role</c>: the named role this instance is bound to (see <see cref="ModelRoles"/>), stamped on every <see cref="ModelEvent"/> and used for per-role usage.</summary>
+    public string? Role { get; init; }
+
+    /// <summary>A copy of this model bound to <paramref name="role"/> (port of <c>copy(model)._set_role(role)</c>).</summary>
+    public Model WithRole(string role)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(role);
+        return new Model(Api, Config, Retry) { EventSink = EventSink, AdaptiveConnections = AdaptiveConnections, Role = role };
+    }
+
+    /// <summary>A copy of this model with <paramref name="config"/> as its config.</summary>
+    public Model WithConfig(GenerateConfig config)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+        return new Model(Api, config, Retry) { EventSink = EventSink, AdaptiveConnections = AdaptiveConnections, Role = Role };
+    }
+
+    /// <summary>
+    /// Port of <c>Model.count_tokens</c>: an api that implements <see cref="ICompactionModelApi"/> supplies its own
+    /// count (Python's provider override of <c>count_tokens</c>); otherwise a conservative estimate for
+    /// <paramref name="messages"/> (<see cref="TokenEstimation"/>; Foundry has no token-counting endpoint).
+    /// </summary>
+    public Task<int> CountTokensAsync(IReadOnlyList<ChatMessage> messages, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(messages);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (Api is ICompactionModelApi native)
+        {
+            return native.CountTokensAsync(messages, cancellationToken);
+        }
+
+        return TokenEstimation.CountTokensAsync(
+            messages,
+            text => Task.FromResult(TokenEstimation.CountTextTokens(text)),
+            media => Task.FromResult(TokenEstimation.CountMediaTokens(media)));
+    }
 
     public Task<ModelOutput> GenerateAsync(
         string input,
@@ -134,6 +174,9 @@ public sealed class Model
 
         var started = DateTimeOffset.UtcNow;
         var retries = 0;
+        // one stream observer per generate call (spanning attempts, as in Python) whenever the call asked for
+        // chunks: an on_stream handler, or a stream_idle_timeout (stall detection cannot work without them)
+        var observer = onStream is not null || resolvedConfig.StreamIdleTimeout is not null ? new ModelStreamObserver(Name, onStream) : null;
         while (true)
         {
             var attemptStarted = DateTimeOffset.UtcNow;
@@ -146,17 +189,28 @@ public sealed class Model
 
             GenerateResult? result = null;
             Exception? thrown = null;
-            try
+            using (var attempt = new GenerateAttempt(observer, resolvedConfig, cancellationToken))
             {
-                result = await Api.GenerateAsync(messages, resolvedTools, resolvedChoice, resolvedConfig, onStream, cancellationToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                thrown = ex;
+                try
+                {
+                    result = await Api.GenerateAsync(messages, resolvedTools, resolvedChoice, resolvedConfig, onStream, attempt.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    thrown = ex;
+                }
+
+                // Python checks the scopes' cancel_called after the call: a fired timeout wins over whatever the
+                // attempt produced, the stall scope's sharper diagnosis over the attempt timeout
+                if (attempt.TimeoutError is { } timeoutError)
+                {
+                    result = null;
+                    thrown = timeoutError;
+                }
             }
 
             var elapsed = stopwatch.Elapsed.TotalSeconds;
@@ -165,9 +219,15 @@ public sealed class Model
             {
                 output = ModelCosts.PriceOutput(Name, WithGenerateSource(output));
                 Record(messages, resolvedTools, resolvedChoice, resolvedConfig, output, result.Call, retries, null, attemptStarted, elapsed, cacheMode);
+                SampleModelAccumulators.RecordFallback(output);
                 if (output.Usage is { } usage)
                 {
                     Throughput.RecordGenerate(Name, usage);
+                    if (Role is { } role)
+                    {
+                        SampleModelAccumulators.RecordRoleUsage(role, usage);
+                    }
+
                     context?.Limits.AddUsage(usage, Name);
                     LimitScope.RecordUsage(usage);
                 }
@@ -190,7 +250,13 @@ public sealed class Model
             var failure = thrown ?? new InvalidOperationException("Model API returned neither an output nor an error.");
             Record(messages, resolvedTools, resolvedChoice, resolvedConfig, null, null, retries, failure.Message, attemptStarted, elapsed, cacheMode);
 
-            var decision = thrown is null ? RetryDecision.No() : ModelApiHooks.ShouldRetry(Api, thrown);
+            // attempt / stream-idle timeouts are always retried (transient), as in Python's should_retry
+            var decision = thrown switch
+            {
+                null => RetryDecision.No(),
+                AttemptTimeoutException or StreamIdleTimeoutException => RetryDecision.Transient(),
+                _ => ModelApiHooks.ShouldRetry(Api, thrown),
+            };
             if (decision.Retry)
             {
                 Concurrency.ReportHttpRetry(decision.Kind, decision.RetryAfter, Name);
@@ -289,9 +355,10 @@ public sealed class Model
     private IConcurrencySemaphore ConnectionSemaphore(GenerateConfig config)
     {
         var key = ConcurrencyKey;
-        if (Concurrency.AdaptiveActive(AdaptiveConnections, config.MaxConnections))
+        var setting = AdaptiveConnections ?? AdaptiveConnections.FromConfigValue(config.AdaptiveConnections);
+        if (Concurrency.AdaptiveActive(setting, config.MaxConnections))
         {
-            var adaptive = (AdaptiveConnections ?? AdaptiveConnections.Default).Resolve();
+            var adaptive = (setting ?? AdaptiveConnections.Default).Resolve();
             return Concurrency.GetOrCreateSemaphore(Name, adaptive.Start, key, visible: true, adaptive: adaptive);
         }
 
@@ -353,6 +420,7 @@ public sealed class Model
         {
             Timestamp = started,
             Model = Name,
+            Role = Role,
             Input = input,
             Tools = tools,
             ToolChoice = toolChoice,

@@ -69,14 +69,6 @@ public sealed record EvalRetryError(string Message, string Traceback = "", strin
     public IReadOnlyList<TranscriptEvent>? Events { get; init; }
 }
 
-/// <summary>Port of <c>model/_model_output.py</c> <c>ModelFallback</c>: a fallback model that served requests.</summary>
-public sealed record ModelFallback(string Model, string FallbackModel)
-{
-    public int Count { get; init; } = 1;
-
-    public IReadOnlyDictionary<string, object?>? Metadata { get; init; }
-}
-
 /// <summary>Port of <c>model/_model_config.py</c> <c>ModelConfig</c>: a model role's model, config, base URL and args.</summary>
 public sealed record ModelConfig(string Model)
 {

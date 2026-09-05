@@ -681,6 +681,22 @@ public sealed class ConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public void generate_config_adaptive_connections_values_map_to_the_setting()
+    {
+        Assert.Null(AdaptiveConnections.FromConfigValue(null));
+        Assert.Same(AdaptiveConnections.Default, AdaptiveConnections.FromConfigValue(true));
+        Assert.Same(AdaptiveConnections.Disabled, AdaptiveConnections.FromConfigValue(false));
+        Assert.Same(AdaptiveConnections.Disabled, AdaptiveConnections.FromConfigValue(AdaptiveConnections.Disabled));
+        Assert.Equal((10, 20, 50), Triple(AdaptiveConnections.FromConfigValue(50)!.Resolve()));
+        Assert.Equal((4, 20, 80), Triple(AdaptiveConnections.FromConfigValue("4-80")!.Resolve()));
+        Assert.Equal((4, 20, 80), Triple(AdaptiveConnections.FromConfigValue(AdaptiveConcurrency.Parse("4-80"))!.Resolve()));
+        Assert.Throws<ArgumentException>(() => AdaptiveConnections.FromConfigValue(1.5));
+        Assert.Throws<FormatException>(() => AdaptiveConnections.FromConfigValue("nope"));
+
+        static (int, int, int) Triple(AdaptiveConcurrency c) => (c.Min, c.Start, c.Max);
+    }
+
+    [Fact]
     public void advanced_fields_override_controller_behaviour()
     {
         var c = Controller(start: 40, decrease: 0.5);

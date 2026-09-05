@@ -76,3 +76,16 @@ public sealed record ContentVideo(string Video, string Format) : Content
 {
     public override string Type => "video";
 }
+
+/// <summary>
+/// Document content, e.g. a PDF (port of <c>ContentDocument</c>, <c>content.py</c>): a file path or base64 data
+/// URI with an optional filename and mime type. Neither Foundry route sends documents; it exists for token
+/// estimation and log fidelity.
+/// </summary>
+public sealed record ContentDocument(string Document, string Filename = "", string MimeType = "") : Content
+{
+    public override string Type => "document";
+
+    /// <summary>Enable model-generated citations for text or PDF documents (ignored by providers without citation support).</summary>
+    public bool Citations { get; init; }
+}

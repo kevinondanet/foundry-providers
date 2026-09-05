@@ -165,6 +165,25 @@ public sealed record AdaptiveConnections
     }
 
     /// <summary>
+    /// Resolves the value carried on <see cref="InspectAzureAI.Provider.Core.GenerateConfig.AdaptiveConnections"/> (Python's
+    /// <c>adaptive_connections: bool | int | AdaptiveConcurrency | None</c>): a bool, an int (the <c>max</c>
+    /// shorthand), an <see cref="AdaptiveConcurrency"/>, an <see cref="AdaptiveConnections"/> or a CLI-style
+    /// string (see <see cref="Parse"/>); null stays null so the default applies.
+    /// </summary>
+    /// <exception cref="ArgumentException"><paramref name="value"/> is of any other type.</exception>
+    /// <exception cref="FormatException">A string value is not a valid CLI form.</exception>
+    public static AdaptiveConnections? FromConfigValue(object? value) => value switch
+    {
+        null => null,
+        AdaptiveConnections setting => setting,
+        bool enabled => enabled ? Default : Disabled,
+        int max => WithMax(max),
+        AdaptiveConcurrency config => From(config),
+        string text => Parse(text),
+        _ => throw new ArgumentException($"{value.GetType().Name} is not a valid adaptive_connections value (expected a bool, an int, an AdaptiveConcurrency or a string).", nameof(value)),
+    };
+
+    /// <summary>
     /// Port of <c>_parse_adaptive_connections_cli</c>: <c>true</c>/<c>yes</c>, <c>false</c>/<c>no</c>
     /// (case-insensitive), a bare integer (the <c>max</c> shorthand — <c>1</c> and <c>0</c> are integers, not
     /// booleans) or the <c>min-max</c> / <c>min-start-max</c> shorthand.

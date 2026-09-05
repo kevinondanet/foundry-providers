@@ -112,16 +112,6 @@ public static class ModelCompactionExtensions
         return model.Api is ScriptedModelApi ? DefaultContextWindow : null;
     }
 
-    /// <summary>Port of <c>Model.count_tokens</c> for a message list.</summary>
-    public static Task<int> CountTokensAsync(this Model model, IReadOnlyList<ChatMessage> input, CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(model);
-        ArgumentNullException.ThrowIfNull(input);
-        return model.Api is ICompactionModelApi api
-            ? api.CountTokensAsync(input, cancellationToken)
-            : Task.FromResult(TokenEstimator.CountTokens(input));
-    }
-
     /// <summary>
     /// Port of <c>Model.count_tool_tokens</c>: the tool definitions rendered as their OpenAI function JSON,
     /// concatenated into one user message and counted.

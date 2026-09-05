@@ -32,6 +32,10 @@ internal sealed class ContentConverterFactory : JsonConverterFactory
                 GetString(element, "arguments") ?? throw new JsonException("A tool_use content item requires 'arguments'."),
                 GetString(element, "result") ?? throw new JsonException("A tool_use content item requires a 'result'."))
             { Context = GetString(element, "context"), Error = GetString(element, "error") },
+            "document" => new ContentDocument(GetString(element, "document") ?? "", GetString(element, "filename") ?? "", GetString(element, "mime_type") ?? "")
+            {
+                Citations = GetBool(element, "citations") ?? false,
+            },
             _ => throw new JsonException($"Unsupported content type '{type}'."),
         };
     }
@@ -92,6 +96,12 @@ internal sealed class ContentConverterFactory : JsonConverterFactory
                     writer.WriteString("error", error);
                 }
 
+                break;
+            case ContentDocument document:
+                writer.WriteString("document", document.Document);
+                writer.WriteString("filename", document.Filename);
+                writer.WriteString("mime_type", document.MimeType);
+                writer.WriteBoolean("citations", document.Citations);
                 break;
             default:
                 throw new JsonException($"Unsupported content {content.GetType().Name}.");
