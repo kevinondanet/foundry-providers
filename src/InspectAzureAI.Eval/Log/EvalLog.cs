@@ -96,6 +96,8 @@ public sealed record EvalConfig
 
     public int? TimeLimit { get; init; }
 
+    public double? CostLimit { get; init; }
+
     public int? MaxSamples { get; init; }
 
     public bool? SandboxCleanup { get; init; }

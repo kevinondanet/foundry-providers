@@ -33,5 +33,11 @@ public sealed record EvalOptions
 
     public TimeSpan? TimeLimit { get; init; }
 
+    /// <summary>Port of <c>cost_limit</c>: limit on total cost (in dollars) for each sample; needs cost data for the model.</summary>
+    public double? CostLimit { get; init; }
+
+    /// <summary>Port of <c>model_cost_config</c>: a JSON file of model prices applied before the eval runs (see <c>ModelCostConfig</c>).</summary>
+    public string? ModelCostConfig { get; init; }
+
     public IEvalReporter? Reporter { get; init; }
 }

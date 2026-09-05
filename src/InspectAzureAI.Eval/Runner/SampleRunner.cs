@@ -27,7 +27,8 @@ internal sealed class SampleRunner(
     int? messageLimit,
     int? tokenLimit,
     TimeSpan? timeLimit,
-    bool cleanup)
+    bool cleanup,
+    double? costLimit = null)
 {
     public async Task<SampleResult> RunAsync(Sample sample, SandboxSpec? sandbox, int epoch, CancellationToken cancellationToken)
     {
@@ -35,7 +36,7 @@ internal sealed class SampleRunner(
         var stopwatch = Stopwatch.StartNew();
         var store = new Store();
         var transcript = new Transcript();
-        var limits = new Limits { MessageLimit = messageLimit, TokenLimit = tokenLimit, TimeLimit = timeLimit, StartedAt = startedAt };
+        var limits = new Limits { MessageLimit = messageLimit, TokenLimit = tokenLimit, TimeLimit = timeLimit, CostLimit = costLimit, StartedAt = startedAt };
         var state = new TaskState(
             model.Name,
             sample.Id!,
@@ -248,6 +249,7 @@ internal sealed class SampleRunner(
             "message" => messageLimit,
             "token" => tokenLimit,
             "time" => timeLimit?.TotalSeconds,
+            "cost" => costLimit,
             _ => null,
         };
         var value = configured

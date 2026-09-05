@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using InspectAzureAI.Eval.Dataset;
 using InspectAzureAI.Eval.Log;
 using InspectAzureAI.Eval.Model;
+using InspectAzureAI.Eval.Model.Cost;
 using InspectAzureAI.Eval.Sandbox;
 using InspectAzureAI.Eval.Tasks;
 using InspectAzureAI.Provider.Core;
@@ -43,6 +44,13 @@ public static class Eval
         var messageLimit = options.MessageLimit ?? task.MessageLimit;
         var tokenLimit = options.TokenLimit ?? task.TokenLimit;
         var timeLimit = options.TimeLimit ?? task.TimeLimit;
+        var costLimit = options.CostLimit ?? task.CostLimit;
+        if (options.ModelCostConfig is { } modelCostConfig)
+        {
+            ModelCostConfig.Apply(modelCostConfig);
+        }
+
+        ResolveModelCosts(model, costLimit);
         var scorerNames = EvalResultsBuilder.UniqueScorerNames(task.Scorers);
         var startedAt = DateTimeOffset.UtcNow;
 
@@ -72,6 +80,7 @@ public static class Eval
                 MessageLimit = messageLimit,
                 TokenLimit = tokenLimit,
                 TimeLimit = (int?)timeLimit?.TotalSeconds,
+                CostLimit = costLimit,
                 MaxSamples = options.MaxSamples,
                 SandboxCleanup = options.Cleanup,
             },
@@ -79,7 +88,7 @@ public static class Eval
 
         var sandboxSpecs = samples.Select(sample => SandboxSetup.ResolveSpec(task.Sandbox, sample)).ToList();
         var providerSpecs = sandboxSpecs.OfType<SandboxSpec>().Distinct().ToList();
-        var runner = new SampleRunner(task, model, scorerNames, messageLimit, tokenLimit, timeLimit, options.Cleanup);
+        var runner = new SampleRunner(task, model, scorerNames, messageLimit, tokenLimit, timeLimit, options.Cleanup, costLimit);
         var results = new SampleResult?[samples.Count * epochs];
         Exception? failure = null;
         var failureSync = new object();
@@ -261,6 +270,19 @@ public static class Eval
 
     /// <summary>A grouping key that tells a string id from a numeric one with the same text.</summary>
     internal static string SampleIdKey(object? id) => (id is string ? "s:" : "n:") + IdText(id);
+
+    /// <summary>Port of <c>resolve_model_costs</c>: a cost limit requires cost data for the eval model, otherwise a <see cref="PrerequisiteError"/> before any sample runs.</summary>
+    private static void ResolveModelCosts(Model model, double? costLimit)
+    {
+        if (costLimit is null || ModelInfoLookup.GetModelInfo(model)?.Cost is not null)
+        {
+            return;
+        }
+
+        throw new PrerequisiteError(
+            $"cost_limit requires cost data for all models. Missing cost data for: {model.Name}. "
+            + $"Use ModelInfoLookup.SetModelCost() or {ModelCostConfig.EnvironmentVariable} to configure pricing.");
+    }
 
     private static Dictionary<string, ModelUsage> AggregateUsage(IEnumerable<EvalSample> samples)
     {

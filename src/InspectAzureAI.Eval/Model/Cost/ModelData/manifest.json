@@ -1,0 +1,19 @@
+{
+  "source": {
+    "repo": "inspect_ai",
+    "path": "src/inspect_ai/model/_model_data",
+    "commit": "76f1aa761aa7fa7785ca7ea878f00f3ef3704efb"
+  },
+  "generated_by": "scripts/convert-model-data.py",
+  "files": [
+    "anthropic.json",
+    "grok.json",
+    "gdm.json",
+    "moonshotai.json",
+    "together.json",
+    "mistral.json",
+    "deepseek.json",
+    "fireworks.json",
+    "openai.json"
+  ]
+}

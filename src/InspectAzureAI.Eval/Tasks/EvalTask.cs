@@ -40,6 +40,9 @@ public sealed record EvalTask
 
     public TimeSpan? TimeLimit { get; init; }
 
+    /// <summary>Port of <c>Task.cost_limit</c>: limit on total cost (in dollars) for each sample.</summary>
+    public double? CostLimit { get; init; }
+
     public string Version { get; init; } = "0";
 
     public IReadOnlyDictionary<string, object?>? Metadata { get; init; }

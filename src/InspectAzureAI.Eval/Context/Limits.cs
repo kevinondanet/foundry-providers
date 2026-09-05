@@ -1,3 +1,4 @@
+using System.Globalization;
 using InspectAzureAI.Provider.Core;
 
 namespace InspectAzureAI.Eval.Context;
@@ -27,6 +28,26 @@ public sealed class Limits
     public int? TokenLimit { get; init; }
 
     public TimeSpan? TimeLimit { get; init; }
+
+    private double? _costLimit;
+
+    /// <summary>Port of <c>cost_limit</c>: the maximum cost in dollars per sample, or null for unlimited; a negative value is rejected like Python's <c>ValueError</c>.</summary>
+    public double? CostLimit
+    {
+        get => _costLimit;
+        init
+        {
+            if (value < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(value), value, $"Cost limit value must be a non-negative float or None: {value}");
+            }
+
+            _costLimit = value;
+        }
+    }
+
+    /// <summary>Cost recorded against the cost limit (Python's <c>_CostLimit.usage</c>): the <c>total_cost</c> of every priced call, recorded after the token check like <c>record_model_cost</c>.</summary>
+    public double CostUsage { get; private set; }
 
     public DateTimeOffset StartedAt { get; init; } = DateTimeOffset.UtcNow;
 
@@ -60,6 +81,42 @@ public sealed class Limits
         }
 
         CheckTokenLimit();
+
+        if (usage.TotalCost is { } cost)
+        {
+            RecordModelCost(cost);
+            CheckCostLimit();
+        }
+    }
+
+    /// <summary>Port of <c>record_model_cost</c>: records cost against the cost limit without checking it.</summary>
+    public void RecordModelCost(double cost)
+    {
+        lock (_sync)
+        {
+            CostUsage += cost;
+        }
+    }
+
+    /// <summary>Port of <c>check_cost_limit</c>: raises once the recorded cost exceeds <see cref="CostLimit"/> (strictly, like Python).</summary>
+    public void CheckCostLimit()
+    {
+        if (_suspended || CostLimit is not { } limit)
+        {
+            return;
+        }
+
+        double cost;
+        lock (_sync)
+        {
+            cost = CostUsage;
+        }
+
+        if (cost > limit)
+        {
+            var message = $"Cost limit exceeded. value: ${cost.ToString("N4", CultureInfo.InvariantCulture)}; limit: ${limit.ToString("N4", CultureInfo.InvariantCulture)}";
+            throw new LimitExceededException("cost", LimitExceededException.FormatLimit(limit), cost, message);
+        }
     }
 
     /// <summary>
