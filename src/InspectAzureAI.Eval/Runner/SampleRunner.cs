@@ -3,6 +3,7 @@ using System.Globalization;
 using InspectAzureAI.Eval.Context;
 using InspectAzureAI.Eval.Model;
 using InspectAzureAI.Eval.Dataset;
+using InspectAzureAI.Eval.Hooks;
 using InspectAzureAI.Eval.Log;
 using InspectAzureAI.Eval.Sandbox;
 using InspectAzureAI.Eval.Scorers;
@@ -66,7 +67,8 @@ internal sealed class SampleRunner(
     bool cleanup,
     double? costLimit = null,
     int? turnLimit = null,
-    TimeSpan? workingLimit = null)
+    TimeSpan? workingLimit = null,
+    HookRun? hooks = null)
 {
     public Task<SampleResult> RunAsync(Sample sample, SandboxSpec? sandbox, int epoch, CancellationToken cancellationToken) =>
         RunAsync(sample, sandbox, epoch, SampleAttempt.First(0), cancellationToken);
@@ -95,6 +97,8 @@ internal sealed class SampleRunner(
             metadata: sample.Metadata?.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal),
             store: store,
             sampleUuid: attempt.SampleUuid);
+        var sampleHooks = SampleHooks.Create(hooks, sample, state, attempt.Number, attempt.IsFirst);
+        transcript.EventLogger = sampleHooks.EventLogger;
         var tokenNode = new TokenLimit(tokenLimit);
         var messageNode = new MessageLimit(messageLimit);
         var turnNode = new TurnLimit(turnLimit);
@@ -113,6 +117,8 @@ internal sealed class SampleRunner(
 
         try
         {
+            using var hookScope = sampleHooks.Begin();
+            await sampleHooks.InitAsync(cancellationToken).ConfigureAwait(false);
             if (sandbox is not null)
             {
                 using var initSpan = transcript.Span("init", "init");
@@ -151,6 +157,7 @@ internal sealed class SampleRunner(
                     monitorStop.Token);
                 try
                 {
+                    await sampleHooks.StartAsync(solverCts.Token).ConfigureAwait(false);
                     using var solversSpan = transcript.Span("solvers");
                     if (task.Setup is { } setup)
                     {
@@ -179,6 +186,7 @@ internal sealed class SampleRunner(
                     await monitor.ConfigureAwait(false);
                     // Python snapshots the sample limits while their scopes are still open, for the scorers
                     SampleLimits.RecordSnapshot(state.Messages.Count);
+                    await sampleHooks.ScoringAsync().ConfigureAwait(false);
                 }
             }
 
@@ -246,6 +254,7 @@ internal sealed class SampleRunner(
             }
         }
 
+        await sampleHooks.DrainAsync().ConfigureAwait(false);
         var elapsed = workStarted is { } started ? Stopwatch.GetElapsedTime(started) : (TimeSpan?)null;
         var evalSample = new EvalSample
         {
@@ -273,6 +282,7 @@ internal sealed class SampleRunner(
             ErrorRetries = attempt.PriorErrors.Count > 0 ? [.. attempt.PriorErrors, .. attempt.Errors] : attempt.Errors,
             Limit = limit,
         };
+        await sampleHooks.EndAsync(evalSample, error, willRetry: retry is not null).ConfigureAwait(false);
         return new SampleResult(evalSample, scores, exception, cancelled) { Retry = retry };
     }
 

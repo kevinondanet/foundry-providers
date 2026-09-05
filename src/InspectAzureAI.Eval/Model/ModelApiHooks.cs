@@ -51,6 +51,20 @@ internal static class ModelApiHooks
         _ => null,
     };
 
+    /// <summary>
+    /// Port of <c>ModelAPI.is_auth_failure</c>: a 401 from the Foundry providers (their own overrides), the same
+    /// rule for a scripted api so the hooks' auth-failure retry is testable, false for any other api (Python's base
+    /// class default).
+    /// </summary>
+    public static bool IsAuthFailure(IModelApi api, Exception ex) => api switch
+    {
+        AzureAIModelApi azure => azure.IsAuthFailure(ex),
+        AnthropicFoundryModelApi anthropic => anthropic.IsAuthFailure(ex),
+        ScriptedModelApi => HttpRetryUtil.StatusCodeOf(ex) == 401,
+        FallbackModelApi fallback => IsAuthFailure(fallback.Current, ex),
+        _ => false,
+    };
+
     private static RetryDecision DefaultShouldRetry(Exception ex)
     {
         var status = HttpRetryUtil.StatusCodeOf(ex) ?? 0;

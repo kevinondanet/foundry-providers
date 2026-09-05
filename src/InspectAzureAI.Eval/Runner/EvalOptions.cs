@@ -5,6 +5,7 @@ using InspectAzureAI.Provider.Core;
 
 namespace InspectAzureAI.Eval.Runner;
 
+using Hooks = InspectAzureAI.Eval.Hooks.Hooks;
 using Model = InspectAzureAI.Eval.Model.Model;
 
 /// <summary>
@@ -79,7 +80,7 @@ public sealed record EvalOptions
     /// <summary>Port of <c>ResolvedTask.id</c> / <c>PreviousTask.id</c>: the log's <c>task_id</c>; a retry passes the failed log's id so its attempts group together. Generated when unset.</summary>
     public string? TaskId { get; init; }
 
-    /// <summary>Port of <c>eval_set_id</c>: the eval set this run belongs to, written to the log's <c>eval_set_id</c>.</summary>
+    /// <summary>Port of <c>eval_set_id</c>: the eval set this run belongs to (set by an eval set driver), written to the log's <c>eval_set_id</c> and carried by every hook payload.</summary>
     public string? EvalSetId { get; init; }
 
     /// <summary>
@@ -91,4 +92,10 @@ public sealed record EvalOptions
 
     /// <summary>Port of <c>ResolvedTask.initial_model_usage</c>: the previous attempt's model usage, rolled forward into this log's stats so totals stay cumulative across retries.</summary>
     public IReadOnlyDictionary<string, ModelUsage>? InitialModelUsage { get; init; }
+
+    /// <summary>
+    /// Lifecycle hooks for this run only, notified after the process-wide <see cref="InspectAzureAI.Eval.Hooks.HookRegistry"/> hooks (Python
+    /// has only the registry; this is the port's per-run alternative to registering at import time).
+    /// </summary>
+    public IReadOnlyList<Hooks>? Hooks { get; init; }
 }

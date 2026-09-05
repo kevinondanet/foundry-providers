@@ -55,6 +55,9 @@ public sealed class Transcript
     /// </summary>
     public double WorkingTime => _working.Elapsed.TotalSeconds;
 
+    /// <summary>Port of <c>Transcript._subscribe(event_logger)</c>: called with every event once recorded (the runner routes them to the sample event hooks).</summary>
+    public Action<TranscriptEvent>? EventLogger { get; set; }
+
     public void Add(TranscriptEvent e)
     {
         ArgumentNullException.ThrowIfNull(e);
@@ -72,6 +75,8 @@ public sealed class Transcript
         {
             _events.Add(e);
         }
+
+        EventLogger?.Invoke(e);
     }
 
     /// <summary>Port of <c>transcript().info(data, source=...)</c>; <paramref name="data"/> is serialized to JSON.</summary>

@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Runtime.ExceptionServices;
 using InspectAzureAI.Eval.Concurrency;
 using InspectAzureAI.Eval.Context;
+using InspectAzureAI.Eval.Hooks;
 using InspectAzureAI.Eval.Model.Cache;
 using InspectAzureAI.Eval.Model.Compaction;
 using InspectAzureAI.Eval.Model.Cost;
@@ -178,11 +179,17 @@ public sealed class Model
         var observer = onStream is not null || resolvedConfig.StreamIdleTimeout is not null ? new ModelStreamObserver(Name, onStream) : null;
         while (true)
         {
+            await HookEmitter.EmitBeforeModelGenerateAsync(Name, messages, resolvedTools, resolvedChoice, resolvedConfig, cacheMode, cancellationToken).ConfigureAwait(false);
             var attemptStarted = DateTimeOffset.UtcNow;
             var stopwatch = Stopwatch.StartNew();
             if (cacheEntry is not null && await PromptCache.FetchAsync(cacheEntry, cancellationToken).ConfigureAwait(false) is { } cached)
             {
                 Record(messages, resolvedTools, resolvedChoice, resolvedConfig, cached, null, retries, null, attemptStarted, stopwatch.Elapsed.TotalSeconds, CacheMode.Read);
+                if (cached.Usage is { } cachedUsage)
+                {
+                    await HookEmitter.EmitModelCacheUsageAsync(Name, cachedUsage, cancellationToken).ConfigureAwait(false);
+                }
+
                 return cached;
             }
 
@@ -230,6 +237,7 @@ public sealed class Model
                     context?.Limits.AddUsage(usage, Name);
                     TokenLimit.RecordModelUsage(usage);
                     TokenLimit.CheckTokenLimit();
+                    await HookEmitter.EmitModelUsageAsync(Name, usage, elapsed, retries, cancellationToken).ConfigureAwait(false);
                 }
 
                 NotifyCleanSuccess(request.Request);
@@ -258,6 +266,11 @@ public sealed class Model
                 AttemptTimeoutException or StreamIdleTimeoutException => RetryDecision.Transient(),
                 _ => ModelApiHooks.ShouldRetry(Api, thrown),
             };
+            if (!decision.Retry && thrown is not null && HookEmitter.HasApiKeyOverride && ModelApiHooks.IsAuthFailure(Api, thrown))
+            {
+                decision = RetryDecision.Transient();
+            }
+
             if (decision.Retry)
             {
                 Concurrency.ReportHttpRetry(decision.Kind, decision.RetryAfter, Name);
@@ -272,6 +285,7 @@ public sealed class Model
             var wait = decision.RetryAfter is { } retryAfter ? TimeSpan.FromSeconds(Math.Max(0, retryAfter)) : Backoff(retries);
             retries++;
             await NotifyRetryAsync(onStream, retries).ConfigureAwait(false);
+            await HookEmitter.EmitModelRetryAsync(Name, retries, wait.TotalSeconds, RetryErrorInfo.Of(thrown), cancellationToken).ConfigureAwait(false);
             Throughput.RecordRetryWait(Name, wait.TotalSeconds, waiter: context);
             var waitStarted = Stopwatch.GetTimestamp();
             await (Retry.Delay ?? SleepDelay)(wait, cancellationToken).ConfigureAwait(false);
