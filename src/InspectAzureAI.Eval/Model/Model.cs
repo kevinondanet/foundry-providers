@@ -131,6 +131,8 @@ public sealed class Model
         ArgumentNullException.ThrowIfNull(input);
         var context = SampleContext.Current;
         var resolvedConfig = Config.Merge(config);
+        // Python: a call that passes no cache argument falls back to config.cache (bool | CachePolicy).
+        cache ??= resolvedConfig.Cache switch { CachePolicy policy => policy, true => CachePolicy.Default, _ => null };
         if (resolvedConfig.MaxTokens is null)
         {
             resolvedConfig = resolvedConfig with { MaxTokens = Api.MaxTokens() };

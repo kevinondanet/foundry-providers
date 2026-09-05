@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>inspectai</AssemblyName>
+    <RootNamespace>InspectAzureAI.Cli</RootNamespace>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="InspectAzureAI.Cli.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.CommandLine" Version="2.0.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\InspectAzureAI.Provider\InspectAzureAI.Provider.csproj" />
+    <ProjectReference Include="..\InspectAzureAI.Eval\InspectAzureAI.Eval.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Resources\inspect-openapi.json" LogicalName="inspect-openapi.json" />
+  </ItemGroup>
+
+</Project>
