@@ -3,8 +3,8 @@ using InspectAzureAI.Eval.Solvers;
 
 namespace InspectAzureAI.Eval.Agents;
 
-/// <summary>Port of <c>agent/_as_solver.py</c> <c>as_solver</c>.</summary>
-public static class Agents
+/// <summary>Port of <c>agent/_as_solver.py</c> <c>as_solver</c> (the other <c>inspect_ai.agent</c> functions live in the sibling partial files).</summary>
+public static partial class Agents
 {
     /// <summary>
     /// Port of <c>as_solver(agent)</c>: runs the agent on an <see cref="AgentState"/> built from the state's

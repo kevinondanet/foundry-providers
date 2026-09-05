@@ -17,6 +17,12 @@ public sealed record ToolDef(string Name, string Description, ToolParams Paramet
 
     public JsonObject? Options { get; init; }
 
+    /// <summary>
+    /// Port of a <c>ToolDef</c> wrapping an <c>AgentTool</c>: set by <c>Agents.Handoff</c>, and makes
+    /// <see cref="ToolExecutor"/> hand the conversation to the agent instead of calling <see cref="Execute"/>.
+    /// </summary>
+    public Agents.AgentHandoff? Handoff { get; init; }
+
     /// <summary>Port of <c>ToolInfo</c> construction from a <c>ToolDef</c>: what the model sees.</summary>
     public ToolInfo ToInfo() => new(Name, Description) { Parameters = Parameters, Options = Options };
 }

@@ -9,6 +9,7 @@ using InspectAzureAI.Eval.Solvers;
 using InspectAzureAI.Provider.Core;
 using InspectAzureAI.Provider.Util;
 using InspectAzureAI.Swe.Util;
+using AgentPrompt = InspectAzureAI.Swe.Util.AgentPrompt;
 
 namespace InspectAzureAI.Swe.MiniSwe;
 

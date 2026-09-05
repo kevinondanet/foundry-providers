@@ -50,7 +50,10 @@ internal sealed class TranscriptEventConverterFactory : JsonConverterFactory
                     Get<string>(e, "result", options),
                     Get<ToolCallError>(e, "error", options),
                     Get<List<int>>(e, "truncated", options) is [var raw, var shown] ? new ToolTruncation(raw, shown) : null,
-                    GetDouble(e, "working_time") is { } seconds ? TimeSpan.FromSeconds(seconds) : null),
+                    GetDouble(e, "working_time") is { } seconds ? TimeSpan.FromSeconds(seconds) : null)
+                {
+                    Agent = Get<string>(e, "agent", options),
+                },
                 "sandbox" => new SandboxEvent(
                     Get<string>(e, "action", options) ?? "",
                     Get<JsonObject>(e, "input", options) ?? new JsonObject(),
@@ -147,6 +150,11 @@ internal sealed class TranscriptEventConverterFactory : JsonConverterFactory
                     if (tool.Working is { } working)
                     {
                         writer.WriteNumber("working_time", working.TotalSeconds);
+                    }
+
+                    if (tool.Agent is { } agent)
+                    {
+                        writer.WriteString("agent", agent);
                     }
 
                     break;

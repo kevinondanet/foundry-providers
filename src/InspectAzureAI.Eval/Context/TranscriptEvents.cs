@@ -29,6 +29,9 @@ public sealed record ToolEvent(
     TimeSpan? Working = null) : TranscriptEvent
 {
     public override string Event => "tool";
+
+    /// <summary>Port of <c>ToolEvent.agent</c>: the name of the agent a handoff tool call transferred to.</summary>
+    public string? Agent { get; init; }
 }
 
 /// <summary>Port of the <c>ToolEvent.truncated</c> tuple: raw output bytes and the byte limit applied.</summary>
