@@ -1,0 +1,86 @@
+[
+ {
+  "name": "empty",
+  "size": 0,
+  "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "compressed": 9
+ },
+ {
+  "name": "one",
+  "size": 1,
+  "sha256": "ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb",
+  "compressed": 10
+ },
+ {
+  "name": "short",
+  "size": 81,
+  "sha256": "f65fbb59464a6201eb3e479b2190f942e4af4e2a7830f7a0a976840484783774",
+  "compressed": 36
+ },
+ {
+  "name": "json_repetitive",
+  "size": 41111,
+  "sha256": "7bee5f1bad0a163ca9f89553c9ab8b8360b5938328d8e3504aee636e911c37dd",
+  "compressed": 660
+ },
+ {
+  "name": "random_200k",
+  "size": 200000,
+  "sha256": "b52283440bab6359640886792d90237c64c4ac7d678a521be94555a9f9cafb2f",
+  "compressed": 200015
+ },
+ {
+  "name": "zeros_1m",
+  "size": 1000000,
+  "sha256": "d29751f2649b32ff572b5e0a9f541ea660a50f94ff0beedfb0b692b924cc8025",
+  "compressed": 50
+ },
+ {
+  "name": "mixed_400k",
+  "size": 414330,
+  "sha256": "19d4020e4f0a0c977b9c01917ef6db35673d2e28b942c01a92c3d8d1c64a558e",
+  "compressed": 203970
+ },
+ {
+  "name": "text_level19",
+  "size": 90000,
+  "sha256": "9d06cf6f06bb443f9d68b585be0e11b1b6886a1893ce123db578218033a9ea39",
+  "compressed": 67
+ },
+ {
+  "name": "no_content_size",
+  "size": 15000,
+  "sha256": "0a53f0c37a58e04f54531e0f8af3ab9f1d74eccc428751cb13da515a917dfe86",
+  "compressed": 20
+ },
+ {
+  "name": "no_checksum",
+  "size": 21000,
+  "sha256": "5a0c2f72209d7527152913f2ed9b3709b0f6104ddf5db11da742f9dff9a5b634",
+  "compressed": 21
+ },
+ {
+  "name": "threads",
+  "size": 708890,
+  "sha256": "26037183c9f7bf1d577943d87e057eb29715ec42bc1e451bfcc8174b19f7c413",
+  "compressed": 281653
+ },
+ {
+  "name": "long_window_3m",
+  "size": 3000000,
+  "sha256": "e82afe380e722b17e43ad365946b099b40a351545f3a2a1149a60c9478615b92",
+  "compressed": 691313
+ },
+ {
+  "name": "compressobj_stream",
+  "size": 1963890,
+  "sha256": "17f49b420d71142407770c1f9d01026ecb3f668e32682034ea3c44646fbebaea",
+  "compressed": 56948
+ },
+ {
+  "name": "multi_frame_skippable",
+  "size": 2500,
+  "sha256": "a2ceae5c076db7c8f947981ee8e33d4ed7fffadd2fb755e288c916f94c58d608",
+  "compressed": 72
+ }
+]

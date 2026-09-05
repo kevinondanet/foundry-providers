@@ -3,6 +3,7 @@ using Azure;
 using InspectAzureAI.Eval.Concurrency;
 using InspectAzureAI.Eval.Dataset;
 using InspectAzureAI.Eval.Log;
+using InspectAzureAI.Eval.Log.EvalFormat;
 using InspectAzureAI.Eval.Model;
 using InspectAzureAI.Eval.Runner;
 using InspectAzureAI.Eval.Sandbox;
@@ -1620,6 +1621,7 @@ public sealed class ConcurrencyTests : IDisposable
                 LogDir = logDir,
                 MaxSamples = 1,
                 AdaptiveConnections = AdaptiveConnections.From(AdaptiveConcurrency.Create(min: 1, start: 1, max: 8)),
+                LogFormat = LogFormat.Json,
             };
 
             var log = await Eval.RunAsync(task, options).WaitAsync(Timeout);

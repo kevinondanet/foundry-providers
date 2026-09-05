@@ -4,6 +4,7 @@ using InspectAzureAI.Eval.Concurrency;
 using InspectAzureAI.Eval.Context;
 using InspectAzureAI.Eval.Dataset;
 using InspectAzureAI.Eval.Log;
+using InspectAzureAI.Eval.Log.EvalFormat;
 using InspectAzureAI.Eval.Model;
 using InspectAzureAI.Eval.Model.Cost;
 using InspectAzureAI.Eval.Sandbox;
@@ -20,7 +21,7 @@ using Model = InspectAzureAI.Eval.Model.Model;
 /// Port of <c>_eval/eval.py</c> <c>eval()</c> and <c>_eval/task/run.py</c> <c>task_run</c> for one task: resolves
 /// the samples (ids, <c>sample_id</c> / <c>limit</c>), initialises the sandbox providers once, runs every
 /// (sample, epoch) under <see cref="EvalOptions.MaxSamples"/> concurrency, reduces epoch scores, computes the
-/// metrics and writes the JSON log to <see cref="EvalOptions.LogDir"/>.
+/// metrics and writes the log (<c>.eval</c> by default, or JSON per <see cref="EvalOptions.LogFormat"/>) to <see cref="EvalOptions.LogDir"/> incrementally as samples complete.
 /// </summary>
 public static class Eval
 {
@@ -110,6 +111,13 @@ public static class Eval
         var providerSpecs = sandboxSpecs.OfType<SandboxSpec>().Distinct().ToList();
         var runner = new SampleRunner(task, model, scorerNames, messageLimit, tokenLimit, timeLimit, options.Cleanup, costLimit, turnLimit: turnLimit, workingLimit: workingLimit);
         var totalSamples = samples.Count * epochs;
+        var logFormat = options.LogFormat ?? LogFormats.FromEnvironment() ?? LogFormats.Default;
+        var recorder = LogRecorders.CreateForFormat(logFormat, options.LogDir);
+        await using var recorderScope = recorder.ConfigureAwait(false);
+        var logLocation = await recorder.LogInitAsync(spec, LogPath(options.LogDir, task.Name, startedAt, logFormat), cancellationToken: cancellationToken).ConfigureAwait(false);
+        await recorder.LogStartAsync(spec, new EvalPlan(), cancellationToken).ConfigureAwait(false);
+        var flushBuffer = recorder.DefaultLogBuffer(totalSamples, highThroughput: false);
+        var pendingFlush = 0;
         var results = new SampleResult?[totalSamples];
         var earlyStops = new EarlyStop?[totalSamples];
         // Python: continue_on_fail never aborts mid-run; the fail_on_error policy is applied again at the end
@@ -225,9 +233,9 @@ public static class Eval
             },
             Error = error,
             Samples = evalSamples,
-            Location = LogPath(options.LogDir, task.Name, startedAt),
+            Location = logLocation,
         };
-        EvalLogWriter.Write(log, log.Location!);
+        await recorder.LogFinishAsync(spec, status, log.Stats, log.Results, log.Reductions, error, cancellationToken: CancellationToken.None).ConfigureAwait(false);
         reporter?.Message($"Log written to {log.Location}");
 
         if (status == EvalStatus.Cancelled)
@@ -236,6 +244,18 @@ public static class Eval
         }
 
         return log;
+
+        // Port of TaskLogger.complete_sample: the condensed sample is recorded and the log flushed at the buffer cadence
+        // (never cancelled: a stopped run still keeps the samples that completed, as Python does)
+        async Task LogSampleAsync(EvalSample sample)
+        {
+            await recorder.LogSampleAsync(spec, LogAttachments.CondenseSample(sample), cancellationToken: CancellationToken.None).ConfigureAwait(false);
+            if (Interlocked.Increment(ref pendingFlush) >= flushBuffer)
+            {
+                Interlocked.Exchange(ref pendingFlush, 0);
+                await recorder.FlushAsync(spec, CancellationToken.None).ConfigureAwait(false);
+            }
+        }
 
         // Port of task_run_sample: one run as a loop of error-retry attempts (design/sample-lifecycle.md)
         async Task RunSampleAsync(int index, Sample sample, SandboxSpec? sandbox, int epoch)
@@ -284,6 +304,7 @@ public static class Eval
                     }
 
                     results[index] = result;
+                    await LogSampleAsync(result.Sample).ConfigureAwait(false);
                     reporter?.SampleCompleted(result.Sample);
                     reporter?.Stats(EvalRunStats.Capture(semaphore));
                     var raised = false;
@@ -393,12 +414,12 @@ public static class Eval
         return usage;
     }
 
-    /// <summary>Port of the log file naming of <c>_eval/eval.py</c>: <c>&lt;local time&gt;_&lt;task&gt;_&lt;id&gt;.json</c> with a filename-safe task name.</summary>
-    private static string LogPath(string logDir, string taskName, DateTimeOffset created)
+    /// <summary>Port of the log file naming of <c>_eval/eval.py</c>: <c>&lt;local time&gt;_&lt;task&gt;_&lt;id&gt;</c> plus the format's extension, with a filename-safe task name.</summary>
+    private static string LogPath(string logDir, string taskName, DateTimeOffset created, LogFormat format)
     {
         var stamp = created.ToLocalTime().ToString("yyyy-MM-dd'T'HH-mm-ss", CultureInfo.InvariantCulture);
         var suffix = Convert.ToHexString(RandomNumberGenerator.GetBytes(3)).ToLowerInvariant();
         var name = new string(taskName.Select(c => char.IsLetterOrDigit(c) || c is '-' or '_' or '.' ? c : '-').ToArray());
-        return Path.Combine(logDir, $"{stamp}_{name}_{suffix}.json");
+        return Path.Combine(logDir, $"{stamp}_{name}_{suffix}{format.Extension()}");
     }
 }
