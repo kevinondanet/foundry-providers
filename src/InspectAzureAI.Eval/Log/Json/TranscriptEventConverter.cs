@@ -32,6 +32,7 @@ internal sealed class TranscriptEventConverterFactory : JsonConverterFactory
                 "model" => new ModelEvent
                 {
                     Model = Get<string>(e, "model", options) ?? "",
+                    Role = Get<string>(e, "role", options),
                     Input = Get<List<ChatMessage>>(e, "input", options) ?? [],
                     Tools = Get<List<ToolInfo>>(e, "tools", options) ?? [],
                     ToolChoice = Get<ToolChoice>(e, "tool_choice", options) ?? ToolChoice.Auto,
@@ -96,6 +97,11 @@ internal sealed class TranscriptEventConverterFactory : JsonConverterFactory
             {
                 case ModelEvent model:
                     writer.WriteString("model", model.Model);
+                    if (model.Role is { } role)
+                    {
+                        writer.WriteString("role", role);
+                    }
+
                     Put(writer, "input", model.Input, options);
                     Put(writer, "tools", model.Tools, options);
                     Put(writer, "tool_choice", model.ToolChoice, options);

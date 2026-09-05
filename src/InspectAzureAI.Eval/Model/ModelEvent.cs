@@ -10,6 +10,9 @@ public sealed record ModelEvent : TranscriptEvent
 
     public required string Model { get; init; }
 
+    /// <summary>Port of <c>ModelEvent.role</c>: the model role the generating <see cref="Model"/> was bound to, if any.</summary>
+    public string? Role { get; init; }
+
     public required IReadOnlyList<ChatMessage> Input { get; init; }
 
     public IReadOnlyList<ToolInfo> Tools { get; init; } = [];

@@ -184,9 +184,9 @@ public sealed class AnthropicFoundryModelApi : IModelApi, IDisposable
             Content = new StringContent(request.ToJsonString(), Encoding.UTF8, "application/json"),
         };
         message.Headers.Add("anthropic-version", AnthropicVersion);
-        if (AnthropicBeta is { Length: > 0 })
+        if (BetaHeader(config) is { Length: > 0 } beta)
         {
-            message.Headers.Add("anthropic-beta", AnthropicBeta);
+            message.Headers.Add("anthropic-beta", beta);
         }
 
         await AuthorizeAsync(message, cancellationToken).ConfigureAwait(false);
@@ -301,6 +301,16 @@ public sealed class AnthropicFoundryModelApi : IModelApi, IDisposable
             request[key] = value?.DeepClone();
         }
 
+        if (config.ResponseSchema is { } responseSchema)
+        {
+            request["output_format"] = ResponseFormat.AnthropicOutputFormat(responseSchema);
+        }
+
+        if (config.FallbackModels is { Count: > 0 })
+        {
+            ProviderLogger.WarnOnce(FallbackModelsIgnoredWarning);
+        }
+
         if (streaming) request["stream"] = true;
         foreach (var (key, value) in ModelArgs)
         {
@@ -308,6 +318,31 @@ public sealed class AnthropicFoundryModelApi : IModelApi, IDisposable
         }
 
         return request;
+    }
+
+    /// <summary>Port of the Python warning: <c>fallback_models</c> is a first-party Claude API feature and is ignored on Azure.</summary>
+    public const string FallbackModelsIgnoredWarning =
+        "fallback_models is only supported on the first-party Anthropic API (not bedrock/vertex/azure) and will be ignored.";
+
+    /// <summary>
+    /// The <c>anthropic-beta</c> header value for a request: the <c>anthropic_beta</c> model arg (comma separated)
+    /// plus <see cref="ResponseFormat.AnthropicStructuredOutputsBeta"/> when the config carries a response schema
+    /// (Python appends the beta alongside <c>output_format</c>); null when there is nothing to send.
+    /// </summary>
+    public string? BetaHeader(GenerateConfig config)
+    {
+        var betas = new List<string>();
+        if (AnthropicBeta is { Length: > 0 })
+        {
+            betas.AddRange(AnthropicBeta.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+        }
+
+        if (config.ResponseSchema is not null && !betas.Contains(ResponseFormat.AnthropicStructuredOutputsBeta))
+        {
+            betas.Add(ResponseFormat.AnthropicStructuredOutputsBeta);
+        }
+
+        return betas.Count > 0 ? string.Join(",", betas) : null;
     }
 
     /// <summary>

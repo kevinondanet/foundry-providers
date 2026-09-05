@@ -72,6 +72,7 @@ internal sealed class ModelOutputConverter : JsonConverter<ModelOutput>
             Time = element.TryGetProperty("time", out var time) && time.ValueKind == JsonValueKind.Number ? time.GetDouble() : null,
             Metadata = Get<Dictionary<string, object?>>(element, "metadata", options),
             Error = Get<string>(element, "error", options),
+            Fallback = Get<ModelFallback>(element, "fallback", options),
         };
         return Get<string>(element, "completion", options) is { } completion ? output with { Completion = completion } : output;
     }
@@ -102,6 +103,12 @@ internal sealed class ModelOutputConverter : JsonConverter<ModelOutput>
         if (value.Error is { } error)
         {
             writer.WriteString("error", error);
+        }
+
+        if (value.Fallback is { } fallback)
+        {
+            writer.WritePropertyName("fallback");
+            JsonSerializer.Serialize(writer, fallback, options);
         }
 
         var derived = value.Choices.Count > 0 ? value.Choices[0].Message.Text : "";

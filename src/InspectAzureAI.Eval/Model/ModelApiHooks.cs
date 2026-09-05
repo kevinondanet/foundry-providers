@@ -17,6 +17,7 @@ internal static class ModelApiHooks
         AzureAIModelApi azure => azure.ShouldRetry(ex),
         AnthropicFoundryModelApi anthropic => anthropic.ShouldRetry(ex),
         ScriptedModelApi { ShouldRetry: { } scripted } => scripted(ex),
+        FallbackModelApi fallback => ShouldRetry(fallback.Current, ex),
         _ => DefaultShouldRetry(ex),
     };
 
@@ -26,6 +27,7 @@ internal static class ModelApiHooks
         // The Messages API requires strict user/assistant alternation.
         AnthropicFoundryModelApi => true,
         ScriptedModelApi scripted => scripted.CollapseUserMessages,
+        FallbackModelApi fallback => CollapseUserMessages(fallback.Current),
         _ => false,
     };
 

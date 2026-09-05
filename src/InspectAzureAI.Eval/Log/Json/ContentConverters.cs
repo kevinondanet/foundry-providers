@@ -25,6 +25,10 @@ internal sealed class ContentConverterFactory : JsonConverterFactory
             "image" => new ContentImage(GetString(element, "image") ?? "", GetString(element, "detail") ?? "auto"),
             "audio" => new ContentAudio(GetString(element, "audio") ?? "", GetString(element, "format") ?? ""),
             "video" => new ContentVideo(GetString(element, "video") ?? "", GetString(element, "format") ?? ""),
+            "document" => new ContentDocument(GetString(element, "document") ?? "", GetString(element, "filename") ?? "", GetString(element, "mime_type") ?? "")
+            {
+                Citations = GetBool(element, "citations") ?? false,
+            },
             _ => throw new JsonException($"Unsupported content type '{type}'."),
         };
     }
@@ -63,6 +67,12 @@ internal sealed class ContentConverterFactory : JsonConverterFactory
             case ContentVideo video:
                 writer.WriteString("video", video.Video);
                 writer.WriteString("format", video.Format);
+                break;
+            case ContentDocument document:
+                writer.WriteString("document", document.Document);
+                writer.WriteString("filename", document.Filename);
+                writer.WriteString("mime_type", document.MimeType);
+                writer.WriteBoolean("citations", document.Citations);
                 break;
             default:
                 throw new JsonException($"Unsupported content {content.GetType().Name}.");

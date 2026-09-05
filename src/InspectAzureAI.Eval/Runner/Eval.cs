@@ -37,6 +37,7 @@ public static class Eval
 
         var reporter = options.Reporter;
         var model = EvalModel(task, options);
+        using var modelRoles = ModelRoles.Begin(ModelRoles.Merge(ModelRoles.Resolve(task.ModelRoles), ModelRoles.Resolve(options.ModelRoles)));
         var samples = ResolveSamples(task.Dataset, options);
         var epochs = options.Epochs ?? task.Epochs?.Count ?? 1;
         var failOnError = options.FailOnError ?? task.FailOnError;

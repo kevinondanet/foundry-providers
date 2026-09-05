@@ -279,6 +279,14 @@ public sealed class AzureAIModelApi : IModelApi
             parameters[key] = value?.DeepClone();
         }
 
+        // Port-only: Python's azureai provider ignores response_schema; the chat-completions gateway accepts the
+        // OpenAI response_format shape, so it is forwarded like the openai provider does (extended validation
+        // fields stripped, as for tool schemas on this route). It travels as a pass-through extra.
+        if (config.ResponseSchema is { } responseSchema)
+        {
+            parameters["response_format"] = ResponseFormat.JsonSchemaResponseFormat(responseSchema, JsonSchemaDump.JsonSchemaExtendedFields);
+        }
+
         return parameters;
     }
 
@@ -614,7 +622,8 @@ public sealed class AzureAIModelApi : IModelApi
                     options.Seed = value!.GetValue<int>();
                     break;
                 default:
-                    // max_completion_tokens is not a declared SDK option; it travels as a pass-through extra.
+                    // max_completion_tokens and response_format are not declared SDK options (the SDK's json_schema
+                    // response-format types are internal); they travel as pass-through extras.
                     options.AdditionalProperties[key] = BinaryData.FromString(value!.ToJsonString());
                     break;
             }

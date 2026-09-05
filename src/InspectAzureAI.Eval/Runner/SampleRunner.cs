@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Globalization;
 using InspectAzureAI.Eval.Context;
+using InspectAzureAI.Eval.Model;
 using InspectAzureAI.Eval.Dataset;
 using InspectAzureAI.Eval.Log;
 using InspectAzureAI.Eval.Sandbox;
@@ -76,6 +77,7 @@ internal sealed class SampleRunner(
                     : null,
             };
             using var scope = SampleContext.Begin(context);
+            using var modelAccumulators = SampleModelAccumulators.Begin();
             var generate = GenerateLoop.Create(model);
 
             using var solverCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);

@@ -7,7 +7,7 @@ namespace InspectAzureAI.Eval.Tools;
 public delegate Task<ToolResult> ToolExecute(JsonObject arguments, CancellationToken cancellationToken);
 
 /// <summary>Port of <c>tool/_tool_def.py</c> <c>ToolDef</c>: a named, described, schema-carrying executable tool.</summary>
-public sealed record ToolDef(string Name, string Description, ToolParams Parameters, ToolExecute Execute)
+public sealed partial record ToolDef(string Name, string Description, ToolParams Parameters, ToolExecute Execute)
 {
     /// <summary>Whether calls may run concurrently with other parallel-safe calls (a false call is a barrier).</summary>
     public bool Parallel { get; init; } = true;

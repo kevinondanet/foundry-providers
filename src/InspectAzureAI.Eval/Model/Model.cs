@@ -35,7 +35,37 @@ public sealed class Model
     public IModelEventSink? EventSink { get; init; }
 
     /// <summary>A copy of this model that also delivers events to <paramref name="sink"/>.</summary>
-    public Model WithEventSink(IModelEventSink sink) => new(Api, Config, Retry) { EventSink = sink };
+    public Model WithEventSink(IModelEventSink sink) => new(Api, Config, Retry) { EventSink = sink, Role = Role };
+
+    /// <summary>Port of <c>Model.role</c>: the named role this instance is bound to (see <see cref="ModelRoles"/>), stamped on every <see cref="ModelEvent"/> and used for per-role usage.</summary>
+    public string? Role { get; init; }
+
+    /// <summary>A copy of this model bound to <paramref name="role"/> (port of <c>copy(model)._set_role(role)</c>).</summary>
+    public Model WithRole(string role)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(role);
+        return new Model(Api, Config, Retry) { EventSink = EventSink, Role = role };
+    }
+
+    /// <summary>A copy of this model with <paramref name="config"/> as its config.</summary>
+    public Model WithConfig(GenerateConfig config)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+        return new Model(Api, config, Retry) { EventSink = EventSink, Role = Role };
+    }
+
+    /// <summary>
+    /// Port of <c>Model.count_tokens</c>: a conservative token estimate for <paramref name="messages"/>
+    /// (<see cref="TokenEstimation"/>; Foundry has no token-counting endpoint, so the estimate is the only path).
+    /// </summary>
+    public Task<int> CountTokensAsync(IReadOnlyList<ChatMessage> messages, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return TokenEstimation.CountTokensAsync(
+            messages,
+            text => Task.FromResult(TokenEstimation.CountTextTokens(text)),
+            media => Task.FromResult(TokenEstimation.CountMediaTokens(media)));
+    }
 
     public Task<ModelOutput> GenerateAsync(
         string input,
@@ -100,23 +130,37 @@ public sealed class Model
 
         var started = DateTimeOffset.UtcNow;
         var retries = 0;
+        // one stream observer per generate call (spanning attempts, as in Python) whenever the call asked for
+        // chunks: an on_stream handler, or a stream_idle_timeout (stall detection cannot work without them)
+        var observer = onStream is not null || resolvedConfig.StreamIdleTimeout is not null ? new ModelStreamObserver(Name, onStream) : null;
         while (true)
         {
             var attemptStarted = DateTimeOffset.UtcNow;
             var stopwatch = Stopwatch.StartNew();
             GenerateResult? result = null;
             Exception? thrown = null;
-            try
+            using (var attempt = new GenerateAttempt(observer, resolvedConfig, cancellationToken))
             {
-                result = await Api.GenerateAsync(messages, resolvedTools, resolvedChoice, resolvedConfig, onStream, cancellationToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                thrown = ex;
+                try
+                {
+                    result = await Api.GenerateAsync(messages, resolvedTools, resolvedChoice, resolvedConfig, onStream, attempt.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    thrown = ex;
+                }
+
+                // Python checks the scopes' cancel_called after the call: a fired timeout wins over whatever the
+                // attempt produced, the stall scope's sharper diagnosis over the attempt timeout
+                if (attempt.TimeoutError is { } timeoutError)
+                {
+                    result = null;
+                    thrown = timeoutError;
+                }
             }
 
             var elapsed = stopwatch.Elapsed.TotalSeconds;
@@ -125,8 +169,14 @@ public sealed class Model
             {
                 output = WithGenerateSource(output);
                 Record(messages, resolvedTools, resolvedChoice, resolvedConfig, output, result.Call, retries, null, attemptStarted, elapsed);
+                SampleModelAccumulators.RecordFallback(output);
                 if (output.Usage is { } usage)
                 {
+                    if (Role is { } role)
+                    {
+                        SampleModelAccumulators.RecordRoleUsage(role, usage);
+                    }
+
                     context?.Limits.AddUsage(usage, Name);
                 }
 
@@ -142,7 +192,13 @@ public sealed class Model
             var failure = thrown ?? new InvalidOperationException("Model API returned neither an output nor an error.");
             Record(messages, resolvedTools, resolvedChoice, resolvedConfig, null, null, retries, failure.Message, attemptStarted, elapsed);
 
-            var decision = thrown is null ? RetryDecision.No() : ModelApiHooks.ShouldRetry(Api, thrown);
+            // attempt / stream-idle timeouts are always retried (transient), as in Python's should_retry
+            var decision = thrown switch
+            {
+                null => RetryDecision.No(),
+                AttemptTimeoutException or StreamIdleTimeoutException => RetryDecision.Transient(),
+                _ => ModelApiHooks.ShouldRetry(Api, thrown),
+            };
             var budgetExhausted = Retry.Timeout is { } budget && DateTimeOffset.UtcNow - started >= budget;
             if (!decision.Retry || retries >= Retry.MaxRetries || budgetExhausted)
             {
@@ -259,6 +315,7 @@ public sealed class Model
         {
             Timestamp = started,
             Model = Name,
+            Role = Role,
             Input = input,
             Tools = tools,
             ToolChoice = toolChoice,

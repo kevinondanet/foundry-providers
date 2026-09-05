@@ -43,4 +43,7 @@ public sealed record EvalTask
     public string Version { get; init; } = "0";
 
     public IReadOnlyDictionary<string, object?>? Metadata { get; init; }
+
+    /// <summary>Port of <c>Task.model_roles</c>: role name → a model name, a <c>Model</c>, or a list of these (eval-level roles override these per role).</summary>
+    public IReadOnlyDictionary<string, object>? ModelRoles { get; init; }
 }

@@ -42,9 +42,9 @@ public delegate Task StreamHandler(StreamEvent streamEvent);
 /// Minimal port of <c>ModelStreamObserver</c> and the module-level <c>model_stream_requested()</c> /
 /// <c>report_model_stream_*</c> functions in <c>src/inspect_ai/model/_stream.py</c>. The observer is
 /// ambient (an <see cref="AsyncLocal{T}"/> installed with <see cref="Install"/>), which is how the
-/// provider learns that the caller passed <c>on_stream</c>. Stall scopes (<c>stream_idle_timeout</c>)
-/// are out of scope for the sample, so <see cref="ModelStreamRequested"/> is true only when a handler
-/// is attached.
+/// provider learns that the caller passed <c>on_stream</c>. A <see cref="StallScope"/> armed by the model
+/// wrapper for <c>stream_idle_timeout</c> is bumped on every report, and <see cref="ModelStreamRequested"/> is
+/// true when either a handler is attached or a stall scope is armed (stall detection needs chunks).
 /// </summary>
 public sealed class ModelStreamObserver
 {
@@ -77,6 +77,20 @@ public sealed class ModelStreamObserver
     /// <summary>Whether <c>stream_started</c> was reported.</summary>
     public bool Started { get; private set; }
 
+    /// <summary>The stall-detection scope armed for the current attempt (port of <c>_StallScope</c>), if any.</summary>
+    public StallScope? Stall { get; private set; }
+
+    /// <summary>
+    /// Port of <c>arm_stall_scope</c>: hands the observer the attempt's stall scope. The scope's deadline starts
+    /// infinite; the attempt's first report arms it and every later report pushes it forward, so an attempt that
+    /// never streams can never fire.
+    /// </summary>
+    public void ArmStallScope(StallScope scope)
+    {
+        ArgumentNullException.ThrowIfNull(scope);
+        Stall = scope;
+    }
+
     /// <summary>The ambient observer for this async context, if any.</summary>
     public static ModelStreamObserver? Current => CurrentObserver.Value;
 
@@ -84,12 +98,19 @@ public sealed class ModelStreamObserver
     public static IDisposable Install(ModelStreamObserver observer)
     {
         var previous = CurrentObserver.Value;
+        // a provider that installs its own observer for on_stream inside the wrapper's keeps the wrapper's
+        // stall scope alive: reports go to the innermost observer, and the stall clock must follow them
+        if (observer.Stall is null && previous?.Stall is { } inherited)
+        {
+            observer.Stall = inherited;
+        }
+
         CurrentObserver.Value = observer;
         return new Restore(previous);
     }
 
-    /// <summary>Port of <c>model_stream_requested()</c>.</summary>
-    public static bool ModelStreamRequested() => CurrentObserver.Value is { OnStream: not null };
+    /// <summary>Port of <c>model_stream_requested()</c>: an <c>on_stream</c> handler or an armed stall scope requests chunks.</summary>
+    public static bool ModelStreamRequested() => CurrentObserver.Value is { } observer && (observer.OnStream is not null || observer.Stall is not null);
 
     /// <summary>Port of <c>report_model_stream_start()</c>.</summary>
     public static void ReportModelStreamStart() => CurrentObserver.Value?.StreamStarted();
@@ -113,6 +134,7 @@ public sealed class ModelStreamObserver
     {
         Started = true;
         TokensCurrent = null;
+        Stall?.Bump();
     }
 
     /// <summary>Port of <c>ModelStreamObserver.report_progress</c>.</summary>
@@ -124,6 +146,7 @@ public sealed class ModelStreamObserver
         }
 
         ProgressReports++;
+        Stall?.Bump();
     }
 
     /// <summary>
@@ -135,10 +158,12 @@ public sealed class ModelStreamObserver
         if (OnStream is null)
         {
             ProgressReports++;
+            Stall?.Bump();
             return;
         }
 
         ProgressReports++;
+        Stall?.Bump();
         Delivered = true;
         try
         {
