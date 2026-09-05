@@ -385,6 +385,48 @@ public sealed class CostTests : IDisposable
         Assert.Equal(0.007, limits.TotalUsage.TotalCost);
     }
 
+    /// <summary>Python's <c>_CostLimit._check_self</c> records a <c>SampleLimitEvent(type="cost")</c> before raising, like every other limit.</summary>
+    [Fact]
+    public async Task cost_limit_trip_records_a_sample_limit_event()
+    {
+        ModelInfoLookup.SetModelInfo("scripted", new ModelInfo { Cost = ScriptedCost });
+        using var scope = new SampleContextScope(new ScriptedModelApi(ScriptedTurn.Text("ok", new ModelUsage(3, 4, 7))), limits: new Limits { CostLimit = 0.005 });
+
+        var ex = await Assert.ThrowsAsync<LimitExceededException>(() => scope.Model.GenerateAsync("hi"));
+
+        Assert.Equal("cost", ex.Type);
+        var e = Assert.Single(scope.Transcript.Events.OfType<SampleLimitEvent>());
+        Assert.Equal("cost", e.Type);
+        Assert.Equal(0.005, e.Limit);
+        Assert.Equal("Cost limit exceeded. value: $0.0070; limit: $0.0050", e.Message);
+        Assert.Equal(ex.Message, e.Message);
+    }
+
+    /// <summary>
+    /// Python's <c>record_and_check_model_usage</c> records the usage on the whole limit tree and checks the token limits
+    /// before it records and checks cost: a call that trips both a scoped token limit and the cost limit raises the
+    /// token limit, with its tokens counted in the tree and its cost left unrecorded.
+    /// </summary>
+    [Fact]
+    public async Task a_call_exceeding_a_scoped_token_limit_and_the_cost_limit_trips_the_token_limit_like_python()
+    {
+        ModelInfoLookup.SetModelInfo("scripted", new ModelInfo { Cost = ScriptedCost });
+        using var scope = new SampleContextScope(new ScriptedModelApi(ScriptedTurn.Text("ok", new ModelUsage(3, 4, 7))), limits: new Limits { CostLimit = 0.001 });
+        var tokens = new TokenLimit(5);
+        using var tokenScope = tokens.Enter();
+
+        var ex = await Assert.ThrowsAsync<LimitExceededException>(() => scope.Model.GenerateAsync("hi"));
+
+        Assert.Equal("token", ex.Type);
+        Assert.Same(tokens, ex.SourceLimit);
+        Assert.Equal(7.0, tokens.Usage);
+        Assert.Equal(7, scope.Context.Limits.TotalUsage.TotalTokens);
+        Assert.Equal(0.007, scope.Context.Limits.TotalUsage.TotalCost);
+        Assert.Equal(0.0, scope.Context.Limits.CostUsage);
+        var e = Assert.Single(scope.Transcript.Events.OfType<SampleLimitEvent>());
+        Assert.Equal("token", e.Type);
+    }
+
     [Fact]
     public void suspended_cost_limit_keeps_accumulating_without_raising()
     {
@@ -439,6 +481,11 @@ public sealed class CostTests : IDisposable
         Assert.Equal(0.014, sample.ModelUsage["scripted"].TotalCost!.Value, 10);
         Assert.Equal(0.014, log.Stats.ModelUsage["scripted"].TotalCost!.Value, 10);
         Assert.Equal(0.005, log.Eval.Config.CostLimit);
+        // the transcript locates the trip point by event, as it can for every other limit type
+        var limitEvent = Assert.Single(sample.Events.OfType<SampleLimitEvent>());
+        Assert.Equal("cost", limitEvent.Type);
+        Assert.Equal(0.005, limitEvent.Limit);
+        Assert.Equal(sample.Limit.Reason, limitEvent.Message);
 
         var json = EvalLogWriter.Serialize(log);
         var root = JsonNode.Parse(json)!;
@@ -446,10 +493,14 @@ public sealed class CostTests : IDisposable
         Assert.Equal(0.014, (double)root["stats"]!["model_usage"]!["scripted"]!["total_cost"]!, 10);
         Assert.Equal(0.014, (double)root["samples"]![0]!["model_usage"]!["scripted"]!["total_cost"]!, 10);
         Assert.Equal("cost", (string?)root["samples"]![0]!["limit"]!["type"]);
+        var jsonEvent = Assert.Single(root["samples"]![0]!["events"]!.AsArray(), e => (string?)e!["event"] == "sample_limit");
+        Assert.Equal("cost", (string?)jsonEvent!["type"]);
+        Assert.Equal(0.005, (double?)jsonEvent["limit"]);
         var read = EvalLogWriter.Deserialize(json);
         Assert.Equal(0.005, read.Eval.Config.CostLimit);
         Assert.Equal(0.014, read.Stats.ModelUsage["scripted"].TotalCost!.Value, 10);
         Assert.Equal(0.007, read.Samples![0].Events.OfType<ModelEvent>().First().Output.Usage!.TotalCost);
+        Assert.Equal("cost", Assert.Single(read.Samples[0].Events.OfType<SampleLimitEvent>()).Type);
     }
 
     [Fact]

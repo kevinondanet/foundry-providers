@@ -168,6 +168,42 @@ public sealed class PromptCacheTests : IDisposable
         Assert.Single(api.Requests);
     }
 
+    /// <summary>
+    /// Python records the fallback rollup and the turn in the outer frame of <c>generate</c>, so a hit counts too:
+    /// a cached response originally served by a fallback is still fallback-served, and a hit advances the
+    /// conversation by one assistant message. Without this a react-style loop run with <c>cache: true</c> under a
+    /// turn limit would replay cached generations without the limit ever tripping.
+    /// </summary>
+    [Fact]
+    public async Task cache_hits_record_a_turn_and_the_fallback_rollup()
+    {
+        var served = ModelOutput.FromContent(ScriptedModelApi.DefaultModelName, "a") with { Fallback = new ModelFallback("primary", "fallback") };
+        var api = new ScriptedModelApi(ScriptedTurn.From(served), ScriptedTurn.Text("b"));
+        using var scope = new SampleContextScope(api);
+        using var accumulators = SampleModelAccumulators.Begin();
+        var turns = new TurnLimit(2);
+        using var turnScope = turns.Enter();
+
+        await scope.Model.GenerateAsync("hi", cache: true);
+        var hit = await scope.Model.GenerateAsync("hi", cache: true);
+
+        Assert.Equal("a", hit.Completion);
+        Assert.Single(api.Requests);
+        Assert.Equal(2, turns.Turns);
+        Assert.Equal(2, TurnLimit.TurnCount());
+        Assert.Equal([new ModelFallback("primary", "fallback", 2)], accumulators.ModelFallbacks);
+
+        // the third call is a hit as well, and it is the one that trips the limit (the tripping turn is recorded first)
+        var ex = await Assert.ThrowsAsync<LimitExceededException>(() => scope.Model.GenerateAsync("hi", cache: true));
+
+        Assert.Equal("turn", ex.Type);
+        Assert.Equal(3, turns.Turns);
+        Assert.Single(api.Requests);
+        Assert.Equal([new ModelFallback("primary", "fallback", 3)], accumulators.ModelFallbacks);
+        Assert.Contains(scope.Transcript.Events.OfType<SampleLimitEvent>(), e => e.Type == "turn" && e.Limit == 2);
+        Assert.Equal(new CacheMode?[] { CacheMode.Write, CacheMode.Read, CacheMode.Read }, scope.Transcript.Events.OfType<ModelEvent>().Select(e => e.Cache));
+    }
+
     [Fact]
     public async Task retry_attempts_record_the_write_mode_and_a_later_call_reads()
     {

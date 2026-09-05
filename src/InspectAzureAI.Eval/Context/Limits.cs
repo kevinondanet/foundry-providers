@@ -68,9 +68,28 @@ public sealed class Limits
 
     public TimeSpan Elapsed => DateTimeOffset.UtcNow - StartedAt;
 
-    /// <summary>Records usage and then checks the token limit, like Python's <c>record_model_usage</c> + <c>check_token_limit</c>.</summary>
+    /// <summary>
+    /// The sample-level sequence of Python's <c>record_and_check_model_usage</c> in one call: <see cref="RecordUsage"/>,
+    /// <see cref="CheckTokenLimit"/>, then <see cref="RecordModelCost"/> and <see cref="CheckCostLimit"/> for a priced
+    /// usage. <c>Model.GenerateAsync</c> calls the steps itself so that the scoped <c>TokenLimit</c> tree is recorded
+    /// and checked between the token and cost halves, as Python orders it.
+    /// </summary>
     public void AddUsage(ModelUsage usage, string? model = null)
     {
+        RecordUsage(usage, model);
+        CheckTokenLimit();
+
+        if (usage.TotalCost is { } cost)
+        {
+            RecordModelCost(cost);
+            CheckCostLimit();
+        }
+    }
+
+    /// <summary>The sample-level half of Python's <c>record_model_usage</c>: records usage against the sample totals without checking anything.</summary>
+    public void RecordUsage(ModelUsage usage, string? model = null)
+    {
+        ArgumentNullException.ThrowIfNull(usage);
         lock (_sync)
         {
             TotalUsage += usage;
@@ -78,14 +97,6 @@ public sealed class Limits
             {
                 _usageByModel[model] = _usageByModel.TryGetValue(model, out var existing) ? existing + usage : usage;
             }
-        }
-
-        CheckTokenLimit();
-
-        if (usage.TotalCost is { } cost)
-        {
-            RecordModelCost(cost);
-            CheckCostLimit();
         }
     }
 
@@ -115,6 +126,7 @@ public sealed class Limits
         if (cost > limit)
         {
             var message = $"Cost limit exceeded. value: ${cost.ToString("N4", CultureInfo.InvariantCulture)}; limit: ${limit.ToString("N4", CultureInfo.InvariantCulture)}";
+            EmitLimitEvent("cost", limit, message);
             throw new LimitExceededException("cost", LimitExceededException.FormatLimit(limit), cost, message);
         }
     }

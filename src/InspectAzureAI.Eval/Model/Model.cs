@@ -192,7 +192,7 @@ public sealed class Model
                     await HookEmitter.EmitModelCacheUsageAsync(Name, cachedUsage, cancellationToken).ConfigureAwait(false);
                 }
 
-                return cached;
+                return CompleteGenerate(cached);
             }
 
             GenerateResult? result = null;
@@ -227,7 +227,6 @@ public sealed class Model
             {
                 output = ModelCosts.PriceOutput(Name, WithGenerateSource(output));
                 Record(messages, resolvedTools, resolvedChoice, resolvedConfig, output, result.Call, retries, null, attemptStarted, elapsed, cacheMode);
-                SampleModelAccumulators.RecordFallback(output);
                 if (output.Usage is { } usage)
                 {
                     Throughput.RecordGenerate(Name, usage);
@@ -236,9 +235,18 @@ public sealed class Model
                         SampleModelAccumulators.RecordRoleUsage(role, usage);
                     }
 
-                    context?.Limits.AddUsage(usage, Name);
+                    // record_and_check_model_usage: record on every limit, check the token limits root first, then
+                    // record and check cost -- a call that trips both raises the token limit with its tokens counted
+                    context?.Limits.RecordUsage(usage, Name);
                     TokenLimit.RecordModelUsage(usage);
+                    context?.Limits.CheckTokenLimit();
                     TokenLimit.CheckTokenLimit();
+                    if (usage.TotalCost is { } cost)
+                    {
+                        context?.Limits.RecordModelCost(cost);
+                        context?.Limits.CheckCostLimit();
+                    }
+
                     await HookEmitter.EmitModelUsageAsync(Name, usage, elapsed, retries, cancellationToken).ConfigureAwait(false);
                 }
 
@@ -248,8 +256,7 @@ public sealed class Model
                     await PromptCache.StoreAsync(cacheEntry, output, cancellationToken).ConfigureAwait(false);
                 }
 
-                TurnLimit.RecordTurn();
-                return output;
+                return CompleteGenerate(output);
             }
 
             if (result?.Error is { } terminal)
@@ -357,6 +364,19 @@ public sealed class Model
                 .Select(c => c.Message.Source is null ? c with { Message = c.Message with { Source = "generate" } } : c)
                 .ToArray(),
         };
+    }
+
+    /// <summary>
+    /// The outer frame of Python's <c>Model.generate</c>, run once per returned output after retries and fallbacks
+    /// have resolved -- cache hits included: a cached response originally served by a fallback is still a
+    /// fallback-served response, and a hit advances the conversation by one assistant message, so it is a turn.
+    /// <see cref="TurnLimit.RecordTurn"/> records the tripping turn before it raises.
+    /// </summary>
+    private static ModelOutput CompleteGenerate(ModelOutput output)
+    {
+        SampleModelAccumulators.RecordFallback(output);
+        TurnLimit.RecordTurn();
+        return output;
     }
 
     private TimeSpan Backoff(int retries)
