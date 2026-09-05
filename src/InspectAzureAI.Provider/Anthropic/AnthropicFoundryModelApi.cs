@@ -23,8 +23,10 @@ namespace InspectAzureAI.Provider.Anthropic;
 /// requires an API key), and the base URL is derived from the model-inference endpoint when the Anthropic
 /// variables are absent. Extended thinking is mapped from <c>GenerateConfig.ReasoningEffort</c> / <c>ReasoningTokens</c>
 /// (adaptive thinking plus <c>output_config.effort</c>, or the deprecated <c>budget_tokens</c> form) and
-/// thinking blocks are parsed, streamed and replayed with their signature; prompt caching, citations, batch
-/// mode and server-side tools are not ported. Requests are sent with <see cref="HttpClient"/> over an injectable handler; responses are kept
+/// thinking blocks are parsed, streamed and replayed with their signature; Claude's server-side web search
+/// (the "anthropic" provider of the built-in <c>web_search</c> tool) is passed through and its results and
+/// citations replayed (<see cref="AnthropicWebSearch"/>); prompt caching, document citations on input, batch
+/// mode and the other server-side tools are not ported. Requests are sent with <see cref="HttpClient"/> over an injectable handler; responses are kept
 /// as raw JSON so the recorded <see cref="ModelCall"/> is the wire payload.
 /// </summary>
 public sealed class AnthropicFoundryModelApi : IModelApi, IDisposable
@@ -273,12 +275,12 @@ public sealed class AnthropicFoundryModelApi : IModelApi, IDisposable
         var choiceKind = toolChoice is ToolFunction ? "tool" : toolChoice.ToString();   // auto | any | none | tool
         if (tools.Count > 0 && choiceKind != "none")
         {
-            request["tools"] = new JsonArray(tools.Select(t => (JsonNode?)new JsonObject
+            request["tools"] = new JsonArray(tools.Select(t => (JsonNode?)(AnthropicWebSearch.ServerToolParam(t, DeploymentName) ?? new JsonObject
             {
                 ["name"] = t.Name,
                 ["description"] = t.Description,
                 ["input_schema"] = JsonSchemaDump.Dump(t.Parameters.ToJson(), JsonSchemaDump.JsonSchemaExtendedFields),
-            }).ToArray());
+            })).ToArray());
             var choice = toolChoice switch
             {
                 ToolFunction fn => new JsonObject { ["type"] = "tool", ["name"] = fn.Name },
@@ -433,7 +435,16 @@ public sealed class AnthropicFoundryModelApi : IModelApi, IDisposable
             switch (item)
             {
                 case ContentText text when text.Text.Length > 0:
-                    blocks.Add(new JsonObject { ["type"] = "text", ["text"] = text.Text });
+                    var textBlock = new JsonObject { ["type"] = "text", ["text"] = text.Text };
+                    AnthropicWebSearch.AddCitations(textBlock, text.Citations);
+                    blocks.Add(textBlock);
+                    break;
+                case ContentToolUse toolUse:
+                    foreach (var replayed in AnthropicWebSearch.ReplayBlocks(toolUse))
+                    {
+                        blocks.Add(replayed);
+                    }
+
                     break;
                 case ContentImage image:
                     blocks.Add(ImageBlock(image));
@@ -471,12 +482,25 @@ public sealed class AnthropicFoundryModelApi : IModelApi, IDisposable
     {
         var items = new List<Content>();
         var toolCalls = new List<ToolCall>();
+        var pendingServerToolUses = new Dictionary<string, JsonObject>(StringComparer.Ordinal);
         foreach (var block in message["content"]?.AsArray() ?? [])
         {
             switch (block?["type"]?.ToString())
             {
                 case "text":
-                    items.Add(new ContentText(block["text"]?.ToString() ?? ""));
+                    items.Add(new ContentText(block["text"]?.ToString() ?? "") { Citations = AnthropicWebSearch.ReadCitations(block.AsObject()) });
+                    break;
+                case "server_tool_use":
+                    pendingServerToolUses[block["id"]?.ToString() ?? ""] = block.AsObject();
+                    break;
+                case "web_search_tool_result":
+                    var toolUseId = block["tool_use_id"]?.ToString() ?? "";
+                    if (!pendingServerToolUses.Remove(toolUseId, out var serverToolUse))
+                    {
+                        throw new ServiceResponseException("web_search_tool_result without a previous server_tool_use block.");
+                    }
+
+                    items.Add(AnthropicWebSearch.ToContentToolUse(serverToolUse, block.AsObject()));
                     break;
                 case "thinking":
                     items.Add(new ContentReasoning(block["thinking"]?.ToString() ?? "", block["signature"]?.ToString()));
@@ -558,7 +582,20 @@ public sealed class AnthropicFoundryModelApi : IModelApi, IDisposable
                         case "input_json_delta":
                             var partial = delta["partial_json"]?.ToString() ?? "";
                             entry.Json.Append(partial);
-                            await ModelStreamObserver.ReportModelStreamDeltaAsync(new StreamToolCallEvent(entry.Block["id"]?.ToString(), entry.Block["name"]?.ToString(), partial)).ConfigureAwait(false);
+                            if (entry.Block["type"]?.ToString() == "tool_use")
+                            {
+                                await ModelStreamObserver.ReportModelStreamDeltaAsync(new StreamToolCallEvent(entry.Block["id"]?.ToString(), entry.Block["name"]?.ToString(), partial)).ConfigureAwait(false);
+                            }
+
+                            break;
+                        case "citations_delta" when delta["citation"] is JsonObject citation:
+                            if (entry.Block["citations"] is not JsonArray citations)
+                            {
+                                citations = new JsonArray();
+                                entry.Block["citations"] = citations;
+                            }
+
+                            citations.Add(citation.DeepClone());
                             break;
                         case "thinking_delta":
                             var thinking = delta["thinking"]?.ToString() ?? "";
@@ -606,7 +643,7 @@ public sealed class AnthropicFoundryModelApi : IModelApi, IDisposable
             {
                 block["thinking"] = entry.Text.ToString();
             }
-            else if (block["type"]?.ToString() == "tool_use" && entry.Json.Length > 0)
+            else if (block["type"]?.ToString() is "tool_use" or "server_tool_use" && entry.Json.Length > 0)
             {
                 block["input"] = JsonNode.Parse(entry.Json.ToString()) ?? new JsonObject();
             }

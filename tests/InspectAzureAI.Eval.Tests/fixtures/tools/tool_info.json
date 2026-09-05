@@ -1,0 +1,382 @@
+{
+  "think": {
+    "name": "think",
+    "description": "Use the tool to think about something.\n\nThe will not obtain new information or change the environment, but just append the thought to the log. Use it when complex reasoning or some cache memory is needed.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "thought": {
+          "type": "string",
+          "description": "A thought to think about."
+        }
+      },
+      "required": [
+        "thought"
+      ],
+      "additionalProperties": false
+    },
+    "options": null,
+    "parallel": true
+  },
+  "think_custom": {
+    "name": "think",
+    "description": "Custom think",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "thought": {
+          "type": "string",
+          "description": "Custom thought"
+        }
+      },
+      "required": [
+        "thought"
+      ],
+      "additionalProperties": false
+    },
+    "options": null,
+    "parallel": true
+  },
+  "web_search_tavily": {
+    "name": "web_search",
+    "description": "Use the web_search tool to perform keyword searches of the web.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "Search query."
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "additionalProperties": false
+    },
+    "options": {
+      "__internal_tool_type__": "web_search",
+      "tavily": {}
+    },
+    "parallel": true
+  },
+  "web_search_default": {
+    "name": "web_search",
+    "description": "Use the web_search tool to perform keyword searches of the web.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "Search query."
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "additionalProperties": false
+    },
+    "options": {
+      "__internal_tool_type__": "web_search",
+      "openai": {},
+      "anthropic": {},
+      "grok": {},
+      "gemini": {},
+      "mistral": {},
+      "perplexity": {}
+    },
+    "parallel": true
+  },
+  "web_search_mixed": {
+    "name": "web_search",
+    "description": "Use the web_search tool to perform keyword searches of the web.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "Search query."
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "additionalProperties": false
+    },
+    "options": {
+      "__internal_tool_type__": "web_search",
+      "openai": {},
+      "tavily": {
+        "max_results": 5
+      }
+    },
+    "parallel": true
+  },
+  "read_file": {
+    "name": "read_file",
+    "description": "Read the contents of a file.\n\nReturns the file contents with line numbers prepended. Use\noffset and limit for pagination of large files.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "file_path": {
+          "type": "string",
+          "description": "Path to the file to read."
+        },
+        "offset": {
+          "type": "integer",
+          "description": "Line number to start reading from (0-indexed).",
+          "default": 0
+        },
+        "limit": {
+          "description": "Maximum number of lines to read. Reads to end\nof file if not specified.",
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "file_path"
+      ],
+      "additionalProperties": false
+    },
+    "options": null,
+    "parallel": true
+  },
+  "list_files": {
+    "name": "list_files",
+    "description": "List files and directories at the given path.\n\nReturns one path per line. Use depth to limit the recursion\nlevel: 1 lists only immediate contents, None lists everything\nrecursively.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Directory path to list (defaults to working directory).",
+          "default": "."
+        },
+        "depth": {
+          "description": "Maximum depth for recursive listing. 1 lists only the\nimmediate directory. None lists all files recursively.",
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "options": null,
+    "parallel": true
+  },
+  "grep": {
+    "name": "grep",
+    "description": "Search for a pattern in files.\n\nRecursively searches for a pattern and returns results based\non the output_mode setting.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "pattern": {
+          "type": "string",
+          "description": "Regular expression pattern to search for\n(or literal string if fixed_strings is True). Uses\ngrep's basic regex (BRE) by default."
+        },
+        "path": {
+          "type": "string",
+          "description": "File or directory to search (defaults to working\ndirectory).",
+          "default": "."
+        },
+        "glob": {
+          "description": "Glob pattern to filter which files to search\n(e.g. \"*.py\").",
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fixed_strings": {
+          "type": "boolean",
+          "description": "If True, treat pattern as a literal string\nrather than a regular expression.",
+          "default": false
+        },
+        "extended_regexp": {
+          "type": "boolean",
+          "description": "If True, use extended regex (ERE).\nMutually exclusive with fixed_strings.",
+          "default": false
+        },
+        "output_mode": {
+          "type": "string",
+          "description": "Output format. \"content\" returns matching\nlines with file paths and line numbers. \"files_with_matches\"\nreturns only file paths containing matches. \"count\"\nreturns match counts per file.",
+          "default": "content",
+          "enum": [
+            "content",
+            "files_with_matches",
+            "count"
+          ]
+        }
+      },
+      "required": [
+        "pattern"
+      ],
+      "additionalProperties": false
+    },
+    "options": null,
+    "parallel": true
+  },
+  "todo_write": {
+    "name": "todo_write",
+    "description": "Update the task plan.\n\nUse this tool to create and manage a structured task list for tracking progress on complex work. A good plan breaks the task into meaningful, logically ordered steps that are easy to verify as you go.\n\nProvide a list of todo items, each with content and status. Optionally provide an explanation when making significant changes to the plan.\n\n## When to Use\n\n- The task requires multiple actions or has logical phases where sequencing matters.\n- The work has ambiguity that benefits from outlining high-level goals.\n- The user has asked you to do more than one thing in a single prompt.\n- You generate additional steps while working and plan to do them before finishing.\n\n## When NOT to Use\n\n- The task is a single straightforward action.\n- The work is trivial or can be completed in fewer than 3 steps.\n- The task is purely conversational or informational.\n\nDo not pad out simple work with filler steps or state the obvious. The content of your plan should not involve doing anything that you aren't capable of doing. Aim for 3-7 items unless the task genuinely needs more.\n\n## Status Management\n\n- **pending**: Step not yet started.\n- **in_progress**: Currently working on this step.\n- **completed**: Step finished successfully.\n\nUpdate status in real-time as you work. Exactly one step should be in_progress at a time. Mark a step as in_progress before beginning it, and completed immediately after finishing \u2014 don't batch completions after the fact. Never jump a step from pending directly to completed.\n\nOnly mark a step as completed when you have fully accomplished it. Never mark a step as completed if:\n\n- Errors remain unresolved.\n- The implementation is partial or untested.\n- You encountered blockers you haven't worked around.\n\nIf you cannot finish a step, keep it as in_progress and note the issue.\n\nRemove steps that are no longer relevant from the list entirely. If understanding changes mid-task, update the plan before continuing and provide an explanation of the rationale.\n\nDo not repeat the full contents of the plan after calling this tool \u2014 the harness already displays it. Instead, summarize the change and highlight any important context or next step.\n\n## Plan Quality\n\nHigh-quality plans:\n\n- Identify relevant sources, inputs, and constraints to inspect\n- Evaluate each candidate approach against the task requirements\n- Cross-check important findings against available evidence\n- Summarize conclusions, remaining uncertainty, and next action\n\nLow-quality plans:\n\n- Look things up\n- Compare options\n- Write summary\n\nIf you need to write a plan, only write high quality plans, not low quality ones.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "todos": {
+          "type": "array",
+          "description": "The list of steps.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "content": {
+                "type": "string",
+                "description": "Step description."
+              },
+              "status": {
+                "type": "string",
+                "description": "One of: pending, in_progress, completed",
+                "enum": [
+                  "pending",
+                  "in_progress",
+                  "completed"
+                ]
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "content",
+              "status"
+            ]
+          }
+        },
+        "explanation": {
+          "description": "Optional explanation of changes to the plan.",
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "todos"
+      ],
+      "additionalProperties": false
+    },
+    "options": null,
+    "parallel": true
+  },
+  "update_plan": {
+    "name": "update_plan",
+    "description": "Update the task plan.\n\nYou have access to an update_plan tool which tracks steps and progress and renders them to the user. Using the tool helps demonstrate that you've understood the task and convey how you're approaching it. Plans can help to make complex, ambiguous, or multi-phase work clearer and more collaborative for the user. A good plan should break the task into meaningful, logically ordered steps that are easy to verify as you go.\n\nProvide an optional explanation and a list of plan items, each with a step and status. At most one step can be in_progress at a time.\n\nNote that plans are not for padding out simple work with filler steps or stating the obvious. The content of your plan should not involve doing anything that you aren't capable of doing (i.e. don't try to test things that you can't test). Do not use plans for simple or single-step queries that you can just do or answer immediately.\n\nDo not repeat the full contents of the plan after an update_plan call \u2014 the harness already displays it. Instead, summarize the change made and highlight any important context or next step.\n\nBefore running a command, consider whether or not you have completed the previous step, and make sure to mark it as completed before moving on to the next step. It may be the case that you complete all steps in your plan after a single pass of implementation. If this is the case, you can simply mark all the planned steps as completed. Sometimes, you may need to change plans in the middle of a task: call update_plan with the updated plan and make sure to provide an explanation of the rationale when doing so.\n\nMaintain statuses in the tool: exactly one item in_progress at a time; mark items complete when done; post timely status transitions. Do not jump an item from pending to completed: always set it to in_progress first. Do not batch-complete multiple items after the fact. Finish with all items completed or explicitly canceled/deferred before ending the turn. Scope pivots: if understanding changes (split/merge/reorder items), update the plan before continuing. Do not let the plan go stale while coding.\n\nUse a plan when:\n\n- The task is non-trivial and will require multiple actions over a long time horizon.\n- There are logical phases or dependencies where sequencing matters.\n- The work has ambiguity that benefits from outlining high-level goals.\n- You want intermediate checkpoints for feedback and validation.\n- When the user asked you to do more than one thing in a single prompt\n- The user has asked you to use the plan tool (aka \"TODOs\")\n- You generate additional steps while working, and plan to do them before yielding to the user\n\n### Examples\n\nHigh-quality plans\n\nExample 1:\n- Add CLI entry with file args\n- Parse Markdown via CommonMark library\n- Apply semantic HTML template\n- Handle code blocks, images, links\n- Add error handling for invalid files\n\nExample 2:\n- Define CSS variables for colors\n- Add toggle with localStorage state\n- Refactor components to use variables\n- Verify all views for readability\n- Add smooth theme-change transition\n\nExample 3:\n- Set up Node.js + WebSocket server\n- Add join/leave broadcast events\n- Implement messaging with timestamps\n- Add usernames + mention highlighting\n- Persist messages in lightweight DB\n- Add typing indicators + unread count\n\nLow-quality plans\n\nExample 1:\n- Create CLI tool\n- Add Markdown parser\n- Convert to HTML\n\nExample 2:\n- Add dark mode toggle\n- Save preference\n- Make styles look good\n\nExample 3:\n- Create single-file HTML game\n- Run quick sanity check\n- Summarize usage instructions\n\nIf you need to write a plan, only write high quality plans, not low quality ones.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "plan": {
+          "type": "array",
+          "description": "The list of steps.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "step": {
+                "type": "string",
+                "description": "Step name."
+              },
+              "status": {
+                "type": "string",
+                "description": "One of: pending, in_progress, completed"
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "step",
+              "status"
+            ]
+          }
+        },
+        "explanation": {
+          "description": "Optional explanation.",
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "plan"
+      ],
+      "additionalProperties": false
+    },
+    "options": null,
+    "parallel": true
+  },
+  "update_plan_custom": {
+    "name": "update_plan",
+    "description": "Custom plan",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "plan": {
+          "type": "array",
+          "description": "The list of steps.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "step": {
+                "type": "string",
+                "description": "Step name."
+              },
+              "status": {
+                "type": "string",
+                "description": "One of: pending, in_progress, completed"
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "step",
+              "status"
+            ]
+          }
+        },
+        "explanation": {
+          "description": "Optional explanation.",
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "plan"
+      ],
+      "additionalProperties": false
+    },
+    "options": null,
+    "parallel": true
+  }
+}
