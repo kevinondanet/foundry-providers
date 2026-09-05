@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Runtime.ExceptionServices;
 using InspectAzureAI.Eval.Concurrency;
+using InspectAzureAI.Eval.Agents;
 using InspectAzureAI.Eval.Context;
 using InspectAzureAI.Eval.Model.Cache;
 using InspectAzureAI.Eval.Model.Cost;
@@ -97,6 +98,7 @@ public sealed class Model
 
         // Python counts the caller's conversation, before its own config.system_message is inserted.
         context?.Limits.CheckMessageLimit(input.Count);
+        LimitScope.CheckMessageLimit(input.Count);
 
         var messages = input;
         if (resolvedConfig.SystemMessage is { } systemMessage)
@@ -167,6 +169,7 @@ public sealed class Model
                 {
                     Throughput.RecordGenerate(Name, usage);
                     context?.Limits.AddUsage(usage, Name);
+                    LimitScope.RecordUsage(usage);
                 }
 
                 NotifyCleanSuccess(request.Request);

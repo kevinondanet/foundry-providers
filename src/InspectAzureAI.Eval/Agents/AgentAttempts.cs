@@ -9,4 +9,8 @@ namespace InspectAzureAI.Eval.Agents;
 public sealed record AgentAttempts(
     int Attempts = 1,
     string IncorrectMessage = "Your submission was incorrect. Please proceed and attempt to find the correct answer.",
-    Func<ScoreValue, double>? ScoreValue = null);
+    Func<ScoreValue, double>? ScoreValue = null)
+{
+    /// <summary>Port of the callable form of <c>incorrect_message</c>: when set, builds the reply from the state and its scores instead of <see cref="IncorrectMessage"/>.</summary>
+    public AgentIncorrectMessage? IncorrectMessageFn { get; init; }
+}

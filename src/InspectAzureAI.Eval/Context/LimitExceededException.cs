@@ -14,6 +14,12 @@ public sealed class LimitExceededException(string type, string limitStr, double 
     /// <summary>The value compared against the limit.</summary>
     public double Value { get; } = value;
 
+    /// <summary>
+    /// Port of <c>LimitExceededError.source</c> (named to avoid <c>Exception.Source</c>): the scoped limit (an <c>Agents.LimitScope</c>) responsible for
+    /// the error, so <c>run()</c>-style callers can tell their own limits from the sample's (null).
+    /// </summary>
+    public object? LimitSource { get; init; }
+
     /// <summary>Port of <c>_format_float_or_int</c>: integral values with thousands separators, others with two decimals.</summary>
     public static string FormatLimit(double limit) =>
         double.IsFinite(limit) && Math.Abs(limit) < 1e15 && limit == Math.Floor(limit)

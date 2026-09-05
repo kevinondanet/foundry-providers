@@ -33,13 +33,18 @@ public static class ToolExecutor
         }
 
         var results = new ChatMessageTool[toolCalls.Count];
+        var extras = new IReadOnlyList<ChatMessage>?[toolCalls.Count];
+        ModelOutput? resultOutput = null;
         foreach (var stage in Stages(toolCalls, tools))
         {
-            var tasks = stage.Select(index => RunOneAsync(toolCalls[index], tools, maxOutput, cancellationToken)).ToArray();
+            var tasks = stage.Select(index => RunOneAsync(toolCalls[index], tools, messages, maxOutput, cancellationToken)).ToArray();
             var outcomes = await Task.WhenAll(tasks).ConfigureAwait(false);
             for (var i = 0; i < stage.Count; i++)
             {
                 results[stage[i]] = outcomes[i].Message;
+                extras[stage[i]] = outcomes[i].Extra;
+                // Like Python, the last handoff output in declared order wins.
+                resultOutput = outcomes[i].Output ?? resultOutput;
             }
 
             // Anything that is not a ToolError (or one of the mapped system errors) is fatal to the sample,
@@ -51,7 +56,17 @@ public static class ToolExecutor
             }
         }
 
-        return new ExecuteToolsResult(results);
+        var all = new List<ChatMessage>(results.Length);
+        for (var i = 0; i < results.Length; i++)
+        {
+            all.Add(results[i]);
+            if (extras[i] is { } extra)
+            {
+                all.AddRange(extra);
+            }
+        }
+
+        return new ExecuteToolsResult(all, resultOutput);
     }
 
     /// <summary>Port of the stage partitioning: unknown tools are serial.</summary>
@@ -81,17 +96,23 @@ public static class ToolExecutor
         return stages;
     }
 
-    private sealed record Outcome(ChatMessageTool Message, Exception? Fatal);
+    /// <summary><paramref name="Extra"/> and <paramref name="Output"/> are a handoff's messages (appended after the tool message) and the agent's output.</summary>
+    private sealed record Outcome(ChatMessageTool Message, Exception? Fatal, IReadOnlyList<ChatMessage>? Extra = null, ModelOutput? Output = null);
 
-    private static async Task<Outcome> RunOneAsync(ToolCall call, IReadOnlyList<ToolDef> tools, int? maxOutput, CancellationToken cancellationToken)
+    private static async Task<Outcome> RunOneAsync(ToolCall call, IReadOnlyList<ToolDef> tools, IReadOnlyList<ChatMessage> conversation, int? maxOutput, CancellationToken cancellationToken)
     {
         var transcript = SampleContext.Current?.Transcript;
+        // Python encloses a handoff's tool span in a "handoff" span named after the agent.
+        using var handoffSpan = tools.FirstOrDefault(t => t.Name == call.Function)?.Handoff is { } handoffAgent ? transcript?.Span(handoffAgent.Agent.Name, "handoff") : null;
         using var span = transcript?.Span(call.Function, "tool");
         var stopwatch = Stopwatch.StartNew();
         var tool = tools.FirstOrDefault(t => t.Name == call.Function);
         ToolResult result = ToolResult.Empty;
         ToolCallError? error = null;
         Exception? fatal = null;
+        IReadOnlyList<ChatMessage>? extra = null;
+        ModelOutput? output = null;
+        string? agent = null;
         try
         {
             if (call.ParseError is not null)
@@ -113,7 +134,18 @@ public static class ToolExecutor
                     }
                 }
 
-                result = await tool.Execute(call.Arguments, cancellationToken).ConfigureAwait(false) ?? ToolResult.Empty;
+                if (tool.Handoff is { } handoff)
+                {
+                    var handoffResult = await Agents.Agents.ExecuteHandoffAsync(handoff, call, conversation, cancellationToken).ConfigureAwait(false);
+                    result = handoffResult.Result;
+                    extra = handoffResult.Messages;
+                    output = handoffResult.Output;
+                    agent = handoffResult.AgentName;
+                }
+                else
+                {
+                    result = await tool.Execute(call.Arguments, cancellationToken).ConfigureAwait(false) ?? ToolResult.Empty;
+                }
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -202,8 +234,8 @@ public static class ToolExecutor
         }
 
         var message = new ChatMessageTool(content, toolCallId: call.Id, function: call.Function, error: error);
-        transcript?.Add(new ToolEvent(call.Id, call.Function, call.Arguments, eventResult, error, truncation, stopwatch.Elapsed));
-        return new Outcome(message, fatal);
+        transcript?.Add(new ToolEvent(call.Id, call.Function, call.Arguments, eventResult, error, truncation, stopwatch.Elapsed) { Agent = agent });
+        return new Outcome(message, fatal, extra, output);
     }
 
     internal sealed record TruncatedToolOutput(string Output, int RawBytes, int TruncatedBytes);
