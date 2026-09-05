@@ -1,4 +1,6 @@
 using InspectAzureAI.Eval.Concurrency;
+using InspectAzureAI.Eval.Runner.EvalSet;
+using InspectAzureAI.Provider.Core;
 
 namespace InspectAzureAI.Eval.Runner;
 
@@ -68,4 +70,20 @@ public sealed record EvalOptions
     /// scorers look them up with <c>ModelRoles.GetModel(role, ...)</c>.
     /// </summary>
     public IReadOnlyDictionary<string, object>? ModelRoles { get; init; }
+
+    /// <summary>Port of <c>ResolvedTask.id</c> / <c>PreviousTask.id</c>: the log's <c>task_id</c>; a retry passes the failed log's id so its attempts group together. Generated when unset.</summary>
+    public string? TaskId { get; init; }
+
+    /// <summary>Port of <c>eval_set_id</c>: the eval set this run belongs to, written to the log's <c>eval_set_id</c>.</summary>
+    public string? EvalSetId { get; init; }
+
+    /// <summary>
+    /// Port of <c>ResolvedTask.sample_source</c>: a previous attempt's samples (see <see cref="EvalSampleSource.FromLog"/>).
+    /// A completed sample found there is reused as logged instead of being run; an errored one is re-run with its
+    /// error history carried into <c>error_retries</c>.
+    /// </summary>
+    public EvalSampleSource? SampleSource { get; init; }
+
+    /// <summary>Port of <c>ResolvedTask.initial_model_usage</c>: the previous attempt's model usage, rolled forward into this log's stats so totals stay cumulative across retries.</summary>
+    public IReadOnlyDictionary<string, ModelUsage>? InitialModelUsage { get; init; }
 }
