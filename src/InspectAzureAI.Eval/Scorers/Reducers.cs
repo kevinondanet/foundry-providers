@@ -8,7 +8,7 @@ namespace InspectAzureAI.Eval.Scorers;
 /// (non-NaN) value decides how a reduction runs — scalars reduce directly, lists index by index and
 /// dictionaries key by key — and NaN elements are skipped at every level exactly as Python does.
 /// </summary>
-public static class Reducers
+public static partial class Reducers
 {
     /// <summary>Stand-in for the registry names <c>reducer_log_name</c> reads off a reducer (delegates carry no name).</summary>
     private static readonly ConditionalWeakTable<ScoreReducer, string> Names = new();
