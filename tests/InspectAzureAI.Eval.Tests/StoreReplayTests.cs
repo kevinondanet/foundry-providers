@@ -898,6 +898,43 @@ public sealed class StoreReplayTests
         Assert.Throws<InvalidOperationException>(() => transcript.Update(new InfoEvent("x", null) { Uuid = null }));
     }
 
+    [Fact]
+    public async Task transcript_event_logger_sees_each_record_and_update_once()
+    {
+        var transcript = new Transcript();
+        var delivered = new List<(string Event, bool? Pending)>();
+        transcript.EventLogger = e => delivered.Add((e.Event, e.Pending));
+
+        var recorded = transcript.Record(new SubtaskEvent("sub", new JsonObject()) { Pending = true });
+        transcript.Update(recorded with { Pending = null, Result = JsonValue.Create(1) });
+        transcript.Info("after");
+
+        (string, bool?)[] expected = [("subtask", true), ("subtask", null), ("info", null)];
+        Assert.Equal(expected, delivered);
+
+        // a completed subtask reaches the logger exactly twice: pending, then its completion
+        using var scope = new SampleContextScope();
+        scope.Transcript.EventLogger = e => delivered.Add((e.Event, e.Pending));
+        delivered.Clear();
+        Assert.Equal(3, await Subtask.RunAsync("job", _ => Task.FromResult(3)));
+        Assert.Equal(expected[..2], delivered.Where(d => d.Event == "subtask"));
+    }
+
+    [Fact]
+    public void transcript_working_start_comes_from_the_installed_working_time_source()
+    {
+        var transcript = new Transcript();
+        Assert.InRange(transcript.Record(new InfoEvent("x", null)).WorkingStart, 0, 5);
+
+        var working = 12.25;
+        transcript.WorkingTimeSource = () => working;
+        Assert.Equal(12.25, transcript.Record(new InfoEvent("y", null)).WorkingStart);
+        working = 30;
+        Assert.Equal(30, transcript.WorkingTime);
+        // a replayed event that already carries a working_start keeps it
+        Assert.Equal(1.5, transcript.Record(new InfoEvent("z", null) { WorkingStart = 1.5 }).WorkingStart);
+    }
+
     // ---------------------------------------------------------------- event tree
 
     [Fact]

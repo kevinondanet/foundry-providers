@@ -167,10 +167,16 @@ public sealed class JsonRecorder : ILogRecorder
         return data with { Location = log.File };
     }
 
+    /// <summary>Number of <see cref="ReadLog(string, bool)"/> calls so far (a diagnostic: tests pin how many full parses a header-only write costs).</summary>
+    internal static int LogReads => Volatile.Read(ref _logReads);
+
+    private static int _logReads;
+
     /// <summary>Port of <c>read_log</c> for the JSON format (see <see cref="EvalLogWriter.Deserialize"/>).</summary>
     public static EvalLog ReadLog(string location, bool headerOnly = false)
     {
         ArgumentException.ThrowIfNullOrEmpty(location);
+        Interlocked.Increment(ref _logReads);
         var log = EvalLogWriter.Deserialize(File.ReadAllText(location, Encoding.UTF8)) with { Location = location };
         return headerOnly ? log with { Samples = null, Reductions = null } : log;
     }
@@ -248,9 +254,15 @@ public sealed class JsonRecorder : ILogRecorder
         ArgumentNullException.ThrowIfNull(log);
         if (headerOnly)
         {
-            log = File.Exists(location)
-                ? log with { Samples = ReadLog(location).Samples, Reductions = ReadLog(location).Reductions }
-                : log with { Samples = null, Reductions = null };
+            if (File.Exists(location))
+            {
+                var existing = ReadLog(location);
+                log = log with { Samples = existing.Samples, Reductions = existing.Reductions };
+            }
+            else
+            {
+                log = log with { Samples = null, Reductions = null };
+            }
         }
 
         return WriteLogImplAsync(location, log, fsync: true, cancellationToken);

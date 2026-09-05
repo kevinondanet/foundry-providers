@@ -64,8 +64,11 @@ every sample written (`condense_sample`) and adds a direct equality test against
   `InvalidDataException`, `read_eval_log_samples` preconditions `InvalidOperationException` (`RuntimeError`). Like
   Python, the `.eval` header read has no version gate (a newer version is kept as read); the JSON path rejects it.
 - The sync `WriteEvalLog`/`WriteLog` wrappers block on the async recorder via the thread pool (the Python API is sync).
-- An intermediate snapshot whose rename fails because a reader holds the file (Windows) is skipped with a
-  `ProviderLogger` warning and retried at the next flush, as `write_local_snapshot` does; the final write always raises.
+- An intermediate snapshot whose write fails because a reader holds the file (Windows: access denied, a sharing or a
+  lock violation — `UnauthorizedAccessException` or an `IOException` with that `HResult`; on Unix an
+  `UnauthorizedAccessException`, Python's `PermissionError` either way) is skipped with a `ProviderLogger` warning
+  and retried at the next flush, as `write_local_snapshot` does. Any other I/O failure (disk full, an unmounted
+  volume) propagates from the first affected flush, and the final write always raises.
 - `ZstdDecoder` skips (does not verify) the optional content checksum and rejects dictionary frames (Python never
   writes either); `ReadLogSampleIds` sorts ints zero-padded to 20 digits like Python.
 

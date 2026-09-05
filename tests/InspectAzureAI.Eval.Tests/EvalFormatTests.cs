@@ -16,6 +16,7 @@ using InspectAzureAI.Eval.Scorers;
 using InspectAzureAI.Eval.Tasks;
 using InspectAzureAI.Eval.Testing;
 using InspectAzureAI.Provider.Core;
+using InspectAzureAI.Provider.Util;
 
 namespace InspectAzureAI.Eval.Tests;
 
@@ -624,6 +625,96 @@ public sealed class EvalFormatTests : IDisposable
         var fresh = Path.Combine(_tempDir, "fresh.json");
         EvalLogFiles.WriteEvalLog(original, fresh, headerOnly: true);
         Assert.Null(EvalLogFiles.ReadEvalLog(fresh).Samples);
+    }
+
+    [Fact]
+    public void header_only_json_write_parses_the_existing_log_once()
+    {
+        var original = EvalLogFiles.ReadEvalLog(FixturePath(TinyEval));
+        var jsonPath = Path.Combine(_tempDir, "once.json");
+        EvalLogFiles.WriteEvalLog(original, jsonPath);
+        var edited = EvalLogEditing.EditEvalLog(original with { Samples = [] }, [new TagsEdit { TagsAdd = ["reviewed"] }], new ProvenanceData("kev"));
+
+        var reads = JsonRecorder.LogReads;
+        EvalLogFiles.WriteEvalLog(edited, jsonPath, headerOnly: true);
+
+        Assert.Equal(1, JsonRecorder.LogReads - reads);
+        var read = EvalLogFiles.ReadEvalLog(jsonPath);
+        Assert.Equal(["reviewed"], read.Tags);
+        Assert.Equal(4, read.Samples!.Count);
+    }
+
+    [Fact]
+    public async Task intermediate_flush_propagates_io_failures_other_than_a_file_in_use()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return; // replacing a directory with a file is access-denied there, the tolerated file-in-use class
+        }
+
+        var spec = Spec();
+        var recorder = new EvalRecorder(_tempDir);
+        await using var scope = recorder.ConfigureAwait(false);
+        var path = await recorder.LogInitAsync(spec);
+        await recorder.LogStartAsync(spec, new EvalPlan());
+        Directory.CreateDirectory(path);
+
+        var warnings = ProviderLogger.Warnings.Count;
+        await Assert.ThrowsAnyAsync<IOException>(() => recorder.FlushAsync(spec));
+        Assert.Equal(warnings, ProviderLogger.Warnings.Count);
+        Assert.Empty(Directory.GetFiles(_tempDir, ".*.tmp"));
+    }
+
+    [Fact]
+    public async Task intermediate_flush_is_skipped_with_a_warning_when_the_destination_is_not_replaceable()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return; // Unix directory permissions stand in for Windows' file-in-use PermissionError
+        }
+
+        var dir = Path.Combine(_tempDir, "locked");
+        var spec = Spec();
+        var recorder = new EvalRecorder(dir);
+        await using var scope = recorder.ConfigureAwait(false);
+        var path = await recorder.LogInitAsync(spec);
+        await recorder.LogStartAsync(spec, new EvalPlan());
+        await recorder.FlushAsync(spec);
+        Assert.Equal(["_journal/start.json"], MemberNames(path));
+
+        File.SetUnixFileMode(dir, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+        try
+        {
+            if (CanCreateFilesIn(dir))
+            {
+                return; // running as root: directory permissions are not enforced
+            }
+
+            await recorder.LogSampleAsync(spec, Sample(1, 1));
+            var warnings = ProviderLogger.Warnings.Count;
+            await recorder.FlushAsync(spec);
+            Assert.Contains(ProviderLogger.Warnings.Skip(warnings), warning => warning.Contains("Skipped intermediate log write", StringComparison.Ordinal));
+            Assert.Equal(["_journal/start.json"], MemberNames(path));
+        }
+        finally
+        {
+            File.SetUnixFileMode(dir, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+    }
+
+    private static bool CanCreateFilesIn(string dir)
+    {
+        var probe = Path.Combine(dir, ".probe");
+        try
+        {
+            File.WriteAllText(probe, "");
+            File.Delete(probe);
+            return true;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return false;
+        }
     }
 
     [Fact]

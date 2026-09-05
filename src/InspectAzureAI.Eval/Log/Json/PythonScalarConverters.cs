@@ -191,12 +191,13 @@ internal static class JsonIo
         PythonJsonFormat.WriteNode(writer, value);
     }
 
+    /// <summary>Writes a raw JSON member in Python form (see <see cref="PythonJsonFormat.WriteElement"/>); skipped when null or undefined.</summary>
     public static void Element(Utf8JsonWriter writer, string name, JsonElement? value)
     {
         if (value is { } element && element.ValueKind != JsonValueKind.Undefined)
         {
             writer.WritePropertyName(name);
-            element.WriteTo(writer);
+            PythonJsonFormat.WriteElement(writer, element);
         }
     }
 

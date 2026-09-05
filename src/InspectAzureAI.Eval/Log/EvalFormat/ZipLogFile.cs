@@ -298,7 +298,7 @@ internal sealed class ZipLogFile : IAsyncDisposable
             System.IO.File.Move(temp, destination, overwrite: true);
             return true;
         }
-        catch (Exception ex) when (!fsync && ex is IOException or UnauthorizedAccessException)
+        catch (Exception ex) when (!fsync && IsFileInUse(ex))
         {
             ProviderLogger.Warning($"Skipped intermediate log write for {_file} (file in use by another program): {ex.Message}");
             return false;
@@ -311,6 +311,19 @@ internal sealed class ZipLogFile : IAsyncDisposable
             }
         }
     }
+
+    /// <summary>
+    /// The <c>PermissionError</c> filter of <c>write_local_snapshot</c>: an intermediate snapshot is skipped only when
+    /// the destination is held open by another program (Windows denies the replace with access denied, a sharing or
+    /// a lock violation; on Unix the equivalent is an <see cref="UnauthorizedAccessException"/>). Any other I/O
+    /// failure (disk full, an unmounted volume, a directory in the way) propagates from the first affected flush.
+    /// </summary>
+    private static bool IsFileInUse(Exception ex) =>
+        ex is UnauthorizedAccessException || (ex is IOException && ex.HResult is ErrorSharingViolation or ErrorLockViolation);
+
+    private const int ErrorSharingViolation = unchecked((int)0x80070020);
+
+    private const int ErrorLockViolation = unchecked((int)0x80070021);
 
     private async Task<Releaser> LockAsync(CancellationToken cancellationToken)
     {

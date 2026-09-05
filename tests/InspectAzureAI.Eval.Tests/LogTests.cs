@@ -1,7 +1,9 @@
+using System.IO.Compression;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using InspectAzureAI.Eval.Context;
 using InspectAzureAI.Eval.Log;
+using InspectAzureAI.Eval.Log.EvalFormat;
 using InspectAzureAI.Eval.Log.Json;
 using InspectAzureAI.Eval.Model;
 using InspectAzureAI.Eval.Sandbox;
@@ -351,6 +353,107 @@ public class LogTests
         var read = EvalLogWriter.Deserialize(json);
         Assert.True(double.IsNaN(read.Results!.Scores[0].Metrics["stderr"].Value));
     }
+
+    [Fact]
+    public void state_and_store_event_changes_keep_nan_constants_through_write_and_read()
+    {
+        // the raw `changes` patches of a Python log, as read (bare constants sanitized to sentinels)
+        var log = LogWithNonFiniteChanges();
+
+        var json = EvalLogWriter.Serialize(log);
+        Assert.DoesNotContain("", json);
+        Assert.Contains("\"value\": NaN", json);
+        Assert.Contains("\"value\": -Infinity", json);
+        AssertNonFiniteChanges(EvalLogWriter.Deserialize(json));
+
+        var dir = Path.Combine(Path.GetTempPath(), "inspect-swe-tests", Guid.NewGuid().ToString("N"));
+        try
+        {
+            var evalPath = Path.Combine(dir, "changes.eval");
+            EvalLogFiles.WriteEvalLog(log, evalPath);
+            using (var archive = new ZipArchive(File.OpenRead(evalPath), ZipArchiveMode.Read))
+            using (var member = new StreamReader(archive.GetEntry("samples/1_epoch_1.json")!.Open()))
+            {
+                var text = member.ReadToEnd();
+                Assert.DoesNotContain("", text);
+                Assert.Matches("\"value\":\\s*NaN", text);
+                Assert.Matches("\"value\":\\s*-Infinity", text);
+            }
+
+            AssertNonFiniteChanges(EvalLogFiles.ReadEvalLog(evalPath));
+
+            var jsonPath = Path.Combine(dir, "changes.json");
+            EvalLogFiles.WriteEvalLog(log, jsonPath);
+            AssertNonFiniteChanges(EvalLogFiles.ReadEvalLog(jsonPath));
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [PythonFact]
+    public void python_reads_nan_constants_inside_changes_written_by_csharp()
+    {
+        var log = LogWithNonFiniteChanges();
+        var dir = Path.Combine(Path.GetTempPath(), "inspect-swe-tests", Guid.NewGuid().ToString("N"));
+        try
+        {
+            var jsonPath = Path.Combine(dir, "changes.json");
+            var evalPath = Path.Combine(dir, "changes.eval");
+            EvalLogFiles.WriteEvalLog(log, jsonPath);
+            EvalLogFiles.WriteEvalLog(log, evalPath);
+
+            var report = PythonReference.Run($$"""
+                import json, math
+                from inspect_ai.log import read_eval_log
+                out = []
+                for path in [r'''{{jsonPath}}''', r'''{{evalPath}}''']:
+                    events = read_eval_log(path).samples[0].events
+                    store = [e for e in events if e.event == "store"][-1].changes[0].value
+                    state = [e for e in events if e.event == "state"][-1].changes[0].value
+                    out.append([type(store).__name__, math.isnan(store), type(state).__name__, state == float("-inf")])
+                print(json.dumps(out))
+                """);
+
+            Assert.Equal("""[["float", true, "float", true], ["float", true, "float", true]]""", report);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    /// <summary><see cref="SampleLog"/> whose first sample ends with a store and a state event carrying NaN / -Infinity patch values.</summary>
+    private static EvalLog LogWithNonFiniteChanges()
+    {
+        var store = new StoreEvent(SanitizedElement("""[{"op": "add", "path": "/s", "value": NaN}]""")) { Timestamp = Created };
+        var state = new StateEvent(SanitizedElement("""[{"op": "replace", "path": "/metadata/x", "value": -Infinity, "replaced": 1.5}]""")) { Timestamp = Created };
+        var log = SampleLog();
+        var sample = log.Samples![0] with { Events = [.. log.Samples[0].Events, store, state] };
+        return log with { Samples = [sample, log.Samples[1]] };
+    }
+
+    private static JsonElement SanitizedElement(string pythonJson)
+    {
+        using var document = JsonDocument.Parse(PythonJsonFormat.SanitizeNonFinite(pythonJson));
+        return document.RootElement.Clone();
+    }
+
+    private static void AssertNonFiniteChanges(EvalLog read)
+    {
+        var events = read.Samples![0].Events;
+        var store = Assert.IsType<StoreEvent>(events[^2]);
+        var state = Assert.IsType<StateEvent>(events[^1]);
+        Assert.True(double.IsNaN(NonFinite(Assert.Single(store.GetChanges()).Value)));
+        Assert.True(double.IsNegativeInfinity(NonFinite(Assert.Single(state.GetChanges()).Value)));
+    }
+
+    /// <summary>The non-finite double a raw patch value stands for (raw members keep the sentinel form on read).</summary>
+    private static double NonFinite(JsonNode? value) =>
+        value is JsonValue node && node.TryGetValue<string>(out var text) && PythonJsonFormat.TryNonFinite(text, out var result)
+            ? result
+            : throw new Xunit.Sdk.XunitException($"Expected a non-finite sentinel, got {value?.ToJsonString() ?? "null"}.");
 
     [Fact]
     public void empty_output_and_explicit_completion_serialize()
