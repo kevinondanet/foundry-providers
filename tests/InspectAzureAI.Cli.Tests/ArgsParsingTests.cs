@@ -194,6 +194,15 @@ public class ArgsParsingTests
     }
 
     [Fact]
+    public void env_args_keep_the_raw_text_after_the_first_equals()
+    {
+        var env = CliArgs.ParseEnvArgs(["PYTHONPATH=/a,/b", "EMPTY=", "PAIR=x=y", "MY-VAR=3.10", "FLAG=true", "noequals"]);
+        Assert.Equal(new Dictionary<string, string> { ["PYTHONPATH"] = "/a,/b", ["EMPTY"] = "", ["PAIR"] = "x=y", ["MY_VAR"] = "3.10", ["FLAG"] = "true" }, env);
+        Assert.Empty(CliArgs.ParseEnvArgs(null));
+        Assert.Empty(CliArgs.ParseEnvArgs([]));
+    }
+
+    [Fact]
     public void model_roles_names_lists_and_mappings()
     {
         var created = new List<(string? Name, GenerateConfig? Config, IReadOnlyDictionary<string, object?>? Args)>();
@@ -202,13 +211,17 @@ public class ArgsParsingTests
             (name, config, args) =>
             {
                 created.Add((name, config, args));
-                return ModelProviders.Resolve("mockllm/model", config);
+                return ModelProviders.Resolve(name ?? "mockllm/model", config);
             })!;
 
-        Assert.Equal("mockllm/model", roles["grader"]);
-        Assert.Equal(new List<object> { "mockllm/a", "mockllm/b" }, roles["critic"]);
+        // a plain name is built by the factory too (Python: get_model(name)); a string result would send it to the runner's Foundry default
+        Assert.Equal("mockllm/model", Assert.IsType<Eval.Model.Model>(roles["grader"]).Name);
+        Assert.Equal(["mockllm/a", "mockllm/b"], Assert.IsType<List<object>>(roles["critic"]).Select(model => Assert.IsType<Eval.Model.Model>(model).Name));
         Assert.IsType<Eval.Model.Model>(roles["judge"]);
-        var (modelName, generateConfig, modelArgs) = Assert.Single(created);
+        Assert.Equal(["mockllm/model", "mockllm/a", "mockllm/b", "mockllm/j"], created.Select(call => call.Name));
+        Assert.All(created.Take(3), call => Assert.Null(call.Config));
+        Assert.All(created.Take(3), call => Assert.Null(call.Args));
+        var (modelName, generateConfig, modelArgs) = created[^1];
         Assert.Equal("mockllm/j", modelName);
         Assert.Equal(0.5, generateConfig!.Temperature);
         Assert.Equal("v", modelArgs!["k"]);

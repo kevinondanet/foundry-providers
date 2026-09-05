@@ -54,6 +54,35 @@ public static class CliArgs
         return parameters;
     }
 
+    /// <summary>
+    /// Parses the <c>--env NAME=value</c> entries of <c>process_common_options</c>: the name before the first <c>=</c>
+    /// (<c>-</c> replaced by <c>_</c>, as <c>parse_cli_args</c> does), the value as the raw text after it, entries
+    /// without <c>=</c> ignored. Deviation: Python YAML-parses the value and stores <c>str()</c> of the result, so
+    /// <c>NAME=a,b</c> becomes <c>['a', 'b']</c>, <c>NAME=3.10</c> becomes <c>3.1</c> and <c>NAME=</c> becomes
+    /// <c>None</c> — repr artifacts no consumer of an environment variable expects; the raw text is kept instead.
+    /// </summary>
+    public static Dictionary<string, string> ParseEnvArgs(IEnumerable<string>? args)
+    {
+        var variables = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (args is null)
+        {
+            return variables;
+        }
+
+        foreach (var arg in args)
+        {
+            var separator = arg.IndexOf('=', StringComparison.Ordinal);
+            if (separator < 0)
+            {
+                continue;
+            }
+
+            variables[arg[..separator].Replace('-', '_')] = arg[(separator + 1)..];
+        }
+
+        return variables;
+    }
+
     /// <summary>Port of <c>parse_cli_config</c>: the config file's values (when given) overridden by the <c>key=value</c> arguments.</summary>
     public static Dictionary<string, object?> ParseCliConfig(IEnumerable<string>? args, string? configFile)
     {

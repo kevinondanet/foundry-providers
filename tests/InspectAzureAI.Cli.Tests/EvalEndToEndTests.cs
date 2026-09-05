@@ -117,6 +117,47 @@ public sealed class EvalEndToEndTests : IDisposable
     }
 
     [Fact]
+    public async Task model_role_names_resolve_through_the_provider_registry()
+    {
+        var requested = new List<string>();
+        ModelProviders.Register("roletest", spec =>
+        {
+            requested.Add(spec.Name);
+            return new Model(ScriptedApi(spec with { ModelName = "quiz" }), spec.Config);
+        });
+        try
+        {
+            var (code, _, error) = await Run("eval", "hello", "--model", "scripted/quiz", "--model-role", "grader=roletest/grader", "--model-role", "critic=roletest/a,roletest/b", "--log-dir", _dir, "--display", "none");
+            Assert.True(code == 0, error);
+            Assert.Equal(["roletest/grader", "roletest/a", "roletest/b"], requested);
+            var file = Assert.Single(Directory.GetFiles(_dir, "*.eval"));
+            var log = EvalLogFiles.ReadEvalLog(file);
+            Assert.Equal("roletest/grader", Assert.Single(log.Eval.ModelRoles!["grader"]).Model);
+            Assert.Equal(["roletest/a", "roletest/b"], log.Eval.ModelRoles["critic"].Select(model => model.Model));
+
+            requested.Clear();
+            (code, _, error) = await Run("score", file, "--scorer", "includes", "--model-role", "grader=roletest/scorer", "--overwrite", "--action", "overwrite");
+            Assert.True(code == 0, error);
+            Assert.Equal(["roletest/scorer"], requested);
+
+            requested.Clear();
+            var setDir = Path.Combine(_dir, "set");
+            (code, _, error) = await Run("eval-set", "hello", "--model", "scripted/quiz", "--model-role", "grader=roletest/set", "--log-dir", setDir, "--display", "none", "--retry-attempts", "1");
+            Assert.True(code == 0, error);
+            Assert.Contains("roletest/set", requested);
+            Assert.Equal("roletest/set", Assert.Single(EvalLogFiles.ReadEvalLog(Assert.Single(Directory.GetFiles(setDir, "*.eval")), headerOnly: true).Eval.ModelRoles!["grader"]).Model);
+
+            (code, _, error) = await Run("eval", "hello", "--model", "scripted/quiz", "--model-role", "grader=nope/model", "--log-dir", Path.Combine(_dir, "unknown"));
+            Assert.Equal(2, code);
+            Assert.Contains("Unknown model provider 'nope'", error);
+        }
+        finally
+        {
+            ModelProviders.Unregister("roletest");
+        }
+    }
+
+    [Fact]
     public async Task eval_reports_unknown_tasks_models_and_arguments_as_exit_2()
     {
         var (code, _, error) = await Run("eval", "nosuch", "--model", "scripted/quiz", "--log-dir", _dir);

@@ -11,10 +11,12 @@ public delegate Model RoleModelFactory(string? modelName, GenerateConfig? config
 public static class ModelRoleArgs
 {
     /// <summary>
-    /// Parses <c>--model-role</c> values: <c>grader=mockllm/model</c> keeps the name, <c>grader=a,b</c> (or a YAML list)
-    /// binds several models, and a YAML/JSON mapping (<c>grader={model: x, temperature: 0.5}</c>) builds a distinct
-    /// <see cref="Model"/> through <paramref name="factory"/> from its <c>model</c>, <c>model_args</c> and generate
-    /// config fields. Text that is not key-value / YAML / JSON is an <see cref="ArgumentException"/>; <c>model_args</c>
+    /// Parses <c>--model-role</c> values: <c>grader=mockllm/model</c> builds the named model through
+    /// <paramref name="factory"/> (Python's <c>get_model(name)</c>: the provider registry, never the runner's Foundry
+    /// default), <c>grader=a,b</c> (or a YAML list) binds several models, and a YAML/JSON mapping
+    /// (<c>grader={model: x, temperature: 0.5}</c>) builds a distinct <see cref="Model"/> through the factory from its
+    /// <c>model</c>, <c>model_args</c> and generate config fields. Every value of the result is a <see cref="Model"/>
+    /// or a list of them. Text that is not key-value / YAML / JSON is an <see cref="ArgumentException"/>; <c>model_args</c>
     /// that is not a mapping is an <see cref="ArgumentException"/>; an unknown config field is a <see cref="PrerequisiteError"/>.
     /// </summary>
     public static IReadOnlyDictionary<string, object>? Parse(IEnumerable<string>? modelRoles, RoleModelFactory factory)
@@ -64,6 +66,11 @@ public static class ModelRoleArgs
         return resolved;
     }
 
+    /// <summary>
+    /// One role value as a <see cref="Model"/>. A plain name goes through <paramref name="factory"/> exactly as
+    /// <c>--model</c> does; handing the string on would leave the runner to build it as a Foundry deployment named
+    /// after the provider string (<c>mockllm/model</c>), which needs an endpoint and targets nothing that exists.
+    /// </summary>
     private static object ResolveRoleValue(string role, object? value, RoleModelFactory factory)
     {
         if (value is IReadOnlyDictionary<string, object?> mapping)
@@ -82,9 +89,9 @@ public static class ModelRoleArgs
 
         return value switch
         {
-            string text => text,
+            string text => factory(text, null, null),
             null => throw new ArgumentException($"Model role '{role}' has no model."),
-            _ => Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture) ?? "",
+            _ => factory(Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture) ?? "", null, null),
         };
     }
 }

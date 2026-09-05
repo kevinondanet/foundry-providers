@@ -41,6 +41,9 @@ internal static class RunWiring
     /// <summary>Creates the <c>--hooks</c> instances; dispose them with <see cref="DisposeHooks"/> once the run has ended.</summary>
     public static IReadOnlyList<Hooks> CreateHooks(RunOptions run, TextWriter console) => run.Hooks.Select(choice => choice.Create(console)).ToList();
 
+    /// <summary>Creates the <c>--hooks</c> instances over the writer <paramref name="writerFor"/> gives each entry (a console line writer, or a <see cref="HookFiles"/> writer for a file destination); dispose them with <see cref="DisposeHooks"/>.</summary>
+    public static IReadOnlyList<Hooks> CreateHooks(RunOptions run, Func<HookChoice, TextWriter> writerFor) => run.Hooks.Select(choice => choice.CreateOn(writerFor(choice))).ToList();
+
     public static void DisposeHooks(IEnumerable<Hooks> hooks)
     {
         foreach (var hook in hooks)

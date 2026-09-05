@@ -23,6 +23,29 @@ public class CommandParsingTests
     }
 
     [Fact]
+    public void env_option_sets_the_raw_value_and_an_empty_value_unsets_the_variable()
+    {
+        var name = "INSPECTAI_TEST_ENV_" + Guid.NewGuid().ToString("N");
+        try
+        {
+            var options = new CommonOptions();
+            var command = new RootCommand();
+            options.AddTo(command);
+            options.Process(command.Parse(["--env", $"{name}=/a,/b", "--env", $"{name}_FLAG=true"]));
+            Assert.Equal("/a,/b", Environment.GetEnvironmentVariable(name));
+            Assert.Equal("true", Environment.GetEnvironmentVariable($"{name}_FLAG"));
+
+            options.Process(command.Parse(["--env", $"{name}="]));
+            Assert.Null(Environment.GetEnvironmentVariable(name));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(name, null);
+            Environment.SetEnvironmentVariable($"{name}_FLAG", null);
+        }
+    }
+
+    [Fact]
     public void eval_binds_every_option()
     {
         var result = Parse(

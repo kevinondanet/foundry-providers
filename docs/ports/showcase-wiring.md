@@ -33,7 +33,10 @@ Python apps they stand in for (`inspect eval`, `inspect eval-set`, `inspect view
   upstream format error. Claude Code compacts its own context, so `--compaction` with `--agent claude-code` is a
   usage error rather than a silently ignored flag.
 - **Hooks**: `sample-log` is a `Hooks` subclass registered per run (`EvalOptions.Hooks`), not process-wide, so two
-  matrix deployments in flight each get their own instance writing through the matrix's locked console writer.
+  matrix deployments in flight each get their own instance writing through the matrix's locked console writer. A
+  `sample-log=FILE` destination is opened once per matrix run (`HookFiles`, truncated on first use, synchronized,
+  flushed per line) and shared by every deployment, whose lines carry the deployment prefix there as on the console;
+  per-deployment instances each opening the file would truncate and overwrite one another.
 - **Cost**: `--model-cost-config` is `EvalOptions.ModelCostConfig` (applied before the run, validated at parse time
   so a malformed file is exit 2); `--cost-limit` is `EvalOptions.CostLimit` (a limit without prices is the runner's
   `PrerequisiteError`, exit 2). The showcase prints `total_cost` sums from `EvalStats.ModelUsage`; the matrix adds a
@@ -81,5 +84,6 @@ replaying a second run, compaction accepted/refused, hooks to console and file, 
 both, pricing and the cost limit, the usage errors), `MiniSweWiringTests.cs` (reject/modify/terminate, the cache
 with zero provider calls, threshold and forced compaction), `tests/InspectAzureAI.ModelMatrix.Tests/MatrixWiringTests.cs`
 (eval-set directories, reuse on a second run, resume of an errored log under the same task id, cost and throughput,
-prefixed hooks, flag parsing, path-safe directories) plus `ReportTests`, and the new
+prefixed hooks to the console and to one shared file across parallel deployments, flag parsing, path-safe
+directories) plus `ReportTests`, and the new
 `tests/InspectAzureAI.Sample.Tests` (cache write/read, cost with and without prices, structured output).
