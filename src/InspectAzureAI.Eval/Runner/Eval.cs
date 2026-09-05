@@ -211,6 +211,8 @@ public static class Eval
         }
         finally
         {
+            // the runner never registers its limiter under a task id, so it owns it (see docs/ports/concurrency.md)
+            (semaphore as IDisposable)?.Dispose();
             foreach (var providerSpec in providerSpecs)
             {
                 try

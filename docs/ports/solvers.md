@@ -47,6 +47,12 @@ the `randbelow` draws Python makes (`[0,1]` → `[2,1,0]`, `[1,1,0]` → `[2,0,3
   ambient `SampleContext.Store`, and run under a `subtask` span named `chain` for a chain and `fork` otherwise
   (Python uses the solver's registry name, which delegates do not have). No `SubtaskEvent` or `StateEvent` is
   emitted — the port has no such event types yet.
+- **`fork(state, solvers)` fails fast like `tg_collect`** (`AsyncUtil.TgCollect`, the port of `_util/_async.py`):
+  the first branch to throw cancels every other branch through the token it receives, waits for them to settle,
+  and its exception is rethrown unchanged (a branch's `OperationCanceledException` caused by that cancellation is
+  not a failure). Cancelling the caller's token cancels every branch and wins over a branch failure. Python's
+  functions take no arguments; the C# branches receive the group's token, so a branch that ignores it keeps running
+  until its next cancellable await. `tg_collect(exception_group=True)` is not ported.
 - **`TaskState.Copy()`** copies the message list, metadata, tools, choices, scores and store *dictionary*;
   values inside them are shared (Python's `deepcopy` copies them too). Messages and outputs are immutable
   records, so that only matters for mutable metadata/store values.

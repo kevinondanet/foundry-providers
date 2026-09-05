@@ -277,6 +277,28 @@ public sealed class AdaptiveConcurrencyController : IConcurrencySemaphore
         }
     }
 
+    /// <summary>Removes a callback registered with <see cref="AddObserver"/> (a no-op when it is not registered).</summary>
+    public void RemoveObserver(Action callback)
+    {
+        ArgumentNullException.ThrowIfNull(callback);
+        lock (_sync)
+        {
+            _observers.Remove(callback);
+        }
+    }
+
+    /// <summary>The registered scale-change observers (for tests asserting that finished limiters unsubscribe).</summary>
+    internal int ObserverCount
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _observers.Count;
+            }
+        }
+    }
+
     /// <summary>
     /// Records a successful logical request that had no retries. Successes during the post-cut cooldown are
     /// discarded entirely (they were in flight before the cut); a completed round grows the limit only if it

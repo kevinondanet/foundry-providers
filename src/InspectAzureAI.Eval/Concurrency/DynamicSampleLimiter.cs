@@ -7,9 +7,10 @@ namespace InspectAzureAI.Eval.Concurrency;
 /// <c>controller.Concurrency + BUFFER</c> on every scale change. Controllers for other models (graders, sibling
 /// tasks, another account) are ignored; a key that never matches leaves the limiter at its initial value.
 /// <see cref="SetOverride"/> pins the capacity at an exact setpoint (scale events are ignored while pinned);
-/// clearing it catches back up to the controller.
+/// clearing it catches back up to the controller. Both subscriptions are process-global, so a limiter must be
+/// <see cref="Dispose"/>d when its run ends (the runner does), or every later run keeps it alive and fans out to it.
 /// </summary>
-public sealed class DynamicSampleLimiter : ISampleLimiter
+public sealed class DynamicSampleLimiter : ISampleLimiter, IDisposable
 {
     public const int Buffer = 5;
 
@@ -24,6 +25,8 @@ public sealed class DynamicSampleLimiter : ISampleLimiter
     private AdaptiveConcurrencyController? _controller;
 
     private int? _override;
+
+    private bool _disposed;
 
     public DynamicSampleLimiter(AdaptiveConcurrency adaptive, string key)
     {
@@ -117,14 +120,44 @@ public sealed class DynamicSampleLimiter : ISampleLimiter
         }
     }
 
+    /// <summary>
+    /// Unsubscribes from the registry's controller-created observers and from the adopted controller: a finished
+    /// run's limiter is then neither kept alive by the registry nor re-adopts (and resizes for) controllers created
+    /// later. Leases already held stay valid and the limiter keeps working at its last capacity. Idempotent.
+    /// </summary>
+    public void Dispose()
+    {
+        AdaptiveConcurrencyController? controller;
+        lock (_sync)
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
+            controller = _controller;
+        }
+
+        Concurrency.RemoveControllerCreatedObserver(OnControllerCreated);
+        controller?.RemoveObserver(OnControllerChange);
+    }
+
     private void Adopt(AdaptiveConcurrencyController controller)
     {
         lock (_sync)
         {
+            // subscribed under the lock so a Dispose racing a controller-created callback either sees the
+            // adopted controller or runs after this subscription; nothing takes this lock while holding the controller's
+            if (_disposed)
+            {
+                return;
+            }
+
             _controller = controller;
+            controller.AddObserver(OnControllerChange);
         }
 
-        controller.AddObserver(OnControllerChange);
         OnControllerChange();
     }
 
