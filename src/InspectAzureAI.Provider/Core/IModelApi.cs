@@ -13,6 +13,16 @@ public interface IModelApi
     /// <summary>Default <c>max_tokens</c> for the model family (null: let the service decide).</summary>
     int? MaxTokens();
 
+    /// <summary>Port of <c>ModelAPI.max_connections()</c>: the connection limit when the config sets none (Python: 10).</summary>
+    int MaxConnections() => 10;
+
+    /// <summary>
+    /// Port of <c>ModelAPI.connection_key()</c>: the scope within which <see cref="MaxConnections"/> (and adaptive
+    /// concurrency) is enforced. Instances of one provider returning the same key share a connection pool; the
+    /// model layer adds the provider namespace, so distinct providers never collide.
+    /// </summary>
+    string ConnectionKey() => "default";
+
     /// <summary>Generates a completion; retryable failures are thrown, a terminal 400 is returned in the result.</summary>
     Task<GenerateResult> GenerateAsync(
         IReadOnlyList<ChatMessage> input,

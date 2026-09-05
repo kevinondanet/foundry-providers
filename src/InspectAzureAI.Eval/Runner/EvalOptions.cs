@@ -1,3 +1,5 @@
+using InspectAzureAI.Eval.Concurrency;
+
 namespace InspectAzureAI.Eval.Runner;
 
 using Model = InspectAzureAI.Eval.Model.Model;
@@ -19,7 +21,14 @@ public sealed record EvalOptions
 
     public int? Epochs { get; init; }
 
-    public int MaxSamples { get; init; } = 4;
+    /// <summary>
+    /// Port of <c>max_samples</c>: the samples in flight at once. Null (the default) derives it as Python does — the
+    /// model's adaptive controller plus a buffer when adaptive connections are active, else <c>max_connections</c>.
+    /// </summary>
+    public int? MaxSamples { get; init; }
+
+    /// <summary>Port of the eval-level <c>adaptive_connections</c>; null inherits the model's own setting.</summary>
+    public AdaptiveConnections? AdaptiveConnections { get; init; }
 
     public bool? FailOnError { get; init; }
 

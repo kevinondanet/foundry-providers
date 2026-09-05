@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using InspectAzureAI.Eval.Concurrency;
 using InspectAzureAI.Eval.Context;
 using InspectAzureAI.Eval.Sandbox;
 using InspectAzureAI.Eval.Scorers;
@@ -134,6 +135,9 @@ public sealed record EvalStats
     public DateTimeOffset? CompletedAt { get; init; }
 
     public IReadOnlyDictionary<string, ModelUsage> ModelUsage { get; init; } = new Dictionary<string, ModelUsage>(StringComparer.Ordinal);
+
+    /// <summary>Port of <c>connection_limit_history</c>: adaptive-connections scale changes (empty unless adaptive connections were active).</summary>
+    public IReadOnlyList<LimitChangeRecord> ConnectionLimitHistory { get; init; } = [];
 }
 
 /// <summary>Port of <c>_util/error.py</c> <c>EvalError</c>.</summary>
