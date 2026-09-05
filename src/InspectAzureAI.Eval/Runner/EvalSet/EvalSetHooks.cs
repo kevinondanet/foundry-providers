@@ -7,9 +7,9 @@ public sealed record EvalSetStart(string EvalSetId, string LogDir);
 public sealed record EvalSetEnd(string EvalSetId, string LogDir);
 
 /// <summary>
-/// The eval-set hook seam (port of <c>Hooks.on_eval_set_start</c> / <c>on_eval_set_end</c>). This port has no
-/// registry of hooks, so an implementation is passed explicitly through <see cref="EvalSetOptions.Hooks"/>;
-/// <see cref="EvalSet.RunAsync"/> emits start before any task runs and end after the final status is reported —
+/// An explicit eval-set hook seam alongside <c>Hooks.OnEvalSetStartAsync</c> / <c>OnEvalSetEndAsync</c> of the registered
+/// <see cref="InspectAzureAI.Eval.Hooks.Hooks"/> (which <see cref="EvalSet.RunAsync"/> notifies first): an implementation passed
+/// through <see cref="EvalSetOptions.Hooks"/> sees start before any task runs and end after the final status is reported —
 /// not when the run fails with an exception, as in Python.
 /// </summary>
 public interface IEvalSetHooks

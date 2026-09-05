@@ -108,8 +108,6 @@ public sealed class Transcript
         }
 
         EventLogger?.Invoke(e);
-
-        EventLogger?.Invoke(e);
     }
 
     /// <summary>Port of <c>transcript().info(data, source=...)</c>; <paramref name="data"/> is serialized to JSON.</summary>

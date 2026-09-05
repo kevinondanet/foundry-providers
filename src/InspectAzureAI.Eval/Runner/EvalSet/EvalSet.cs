@@ -1,5 +1,6 @@
 using System.Runtime.ExceptionServices;
 using InspectAzureAI.Eval.Concurrency;
+using InspectAzureAI.Eval.Hooks;
 using InspectAzureAI.Eval.Log;
 using InspectAzureAI.Eval.Model;
 using InspectAzureAI.Eval.Tasks;
@@ -100,6 +101,9 @@ public static class EvalSet
         var currentModels = models;
         var timeProvider = options.TimeProvider ?? TimeProvider.System;
 
+        // Python's emit_eval_set_start / emit_eval_set_end reach the registered hooks; the IEvalSetHooks seam is notified after them
+        var lifecycleHooks = HookRun.ResolveHooks(options.Eval);
+        await HookEmitter.EmitEvalSetStartAsync(evalSetId, logDir, lifecycleHooks, cancellationToken).ConfigureAwait(false);
         if (options.Hooks is { } hooks)
         {
             await hooks.OnEvalSetStartAsync(new EvalSetStart(evalSetId, logDir), cancellationToken).ConfigureAwait(false);
@@ -142,6 +146,7 @@ public static class EvalSet
 
         var success = EvalSetLogs.AllEvalsSucceeded(results);
         reporter?.Message(success ? $"Completed all tasks in '{logDir}' successfully" : $"Did not successfully complete all tasks in '{logDir}'.");
+        await HookEmitter.EmitEvalSetEndAsync(evalSetId, logDir, lifecycleHooks, cancellationToken).ConfigureAwait(false);
         if (options.Hooks is { } endHooks)
         {
             await endHooks.OnEvalSetEndAsync(new EvalSetEnd(evalSetId, logDir), cancellationToken).ConfigureAwait(false);
@@ -227,13 +232,45 @@ public static class EvalSet
     }
 
     /// <summary>
+    /// One pass over <paramref name="tasks"/> as one hook run: Python's <c>eval_set</c> calls <c>eval()</c> once per pass,
+    /// so the pass's tasks share a run id, one run start naming every task and one run end carrying the pass's logs
+    /// (the logs written so far when the pass throws).
+    /// </summary>
+    private static async Task<IReadOnlyList<EvalLog>> RunEvalAsync(
+        string evalSetId,
+        IReadOnlyList<ResolvedTask> tasks,
+        int taskRetryAttempts,
+        int maxTasks,
+        EvalOptions evalOptions,
+        Action<string> warn,
+        CancellationToken cancellationToken)
+    {
+        var run = new HookRunGroup(evalSetId, evalOptions);
+        await run.StartAsync(tasks.Select(task => task.Task.Name).ToList(), cancellationToken).ConfigureAwait(false);
+        var logs = new List<EvalLog>();
+        try
+        {
+            var results = await DispatchAsync(run, logs, evalSetId, tasks, taskRetryAttempts, maxTasks, evalOptions, warn, cancellationToken).ConfigureAwait(false);
+            await run.EndAsync(results, null).ConfigureAwait(false);
+            return results;
+        }
+        catch (Exception ex)
+        {
+            await run.EndAsync(logs, ex).ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    /// <summary>
     /// Port of <c>run_task_retry_attempts</c>: a model-balanced dispatcher that keeps up to <paramref name="maxTasks"/>
     /// tasks in flight, re-queues a task whose log comes back with an error (a fresh log entry, completed samples
     /// reused) until its retries are exhausted, and ends the run on cancellation. An exception escaping a task
     /// (a configuration error the runner raises before any sample runs) stops the dispatcher and propagates once
     /// the tasks in flight have finished.
     /// </summary>
-    private static async Task<IReadOnlyList<EvalLog>> RunEvalAsync(
+    private static async Task<IReadOnlyList<EvalLog>> DispatchAsync(
+        HookRunGroup run,
+        List<EvalLog> logs,
         string evalSetId,
         IReadOnlyList<ResolvedTask> tasks,
         int taskRetryAttempts,
@@ -291,6 +328,7 @@ public static class EvalSet
             }
 
             results[finished.Index] = log;
+            logs.Add(log);
             if (log.Status == EvalStatus.Cancelled)
             {
                 cancelled = true;
@@ -329,7 +367,7 @@ public static class EvalSet
                 SampleSource = previous is null ? null : EvalSampleSource.FromLog(previous, task.Task.Dataset, warn),
                 InitialModelUsage = previous?.Stats.ModelUsage is { Count: > 0 } usage ? usage : null,
             };
-            return Eval.RunAsync(task.Task, runOptions, abort.Token);
+            return Eval.RunAsync(task.Task, runOptions, run, abort.Token);
         }
     }
 

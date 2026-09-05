@@ -1,5 +1,8 @@
+using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
+using InspectAzureAI.Eval.Approval;
 using InspectAzureAI.Eval.Concurrency;
+using InspectAzureAI.Eval.Context;
 using InspectAzureAI.Eval.Dataset;
 using InspectAzureAI.Eval.Log;
 using InspectAzureAI.Eval.Log.EvalFormat;
@@ -7,14 +10,22 @@ using InspectAzureAI.Eval.Runner;
 using InspectAzureAI.Eval.Runner.EvalSet;
 using InspectAzureAI.Eval.Tasks;
 using InspectAzureAI.Eval.Testing;
+using InspectAzureAI.Eval.Tools;
 using InspectAzureAI.Provider.Core;
 
 namespace InspectAzureAI.Eval.Tests;
 
 using Eval = InspectAzureAI.Eval.Runner.Eval;
 using EvalSet = InspectAzureAI.Eval.Runner.EvalSet.EvalSet;
+using HookRegistry = InspectAzureAI.Eval.Hooks.HookRegistry;
+using Hooks = InspectAzureAI.Eval.Hooks.Hooks;
 using Model = InspectAzureAI.Eval.Model.Model;
+using RunEnd = InspectAzureAI.Eval.Hooks.RunEnd;
+using RunStart = InspectAzureAI.Eval.Hooks.RunStart;
 using Scorers = InspectAzureAI.Eval.Scorers.Scorers;
+using Solvers = InspectAzureAI.Eval.Solvers.Solvers;
+using TaskEnd = InspectAzureAI.Eval.Hooks.TaskEnd;
+using TaskStart = InspectAzureAI.Eval.Hooks.TaskStart;
 
 /// <summary>
 /// Eval sets, resume and retry (<c>_eval/evalset.py</c>, <c>eval_retry</c>, the sample-source reuse of
@@ -24,8 +35,14 @@ public sealed class EvalSetTests : IDisposable
 {
     private readonly string _logDir = Path.Combine(Path.GetTempPath(), "inspect-swe-tests", Guid.NewGuid().ToString("N"));
 
+    public EvalSetTests()
+    {
+        HookRegistry.Clear();
+    }
+
     public void Dispose()
     {
+        HookRegistry.Clear();
         try
         {
             Directory.Delete(_logDir, recursive: true);
@@ -283,6 +300,34 @@ public sealed class EvalSetTests : IDisposable
     }
 
     [Fact]
+    public async Task eval_set_notifies_the_registered_hooks_and_runs_the_tasks_of_a_pass_as_one_run()
+    {
+        var hook = new LifecycleHooks();
+        HookRegistry.Register(hook, "eval_set_hooks", "records the eval set lifecycle");
+        var api = new ScriptedModelApi(ScriptedTurn.Text("answer1"), ScriptedTurn.Text("answer2"), ScriptedTurn.Text("answer1"), ScriptedTurn.Text("answer2"));
+
+        var result = await EvalSet.RunAsync([QuizTask("quiz"), QuizTask("quiz2")], new EvalSetOptions { Eval = Options(api), EvalSetId = "set-1", MaxTasks = 1 });
+
+        Assert.True(result.Success);
+        Assert.Equal(["eval_set_start", "run_start", "task_start", "task_end", "task_start", "task_end", "run_end", "eval_set_end"], hook.Names);
+        var setStart = Assert.Single(hook.Of<InspectAzureAI.Eval.Hooks.EvalSetStart>());
+        Assert.Equal(("set-1", _logDir), (setStart.EvalSetId, setStart.LogDir));
+        var setEnd = Assert.Single(hook.Of<InspectAzureAI.Eval.Hooks.EvalSetEnd>());
+        Assert.Equal(("set-1", _logDir), (setEnd.EvalSetId, setEnd.LogDir));
+        // Python's eval_set calls eval() once per pass: one run naming every task, shared by every log of the pass
+        var runStart = Assert.Single(hook.Of<RunStart>());
+        Assert.Equal("set-1", runStart.EvalSetId);
+        Assert.Equal(["quiz", "quiz2"], runStart.TaskNames);
+        Assert.All(result.Logs, log => Assert.Equal(runStart.RunId, log.Eval.RunId));
+        var runEnd = Assert.Single(hook.Of<RunEnd>());
+        Assert.Equal(runStart.RunId, runEnd.RunId);
+        Assert.Null(runEnd.Exception);
+        Assert.Equal(result.Logs.Select(log => log.Eval.TaskId), runEnd.Logs.Select(log => log.Eval.TaskId));
+        Assert.Equal(["quiz", "quiz2"], hook.Of<TaskStart>().Select(start => start.Spec.Task));
+        Assert.All(hook.Of<TaskStart>(), start => Assert.Equal(runStart.RunId, start.RunId));
+    }
+
+    [Fact]
     public async Task batch_mode_backs_off_exponentially_and_decays_connections_on_a_fake_clock()
     {
         var api = new ScriptedModelApi(ScriptedTurn.Throw(Boom("1")), ScriptedTurn.Throw(Boom("2")), ScriptedTurn.Throw(Boom("3"))) { ConnectionLimit = 8 };
@@ -348,6 +393,28 @@ public sealed class EvalSetTests : IDisposable
         var missing = await Assert.ThrowsAsync<PrerequisiteError>(() => EvalRetry.RunAsync([failed], new EvalRetryOptions { Tasks = [QuizTask("other")] }));
         Assert.Contains("'quiz' not found", missing.Message);
         await Assert.ThrowsAsync<ArgumentException>(() => EvalRetry.RunAsync([failed], new EvalRetryOptions()));
+    }
+
+    [Fact]
+    public async Task eval_retry_restores_the_logs_approval_policy()
+    {
+        var task = QuizTask() with { Solver = Solvers.Chain(Solvers.UseTools(Addition()), Solvers.Generate()) };
+        var first = new ScriptedModelApi(ScriptedTurn.ToolCall("addition", new { x = 1, y = 1 }, id: "c1"), ScriptedTurn.Text("answer1"), ScriptedTurn.Throw(Boom("q2")));
+        var failed = await Eval.RunAsync(task, Options(first) with { Approval = new ApprovalPolicy(Approvers.Auto(ApprovalDecision.Reject), "*") });
+        Assert.Equal(EvalStatus.Error, failed.Status);
+        Assert.NotNull(failed.Eval.Config.Approval);
+        Assert.Equal("reject", Assert.Single(failed.Samples![0].Events.OfType<ApprovalEvent>()).Decision);
+
+        var second = new ScriptedModelApi(ScriptedTurn.ToolCall("addition", new { x = 2, y = 2 }, id: "c2"), ScriptedTurn.Text("answer2"));
+        var logs = await EvalRetry.RunAsync([failed.Location!], new EvalRetryOptions { Tasks = [task], ResolveModel = _ => new Model(second) });
+
+        var log = Assert.Single(logs);
+        Assert.Equal(EvalStatus.Success, log.Status);
+        Assert.True(JsonNode.DeepEquals(failed.Eval.Config.Approval, log.Eval.Config.Approval), log.Eval.Config.Approval?.ToJsonString());
+        var retried = log.Samples![1];
+        Assert.Equal("answer2", retried.Output.Completion);
+        Assert.Equal("reject", Assert.Single(retried.Events.OfType<ApprovalEvent>()).Decision);
+        Assert.Equal("approval", Assert.Single(retried.Messages.OfType<ChatMessageTool>()).Error!.Type);
     }
 
     // ---- sample source and carry-forward ----------------------------------------------------------------------
@@ -520,6 +587,64 @@ public sealed class EvalSetTests : IDisposable
         public Task OnEvalSetEndAsync(EvalSetEnd data, CancellationToken cancellationToken)
         {
             Events.Add($"end:{data.EvalSetId}");
+            return Task.CompletedTask;
+        }
+    }
+
+    /// <summary>The <c>addition</c> tool of the approval tests: a tool call the retried sample must have approved.</summary>
+    private static ToolDef Addition() => new(
+        "addition",
+        "Add two numbers.",
+        new ToolParams
+        {
+            Properties = new Dictionary<string, ToolParam>(StringComparer.Ordinal) { ["x"] = ToolParam.Of("integer"), ["y"] = ToolParam.Of("integer") },
+            Required = ["x", "y"],
+        },
+        (args, _) => Task.FromResult<ToolResult>((args["x"]!.GetValue<int>() + args["y"]!.GetValue<int>()).ToString(System.Globalization.CultureInfo.InvariantCulture)));
+
+    /// <summary>A registry hook recording the eval set, run and task callbacks in delivery order (sample callbacks are the single-run tests' concern).</summary>
+    private sealed class LifecycleHooks : Hooks
+    {
+        private readonly List<(string Name, object Data)> _sequence = [];
+
+        public IReadOnlyList<string> Names
+        {
+            get
+            {
+                lock (_sequence)
+                {
+                    return _sequence.Select(e => e.Name).ToList();
+                }
+            }
+        }
+
+        public IReadOnlyList<T> Of<T>()
+        {
+            lock (_sequence)
+            {
+                return _sequence.Select(e => e.Data).OfType<T>().ToList();
+            }
+        }
+
+        public override Task OnEvalSetStartAsync(InspectAzureAI.Eval.Hooks.EvalSetStart data, CancellationToken cancellationToken) => Record("eval_set_start", data);
+
+        public override Task OnEvalSetEndAsync(InspectAzureAI.Eval.Hooks.EvalSetEnd data, CancellationToken cancellationToken) => Record("eval_set_end", data);
+
+        public override Task OnRunStartAsync(RunStart data, CancellationToken cancellationToken) => Record("run_start", data);
+
+        public override Task OnRunEndAsync(RunEnd data, CancellationToken cancellationToken) => Record("run_end", data);
+
+        public override Task OnTaskStartAsync(TaskStart data, CancellationToken cancellationToken) => Record("task_start", data);
+
+        public override Task OnTaskEndAsync(TaskEnd data, CancellationToken cancellationToken) => Record("task_end", data);
+
+        private Task Record(string name, object data)
+        {
+            lock (_sequence)
+            {
+                _sequence.Add((name, data));
+            }
+
             return Task.CompletedTask;
         }
     }

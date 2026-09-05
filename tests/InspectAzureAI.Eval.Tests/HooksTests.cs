@@ -345,6 +345,31 @@ public sealed class HooksTests : IDisposable
     }
 
     [Fact]
+    public async Task a_completed_subtask_event_is_delivered_to_the_hooks_once()
+    {
+        var hook = Register();
+        Solver solver = async (state, generate, ct) =>
+        {
+            var value = await Subtask.RunAsync("sub", _ => Task.FromResult(21 * 2), cancellationToken: ct);
+            Assert.Equal(42, value);
+            return await generate(state, cancellationToken: ct);
+        };
+
+        var log = await Eval.RunAsync(Task1("sub", solver), Options(new ScriptedModelApi(Turn("Paris"))));
+
+        Assert.Equal(EvalStatus.Success, log.Status);
+        var sample = Assert.Single(log.Samples!);
+        var recorded = Assert.Single(sample.Events.OfType<SubtaskEvent>());
+        // the pending event is not delivered; the update that completes it is delivered exactly once
+        var delivered = Assert.Single(hook.Of<SampleEvent>().Select(e => e.Event).OfType<SubtaskEvent>());
+        Assert.Equal(recorded.Uuid, delivered.Uuid);
+        Assert.Equal("sub", delivered.Name);
+        Assert.NotEqual(true, delivered.Pending);
+        Assert.NotNull(delivered.Completed);
+        Assert.Equal(42, delivered.Result!.GetValue<int>());
+    }
+
+    [Fact]
     public async Task a_run_with_no_hooks_registered_works()
     {
         var log = await Eval.RunAsync(Task1(), Options());

@@ -115,6 +115,7 @@ public sealed class Limits
         if (cost > limit)
         {
             var message = $"Cost limit exceeded. value: ${cost.ToString("N4", CultureInfo.InvariantCulture)}; limit: ${limit.ToString("N4", CultureInfo.InvariantCulture)}";
+            EmitLimitEvent("cost", limit, message);
             throw new LimitExceededException("cost", LimitExceededException.FormatLimit(limit), cost, message);
         }
     }
