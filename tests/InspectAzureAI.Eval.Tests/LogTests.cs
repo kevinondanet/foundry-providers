@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using InspectAzureAI.Eval.Context;
 using InspectAzureAI.Eval.Log;
+using InspectAzureAI.Eval.Log.Json;
 using InspectAzureAI.Eval.Model;
 using InspectAzureAI.Eval.Sandbox;
 using InspectAzureAI.Eval.Scorers;
@@ -102,7 +103,7 @@ public class LogTests
                     Retries = 1,
                 },
                 new ToolEvent("call_1", "bash", new JsonObject { ["cmd"] = "ls" }, "a.txt\nb.txt", new ToolCallError("timeout", "Command timed out before completing."), new ToolTruncation(20000, 16384), TimeSpan.FromSeconds(1.25)) { Timestamp = Created, SpanId = "span1" },
-                new SandboxEvent("exec", new JsonObject { ["cmd"] = new JsonArray("ls") }, new JsonObject { ["returncode"] = 0 }) { Timestamp = Created },
+                new SandboxEvent("exec", new JsonObject { ["cmd"] = new JsonArray("ls"), ["timeout"] = 30 }, new JsonObject { ["returncode"] = 0, ["stdout"] = "a.txt\n" }) { Timestamp = Created },
                 new ScoreEvent(new Score("C") { Answer = "4" }, new Target("4"), Intermediate: true) { Timestamp = Created },
                 new InfoEvent("claude_code", new JsonObject { ["type"] = "system", ["n"] = 1 }) { Timestamp = Created },
                 new InfoEvent("note", null) { Timestamp = Created },
@@ -180,7 +181,7 @@ public class LogTests
 
             Assert.Equal(EvalLogWriter.Serialize(log), EvalLogWriter.Serialize(read));
             Assert.Equal(EvalStatus.Success, read.Status);
-            Assert.Equal(1, read.Version);
+            Assert.Equal(2, read.Version);
             Assert.Equal("hello-swe", read.Eval.Task);
             Assert.Equal(Created, read.Eval.Created);
             Assert.Equal(new SandboxSpec("docker", "Dockerfile"), read.Eval.Sandbox);
@@ -298,7 +299,10 @@ public class LogTests
         Assert.Equal(TimeSpan.FromSeconds(1.25), tool.Working);
 
         var sandbox = Assert.IsType<SandboxEvent>(events[5]);
-        Assert.Equal(0, (int?)sandbox.Result!["returncode"]);
+        Assert.Equal(0, sandbox.Result);
+        Assert.Equal("ls", sandbox.Cmd);
+        Assert.Equal(30, (int?)sandbox.Options!["timeout"]);
+        Assert.Equal("a.txt\n", sandbox.Output);
         var score = Assert.IsType<ScoreEvent>(events[6]);
         Assert.True(score.Intermediate);
         Assert.Equal(new Target("4"), score.Target);
@@ -310,22 +314,24 @@ public class LogTests
     }
 
     [Fact]
-    public void json_uses_snake_case_python_shapes_and_null_for_nan()
+    public void json_uses_snake_case_python_shapes_and_nan_constants()
     {
         var json = EvalLogWriter.Serialize(SampleLog());
-        var root = JsonNode.Parse(json)!.AsObject();
+        // Python's NaN / Infinity constants are not strict JSON; sanitize before parsing with JsonNode
+        var root = JsonNode.Parse(PythonJsonFormat.SanitizeNonFinite(json))!.AsObject();
 
         Assert.Equal("success", (string?)root["status"]);
         Assert.Equal(2, (int?)root["results"]!["total_samples"]);
         Assert.Equal("hello-swe", (string?)root["eval"]!["task"]);
-        Assert.Equal("0", (string?)root["eval"]!["task_version"]);
+        Assert.Equal(0, (int?)root["eval"]!["task_version"]);
         Assert.Equal(10, (int?)root["eval"]!["config"]!["message_limit"]);
         Assert.Equal(15, (int?)root["stats"]!["model_usage"]!["gpt"]!["total_tokens"]);
 
         var metrics = root["results"]!["scores"]![0]!["metrics"]!.AsObject();
         Assert.Equal(1.0, (double?)metrics["accuracy"]!["value"]);
         Assert.True(metrics.ContainsKey("stderr"));
-        Assert.Null(metrics["stderr"]!["value"]);
+        Assert.Equal(PythonJsonFormat.NaNSentinel, (string?)metrics["stderr"]!["value"]);
+        Assert.Contains("\"value\": NaN", json);
 
         var sample = root["samples"]![0]!.AsObject();
         Assert.Equal("user", (string?)sample["messages"]![1]!["role"]);
@@ -333,7 +339,7 @@ public class LogTests
         Assert.Equal("text", (string?)sample["messages"]![2]!["content"]![1]!["type"]);
         Assert.Equal("call_1", (string?)sample["messages"]![2]!["tool_calls"]![0]!["id"]);
         Assert.Equal("stop", (string?)sample["output"]!["stop_reason"] ?? (string?)sample["output"]!["choices"]![0]!["stop_reason"]);
-        Assert.Null(sample["scores"]!["unscored"]!["value"]);
+        Assert.Equal(PythonJsonFormat.NaNSentinel, (string?)sample["scores"]!["unscored"]!["value"]);
         Assert.True(sample["scores"]!.AsObject().ContainsKey("unscored"));
         Assert.Equal("tool", (string?)sample["events"]![4]!["event"]);
         Assert.Equal("span1", (string?)sample["events"]![1]!["span_id"]);

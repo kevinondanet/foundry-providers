@@ -1,4 +1,5 @@
 using System.Globalization;
+using InspectAzureAI.Eval.Context;
 
 namespace InspectAzureAI.Eval.Scorers;
 
@@ -12,6 +13,9 @@ public sealed record Score(ScoreValue Value)
     public string? Reason { get; init; }
 
     public IReadOnlyDictionary<string, object?>? Metadata { get; init; }
+
+    /// <summary>Port of <c>Score.history</c>: edits applied to this score, oldest first.</summary>
+    public IReadOnlyList<ScoreEdit> History { get; init; } = [];
 
     /// <summary>Port of <c>Score.unscored</c>: a NaN value that metrics and reducers skip.</summary>
     public static Score Unscored(string? reason = null, string? answer = null, string? explanation = null, IReadOnlyDictionary<string, object?>? metadata = null) =>

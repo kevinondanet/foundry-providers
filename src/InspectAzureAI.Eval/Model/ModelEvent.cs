@@ -10,7 +10,13 @@ public sealed record ModelEvent : TranscriptEvent
 
     public required string Model { get; init; }
 
+    /// <summary>Port of <c>ModelEvent.role</c>: the model role, if the call went through one.</summary>
+    public string? Role { get; init; }
+
     public required IReadOnlyList<ChatMessage> Input { get; init; }
+
+    /// <summary>Port of <c>ModelEvent.input_refs</c>: message-pool ranges for <see cref="Input"/> in condensed logs (kept verbatim, not resolved).</summary>
+    public IReadOnlyList<MessageRange>? InputRefs { get; init; }
 
     public IReadOnlyList<ToolInfo> Tools { get; init; } = [];
 
@@ -27,6 +33,15 @@ public sealed record ModelEvent : TranscriptEvent
     public int? Retries { get; init; }
 
     public string? Error { get; init; }
+
+    /// <summary>Error traceback (plain text).</summary>
+    public string? Traceback { get; init; }
+
+    /// <summary>Error traceback with ANSI color codes.</summary>
+    public string? TracebackAnsi { get; init; }
+
+    /// <summary>Port of <c>ModelEvent.cache</c>: "read" or "write" when the call hit the cache.</summary>
+    public string? Cache { get; init; }
 
     public DateTimeOffset? Completed { get; init; }
 

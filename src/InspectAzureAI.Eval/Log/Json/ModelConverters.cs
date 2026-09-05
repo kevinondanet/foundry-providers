@@ -24,6 +24,8 @@ internal sealed class ModelCallConverter : JsonConverter<ModelCall>
             call.SetResponse(response, time);
         }
 
+        call.CallRefs = node["call_refs"]?.Deserialize<List<CallRef>>(options);
+        call.CallKey = node["call_key"] is JsonValue keyValue && keyValue.TryGetValue<string>(out var key) ? key : null;
         return call;
     }
 
@@ -31,11 +33,11 @@ internal sealed class ModelCallConverter : JsonConverter<ModelCall>
     {
         writer.WriteStartObject();
         writer.WritePropertyName("request");
-        value.Request.WriteTo(writer);
+        PythonJsonFormat.WriteNode(writer, value.Request);
         if (value.Response is { } response)
         {
             writer.WritePropertyName("response");
-            response.WriteTo(writer);
+            PythonJsonFormat.WriteNode(writer, response);
         }
 
         if (value.Error is { } error)
@@ -43,20 +45,17 @@ internal sealed class ModelCallConverter : JsonConverter<ModelCall>
             writer.WriteBoolean("error", error);
         }
 
-        if (value.Time is { } time)
-        {
-            writer.WriteNumber("time", time);
-        }
-
+        JsonIo.Dbl(writer, "time", value.Time);
+        JsonIo.Obj(writer, "call_refs", value.CallRefs, options);
+        JsonIo.Str(writer, "call_key", value.CallKey);
         writer.WriteEndObject();
     }
 }
 
 /// <summary>
-/// Port of <c>model/_model_output.py</c> <c>ModelOutput</c> as JSON (<c>model</c>, <c>choices</c>, <c>usage</c>,
-/// <c>time</c>, <c>metadata</c>, <c>error</c>). Hand-written because the record's computed <c>Message</c> /
-/// <c>StopReason</c> throw on an empty output; an explicitly set <c>Completion</c> that differs from the first
-/// choice's text is preserved under <c>completion</c>.
+/// Port of <c>model/_model_output.py</c> <c>ModelOutput</c> as JSON (<c>model</c>, <c>choices</c>, <c>completion</c>,
+/// <c>usage</c>, <c>time</c>, <c>metadata</c>, <c>error</c>). Hand-written because the record's computed
+/// <c>Message</c> / <c>StopReason</c> throw on an empty output; <c>completion</c> is always written, as in Python.
 /// </summary>
 internal sealed class ModelOutputConverter : JsonConverter<ModelOutput>
 {
@@ -82,17 +81,14 @@ internal sealed class ModelOutputConverter : JsonConverter<ModelOutput>
         writer.WriteString("model", value.Model);
         writer.WritePropertyName("choices");
         JsonSerializer.Serialize(writer, value.Choices, options);
+        writer.WriteString("completion", value.Completion);
         if (value.Usage is { } usage)
         {
             writer.WritePropertyName("usage");
             JsonSerializer.Serialize(writer, usage, options);
         }
 
-        if (value.Time is { } time)
-        {
-            writer.WriteNumber("time", time);
-        }
-
+        JsonIo.Dbl(writer, "time", value.Time);
         if (value.Metadata is { } metadata)
         {
             writer.WritePropertyName("metadata");
@@ -102,12 +98,6 @@ internal sealed class ModelOutputConverter : JsonConverter<ModelOutput>
         if (value.Error is { } error)
         {
             writer.WriteString("error", error);
-        }
-
-        var derived = value.Choices.Count > 0 ? value.Choices[0].Message.Text : "";
-        if (value.Completion != derived)
-        {
-            writer.WriteString("completion", value.Completion);
         }
 
         writer.WriteEndObject();
