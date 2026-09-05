@@ -36,11 +36,27 @@ public static class Eval
     /// Lifecycle hooks (<see cref="HookRegistry"/> plus <see cref="EvalOptions.Hooks"/>) are notified of the run's
     /// start and end — the end carries the exception when the run throws, as Python's <c>eval()</c> does.
     /// </summary>
-    public static async Task<EvalLog> RunAsync(EvalTask task, EvalOptions options, CancellationToken cancellationToken = default)
+    public static Task<EvalLog> RunAsync(EvalTask task, EvalOptions options, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(task);
         ArgumentNullException.ThrowIfNull(options);
-        var hooks = new HookRun(options);
+        return RunAsync(task, options, new HookRun(options), cancellationToken);
+    }
+
+    /// <summary>
+    /// Runs <paramref name="task"/> as one task of an eval-set pass: the run id and the run start/end emissions are
+    /// the <paramref name="group"/>'s (Python's <c>eval_set</c> calls <c>eval()</c> once per pass), task start/end this task's.
+    /// </summary>
+    internal static Task<EvalLog> RunAsync(EvalTask task, EvalOptions options, HookRunGroup group, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(task);
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(group);
+        return RunAsync(task, options, new HookRun(options, group), cancellationToken);
+    }
+
+    private static async Task<EvalLog> RunAsync(EvalTask task, EvalOptions options, HookRun hooks, CancellationToken cancellationToken)
+    {
         try
         {
             HookStartup.InitHooks(options.Reporter is { } reporter ? reporter.Message : null);

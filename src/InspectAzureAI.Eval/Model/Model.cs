@@ -192,6 +192,7 @@ public sealed class Model
                     await HookEmitter.EmitModelCacheUsageAsync(Name, cachedUsage, cancellationToken).ConfigureAwait(false);
                 }
 
+                // a cache hit also advances the conversation by one assistant message (Python records the turn in the outer frame)
                 return CompleteGenerate(cached);
             }
 

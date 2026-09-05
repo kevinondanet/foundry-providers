@@ -4,7 +4,7 @@ namespace InspectAzureAI.Eval.Context;
 /// Port of <c>turn_limit()</c> / <c>_TurnLimit</c>: limits the number of turns (top-level model generations,
 /// each producing one assistant message) taken while the scope is open — distinct from
 /// <see cref="MessageLimit"/>, which counts every message. Cooperative: <c>Model.GenerateAsync</c> calls
-/// <see cref="RecordTurn"/> once per completed generation, which records on this scope and its ancestors and
+/// <see cref="RecordTurn"/> once per completed generation (prompt-cache hits included), which records on this scope and its ancestors and
 /// then checks from the root down.
 /// </summary>
 public sealed class TurnLimit : Limit

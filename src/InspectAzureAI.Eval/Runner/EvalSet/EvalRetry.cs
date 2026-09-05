@@ -1,3 +1,4 @@
+using InspectAzureAI.Eval.Approval;
 using InspectAzureAI.Eval.Concurrency;
 using InspectAzureAI.Eval.Log;
 using InspectAzureAI.Eval.Model;
@@ -145,6 +146,7 @@ public static class EvalRetry
             TimeLimit = spec.Config.TimeLimit is { } time ? TimeSpan.FromSeconds(time) : null,
             WorkingLimit = spec.Config.WorkingLimit is { } working ? TimeSpan.FromSeconds(working) : null,
             CostLimit = spec.Config.CostLimit,
+            Approval = spec.Config.Approval is { } approvalConfig ? ApprovalOption.FromConfig(ApprovalPolicyConfig.FromJson(approvalConfig)) : null,
             Reporter = reporter,
             TaskId = spec.TaskId,
             SampleSource = EvalSampleSource.FromLog(log, task.Dataset, reporter is null ? null : reporter.Message),

@@ -46,7 +46,7 @@ public sealed record EvalSetOptions
     /// <summary>Port of <c>eval_set_id</c>: the set's id (default: the directory's recorded id, else a fresh one).</summary>
     public string? EvalSetId { get; init; }
 
-    /// <summary>Hooks notified when the set starts and ends (see <see cref="IEvalSetHooks"/>).</summary>
+    /// <summary>An explicit hook notified when the set starts and ends (see <see cref="IEvalSetHooks"/>), after the registered <see cref="InspectAzureAI.Eval.Hooks.Hooks"/> (which <see cref="EvalSet.RunAsync"/> notifies of the same events).</summary>
     public IEvalSetHooks? Hooks { get; init; }
 
     /// <summary>The clock the batch-mode backoff waits on (default: the system clock); tests pass a fake.</summary>

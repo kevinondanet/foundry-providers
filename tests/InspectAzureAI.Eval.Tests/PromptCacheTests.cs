@@ -205,6 +205,26 @@ public sealed class PromptCacheTests : IDisposable
     }
 
     [Fact]
+    public async Task a_cache_hit_counts_as_a_turn()
+    {
+        var api = new ScriptedModelApi(ScriptedTurn.Text("a"), ScriptedTurn.Text("b"));
+        using var scope = new SampleContextScope(api);
+        using (new TurnLimit(1).Enter())
+        {
+            await scope.Model.GenerateAsync("hi", cache: true);
+            Assert.Equal(1, TurnLimit.TurnCount());
+
+            // Python records the turn in the outer frame of generate(), so a hit advances the conversation like a provider call
+            var ex = await Assert.ThrowsAsync<LimitExceededException>(() => scope.Model.GenerateAsync("hi", cache: true));
+            Assert.Equal("turn", ex.Type);
+            Assert.Equal(2, TurnLimit.TurnCount());
+        }
+
+        Assert.Single(api.Requests);
+        Assert.Equal("turn", Assert.Single(scope.Transcript.Events.OfType<SampleLimitEvent>()).Type);
+    }
+
+    [Fact]
     public async Task retry_attempts_record_the_write_mode_and_a_later_call_reads()
     {
         var api = new ScriptedModelApi(ScriptedTurn.Throw(new InvalidOperationException("flaky")), ScriptedTurn.Text("ok"))

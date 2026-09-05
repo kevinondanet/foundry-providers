@@ -1027,12 +1027,14 @@ public sealed class RunnerExtrasTests : IDisposable
         Assert.Throws<LimitExceededException>(() => new Limits { MessageLimit = 1 }.CheckMessageLimit(5));
         Assert.Throws<LimitExceededException>(() => new Limits { TokenLimit = 1 }.AddUsage(new ModelUsage(0, 0, 5)));
         Assert.Throws<LimitExceededException>(new Limits { TimeLimit = TimeSpan.Zero, StartedAt = DateTimeOffset.UtcNow.AddMinutes(-1) }.CheckTimeLimit);
+        Assert.Throws<LimitExceededException>(() => new Limits { CostLimit = 0.001 }.AddUsage(new ModelUsage(0, 0, 5) { TotalCost = 0.01 }));
 
         var events = scope.Transcript.Events.OfType<SampleLimitEvent>().ToList();
-        Assert.Equal(["token", "message", "turn", "working", "message", "token", "time"], events.Select(e => e.Type));
-        Assert.Equal([10, 1, 0, 1, 1, 1, 0], events.Select(e => e.Limit));
+        Assert.Equal(["token", "message", "turn", "working", "message", "token", "time", "cost"], events.Select(e => e.Type));
+        Assert.Equal([10, 1, 0, 1, 1, 1, 0, 0.001], events.Select(e => e.Limit));
         Assert.Equal("Token limit exceeded. value: 11; limit: 10", events[0].Message);
         Assert.Equal("Working time limit exceeded. limit: 1 seconds", events[3].Message);
+        Assert.Equal("Cost limit exceeded. value: $0.0100; limit: $0.0010", events[7].Message);
     }
 
     [Fact]

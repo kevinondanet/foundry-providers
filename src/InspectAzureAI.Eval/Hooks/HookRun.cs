@@ -19,12 +19,28 @@ internal sealed class HookRun
 
     private bool _ended;
 
+    private readonly HookRunGroup? _group;
+
     public HookRun(EvalOptions options)
+        : this(options, null)
+    {
+    }
+
+    /// <summary>A run that is one task of an eval-set pass: the <paramref name="group"/> owns the run id, the hooks and the run start/end emissions.</summary>
+    public HookRun(EvalOptions options, HookRunGroup? group)
     {
         ArgumentNullException.ThrowIfNull(options);
+        _group = group;
         EvalSetId = options.EvalSetId;
-        RunId = ShortUuid.Generate();
-        Hooks = options.Hooks is { Count: > 0 } extra ? [.. HookRegistry.All, .. extra] : HookRegistry.All;
+        RunId = group?.RunId ?? ShortUuid.Generate();
+        Hooks = group?.Hooks ?? ResolveHooks(options);
+    }
+
+    /// <summary>Port of <c>get_all_hooks()</c> for a run: the registry snapshot followed by <see cref="EvalOptions.Hooks"/>.</summary>
+    internal static IReadOnlyList<Hooks> ResolveHooks(EvalOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        return options.Hooks is { Count: > 0 } extra ? [.. HookRegistry.All, .. extra] : HookRegistry.All;
     }
 
     public string? EvalSetId { get; }
@@ -46,7 +62,11 @@ internal sealed class HookRun
         ArgumentNullException.ThrowIfNull(spec);
         ArgumentNullException.ThrowIfNull(plan);
         Spec = spec;
-        await HookEmitter.EmitRunStartAsync(EvalSetId, RunId, [spec.Task], Hooks, cancellationToken).ConfigureAwait(false);
+        if (_group is null)
+        {
+            await HookEmitter.EmitRunStartAsync(EvalSetId, RunId, [spec.Task], Hooks, cancellationToken).ConfigureAwait(false);
+        }
+
         await HookEmitter.EmitTaskStartAsync(spec, plan, Hooks, cancellationToken).ConfigureAwait(false);
     }
 
@@ -58,10 +78,10 @@ internal sealed class HookRun
         await HookEmitter.EmitTaskEndAsync(log, Hooks, CancellationToken.None).ConfigureAwait(false);
     }
 
-    /// <summary>Emits run end once, with the logs collected so far and the exception that escaped the run (if any).</summary>
+    /// <summary>Emits run end once, with the logs collected so far and the exception that escaped the run (if any). A no-op for a grouped run, whose group ends the run.</summary>
     public async Task EndAsync(Exception? exception)
     {
-        if (_ended)
+        if (_ended || _group is not null)
         {
             return;
         }
