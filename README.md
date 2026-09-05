@@ -1,10 +1,12 @@
-# InspectAzureAI (lite) — Azure AI Foundry model providers for .NET, `az login` only
+# InspectAzureAI — Inspect AI on .NET for Azure AI Foundry, `az login` only
 
-This branch is the **lite** cut of the .NET 10 port of the
-[Inspect AI](https://inspect.aisi.org.uk) `azureai` model provider — the adapter for
-[Azure AI Foundry](https://ai.azure.com/) model-inference endpoints — plus its companion provider for
-Claude deployments on the Anthropic Messages route. It keeps everything needed to drive the deployments
-that were verified on a live Foundry resource (below) with a developer sign-in, and drops the rest:
+A .NET 10 port of [Inspect AI](https://inspect.aisi.org.uk) built around
+[Azure AI Foundry](https://ai.azure.com/): the `azureai` model provider (the adapter for Foundry
+model-inference endpoints) and its companion provider for Claude deployments on the Anthropic Messages
+route, the eval engine that drives them (tasks, solvers, scorers, tools, agents, sandboxes, limits, logs,
+eval sets), two SWE agents, the `inspectai` command line and three console apps. The provider is the
+**lite** cut: it keeps everything needed to drive the deployments that were verified on a live Foundry
+resource (below) with a developer sign-in, and drops the rest:
 
 | Kept | Dropped (available on `main`) |
 |---|---|
@@ -22,27 +24,76 @@ Python location it ports. The port targets **net10.0** on
 [`Azure.AI.Inference`](https://www.nuget.org/packages/Azure.AI.Inference) and
 [`Azure.Identity`](https://www.nuget.org/packages/Azure.Identity).
 
+## What the solution ports
+
+Four layers, each depending only on the ones below it (`docs/ARCHITECTURE.md` walks through all of them;
+`docs/ports/README.md` indexes the per-subsystem port notes with their deviations from Python):
+
+- **Provider** (`InspectAzureAI.Provider`): `AzureAIModelApi` and `AnthropicFoundryModelApi` behind one
+  `IModelApi`, the Inspect data model (messages, content, tools, `GenerateConfig` with every Python field,
+  `ModelOutput`, `ModelCall`), Entra ID auth, streaming with `on_stream` events, native tool calling,
+  per-vendor reasoning parameters, structured output (`response_format` / Anthropic `output_format`),
+  JSON-schema generation, stall scopes, Anthropic server-side web search with citations, deployment
+  discovery and parameter probes.
+- **Eval engine** (`InspectAzureAI.Eval`): the ambient sample context, the `Model` wrapper (retries,
+  adaptive connection concurrency, prompt cache, cost, roles, fallbacks, hooks), scoped limits (message,
+  token, turn, time, working, cost), sample error policy with retries and early stopping, datasets and
+  `[Task]`s, solvers (generate loop, basic agent, multiple choice, chain of thought, self critique, fork),
+  the full metric and reducer set with classification, cascade, multi, precomputed and math scorers,
+  agents (react, handoff, as_tool, run) with compaction and message trimming, tools (`ToolDef` by reflection,
+  the executor with schema validation, think / web_search / read_file / list_files / grep / todo_write /
+  update_plan, `text_editor` and `bash_session` over the injected `inspect-sandbox-tools`, MCP tool sources),
+  tool-call approval policies, lifecycle hooks, store and state tracking with replay and subtasks, Docker and
+  local sandboxes, the sandbox agent bridge, the log data model with all 23 event types in Python-identical
+  `.json` and `.eval` formats, log editing / recovery / conversion / bundling, re-scoring of existing logs,
+  tabular analysis (evals, samples, messages, events), eval sets with resume and `eval-retry`.
+- **SWE agents** (`InspectAzureAI.Swe`): mini-swe-agent as a native loop and the real Claude Code CLI
+  bridged to the Azure providers, both wired to approval, the cache and compaction.
+- **Apps**: the `inspectai` command line (`InspectAzureAI.Cli`), the SWE showcase, the model matrix, and
+  the provider-only `Sample` CLI with its diagnostics.
+
 ## Solution layout
 
 ```
 InspectAzureAI.sln
-├── src/InspectAzureAI.Provider     class library — the providers
-│   ├── Core/                       minimal Inspect types (messages, content, tools, config, output, ModelCall, stream events)
-│   ├── Util/                       azure_hosting.py (DefaultAzureCredential + audience), http retry, _openai.py helpers, images, JSON
-│   ├── Tools/                      parse_tool_call, tool/message conversion (native tools only)
+├── src/InspectAzureAI.Provider     class library — the providers (Azure.AI.Inference, Azure.Identity)
+│   ├── Core/                       Inspect types: messages, content, tools, config, output, ModelCall, stream events, JsonSchema, StallScope
+│   ├── Util/                       azure_hosting.py (DefaultAzureCredential + audience), http retry, _openai.py helpers, images, JSON, reasoning params
+│   ├── Tools/                      parse_tool_call, tool/message conversion (native tools only), response formats
 │   ├── Testing/                    CannedTransport — an offline HttpPipelineTransport
-│   ├── Foundry/                    FoundryCatalog — deployment discovery through Azure Resource Manager
-│   ├── Anthropic/                  AnthropicFoundryModelApi — Claude deployments on the Anthropic Messages route
+│   ├── Foundry/                    FoundryCatalog — deployment discovery through Azure Resource Manager; parameter probes
+│   ├── Anthropic/                  AnthropicFoundryModelApi — Claude deployments on the Anthropic Messages route; web search, citations
 │   ├── AzureAIModelApi.cs          port of AzureAIAPI (Entra ID only)
 │   ├── AzureAIStreamAccumulator.cs port of azureai_completion_from_stream
 │   ├── AzureChatCompletions.cs     dict-backed response view (raw JSON)
 │   └── SseParser.cs                server-sent-events reader
-├── src/InspectAzureAI.Sample       console app: chat, stream, tools, image, token, models, test-all, capture, ...
-├── docs/dashboard                  the wire dashboard: template + build script output (see below)
-└── tests/InspectAzureAI.Tests      xunit suite (offline, canned transport, fake token credential)
+├── src/InspectAzureAI.Eval         class library — the eval engine (ModelContextProtocol)
+│   ├── Context/                    SampleContext, Store, Transcript and events, scoped limits, store/state tracking, replay, subtasks
+│   ├── Model/                      the Model wrapper, roles, fallbacks, token estimation; Cache/, Cost/, Compaction/
+│   ├── Concurrency/                connection slots, adaptive controllers, sample scheduling, throughput
+│   ├── Dataset/, Tasks/            samples, JSON and CSV datasets; EvalTask and the [Task] attribute
+│   ├── Solvers/, Scorers/          solvers, TaskState, the generate loop, multiple choice, fork; scorers, Metrics/, reducers
+│   ├── Tools/                      ToolDef, the executor, sandbox tools; Builtin/, Support/ (JSON-RPC, injection) with text_editor and bash_session, Mcp/
+│   ├── Agents/                     react, handoff, as_tool, run, AsSolver; Bridge/ (the sandbox agent bridge)
+│   ├── Approval/, Hooks/           tool-call approval policies; lifecycle hooks
+│   ├── Sandbox/                    Docker/ and Local/ sandboxes
+│   ├── Runner/                     Eval.RunAsync, SampleRunner, error policy; EvalSet/ (eval sets, resume, retry); Scoring/ (re-scoring logs)
+│   ├── Log/                        EvalLog records, Json/ (the .json writer), EvalFormat/ (the .eval zip), Tools/ (edit, recover, convert, bundle)
+│   ├── Analysis/                   evals, samples, messages and events tables
+│   └── Testing/                    ScriptedModelApi, FakeSandboxEnvironment
+├── src/InspectAzureAI.Swe          MiniSweAgent and ClaudeCodeAgent
+├── src/InspectAzureAI.Cli          the inspectai executable (System.CommandLine): eval, eval-set, eval-retry, score, list, log, cache, info, view
+├── src/InspectAzureAI.SweShowcase  console app: list, run, show
+├── src/InspectAzureAI.ModelMatrix  console app: every deployment x task x agent
+├── src/InspectAzureAI.Sample       console app: chat, stream, tools, image, token, models, test-all, capture, params, cache, cost, structured
+├── docs/ARCHITECTURE.md            the guided tour; docs/ports/ the port notes; docs/dashboard the wire dashboard (see below)
+└── tests/                          six xunit projects, all offline: Tests, Eval.Tests, Swe.Tests, Cli.Tests, ModelMatrix.Tests, Sample.Tests
 ```
 
 ## Architecture
+
+The diagram below is the provider layer, one generate call end to end. The eval engine, the agents, the CLI
+and the apps are covered section by section in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ```mermaid
 flowchart LR
@@ -91,6 +142,19 @@ No API-key variable is read. Both providers resolve `DefaultAzureCredential` at 
 token only as `Authorization: Bearer` (fidelity note 16). A missing endpoint raises `PrerequisiteError`
 with the Python message.
 
+The eval engine and the CLI keep Python's variable names. The ones you are most likely to set:
+
+| Variable | Meaning |
+|---|---|
+| `INSPECT_LOG_DIR`, `INSPECT_LOG_FORMAT` | Log directory (default `logs`) and format (`eval` or `json`, default `eval`) |
+| `INSPECT_EVAL_MODEL`, `INSPECT_EVAL_ASSEMBLY` | The CLI's default `--model` and the assemblies it discovers `[Task]`s in |
+| `INSPECT_CACHE_DIR` | Root of the prompt cache (`inspectai cache path`) |
+| `INSPECT_AZUREAI_MODEL_COST_CONFIG` | A JSON price file applied to the model database (the Python data carries no prices) |
+| `INSPECT_SANDBOX_TOOLS_BINARIES_DIR` | Where the downloaded `inspect-sandbox-tools` binaries are cached |
+| `INSPECT_REQUIRED_HOOKS`, `INSPECT_EVAL_HOOKS` | Hooks that must be registered; hooks the CLI registers |
+
+`docs/ARCHITECTURE.md` section 8 lists every variable with the code that reads it.
+
 ### Signing in with `az login`
 
 ```bash
@@ -124,7 +188,7 @@ The same role covers the Azure Resource Manager reads that `models` and `test-al
 
 ```bash
 dotnet build InspectAzureAI.sln -warnaserror
-dotnet test  InspectAzureAI.sln
+dotnet test  InspectAzureAI.sln          # six projects, offline; Docker, network and Python cross-checks are gated attributes
 ```
 
 Every sample command accepts `--model <name>`, `--streaming auto|true|false`, `--temperature <n>`,
@@ -393,16 +457,38 @@ policy. Errors follow the same contract as the main provider (400 returned, 408/
 
 ## Intentionally out of scope
 
-Beyond the lite cut above, these Inspect pieces are **not** ported (same as `main`):
+The provider keeps the lite cut above (no API keys, no Llama prompt-format tool emulation, no YAML
+tool-argument fallback). The eval loop, the `Model` wrapper, retries and adaptive concurrency, transcript
+and `ModelEvent` recording, limits, the cache, the model-info database, tool execution and approval and
+`stream_idle_timeout` — the pieces earlier cuts of this README listed here — are all ported now (see
+"Ported from inspect_ai" below). What remains unported across the whole solution; each note under
+`docs/ports/` ends with the precise list for its area:
 
-- the eval loop, `Model.generate` wrapper and its input transforms (collapsing consecutive user
-  messages, moving tool-result images into user messages, reasoning-history filtering, `max_tokens`
-  defaulting — the sample passes `api.MaxTokens()` explicitly);
-- the tenacity retry loop, adaptive concurrency and connection pooling (`ShouldRetry` /
-  `ConnectionKey` / `MaxConnections` are exposed for a host to drive);
-- transcript / `ModelEvent` recording (a `ModelCall` is returned instead of registered on an event);
-- sample limits, token/time limits, caching, the model-info registry (`model_family()` therefore
-  always equals `service_model_name()`), tool execution and approval, and `stream_idle_timeout`.
+- **Python-side plumbing**: the task, solver, scorer, metric and model registries and entry-point discovery
+  (tasks are `[Task]` methods; everything else is named through the built-in factories), `.py` task files,
+  Python's Mersenne Twister (seeded shuffles are stable only within .NET), pydantic-specific APIs.
+- **CLI surface**: the `acp`, `ctl`, `trace`, `sandbox` and `download` commands, `log recover` /
+  `export-config` / `convert-chunked` / `types`, the `--json` NDJSON launch protocol, rich panels and
+  progress displays, `.env` files, YAML config, policy and price files (JSON only).
+- **The viewer**: `inspect view` is a web app; `inspectai view` hands off to Python's when it is installed
+  (it reads this port's logs). Viewer assets are not shipped (`INSPECT_VIEW_DIST_DIR`) and there is no native
+  `view bundle` / `view embed`.
+- **Storage**: remote filesystems (S3 / fsspec, ETags, conditional writes), the realtime sample buffer
+  (SQLite) and buffer-backed recovery, the chunked `.eval` writer, Hugging Face bundle targets, checkpoints.
+- **Model features with no Azure route**: batch mode, native (server-side) compaction, server-side
+  `fallback_models` (warned and ignored, as Python does on Azure; a client-side `FallbackModelApi` is
+  port-only), the `google` web-search provider and the internal search of non-Azure providers, `web_fetch`
+  and the newer Anthropic web-search versions, the `perplexity()` / `target_perplexity()` scorers (no
+  logprobs), MCP sampling (the SDK marks it obsolete).
+- **Exact numerics**: tiktoken (token counts are a character heuristic unless the provider counts), SymPy
+  (the math scorer evaluates the numeric subset exactly and compares symbolic answers as text), numpy's
+  random state for bootstrap metrics.
+- **Operator surfaces**: ACP / TUI / fullscreen approval panels and notifications, human `modify`
+  decisions, the hard-pause gate and control channel, `inspect ctl` live overrides.
+- **Miscellaneous**: sample shuffling, `limit` ranges, token-limit formulas and the `500k` / `1m` syntax,
+  `score_on_error`, working and cost limits on agent scopes, `ToolSource` plumbing inside solvers,
+  host-tool execution grants in the sandbox bridge (the .NET bridge exposes no host-tool surface), the
+  legacy `inspect-tool-support` image path and the MCP tools bridge for sandboxed agents.
 
 ## Fidelity notes
 
@@ -538,6 +624,90 @@ az login && export AZUREAI_BASE_URL=https://<resource>.services.ai.azure.com/mod
 dotnet run --project src/InspectAzureAI.SweShowcase -- run --fake --sandbox local --task hello-swe --agent mini-swe   # offline smoke test
 dotnet run --project src/InspectAzureAI.SweShowcase -- run --task hello-swe --agent mini-swe                          # Docker sandbox, real model
 dotnet run --project src/InspectAzureAI.SweShowcase -- run --task pytest-fix --agent claude-code --model claude-sonnet-4-6
+dotnet run --project src/InspectAzureAI.SweShowcase -- run --task pytest-fix --agent mini-swe --log-format json --cache 1W --compaction edit --approval policy.json --cost-limit 0.50 --hooks sample-log=hooks.log
 dotnet run --project src/InspectAzureAI.SweShowcase -- show logs/<timestamp>_hello-swe_<id>.eval
-dotnet run --project src/InspectAzureAI.ModelMatrix -- --parallel 3 --markdown docs/model-matrix-results.md   # Claude Code × every deployment
+dotnet run --project src/InspectAzureAI.ModelMatrix -- --parallel 3 --markdown docs/model-matrix-results.md   # Claude Code × every deployment, one eval set per deployment
 ```
+
+`--approval`, `--cache`, `--compaction`, `--hooks`, `--cost-limit`, `--model-cost-config` and `--log-format` reach the
+agents exactly as Python's `eval(approval=)`, `generate(cache=)`, `react(compaction=)` and `@hooks` would
+(`docs/ports/showcase-wiring.md`). Running the matrix twice into the same `--log-dir` resumes it, as
+`inspect eval-set` does.
+
+## The `inspectai` command line
+
+`src/InspectAzureAI.Cli` ports Python's `inspect` command (`docs/ports/cli.md`; `docs/ARCHITECTURE.md` §6.5).
+Tasks live in assemblies rather than `.py` files: mark a `public static` method returning an `EvalTask` with
+`[Task]`. Its parameters are the `-T` task arguments, its name defaults to the snake_case method name, and
+`[Task("name", "light=true")]` sets the name and the attributes `list tasks -F` filters on.
+
+```csharp
+using InspectAzureAI.Eval.Dataset;
+using InspectAzureAI.Eval.Scorers;
+using InspectAzureAI.Eval.Tasks;
+
+public static class MyTasks
+{
+    [Task]                                          // discovered as "hello"; -T count=5 binds to the parameter
+    public static EvalTask Hello(int count = 2) => new()
+    {
+        Name = "hello",
+        Dataset = new MemoryDataset(Enumerable.Range(1, count).Select(i => new Sample($"Say ok ({i})") { Target = "ok", Id = i })),
+        Scorers = [Scorers.Includes()],
+    };
+}
+```
+
+```bash
+I="dotnet run --project src/InspectAzureAI.Cli --"
+$I list tasks bin/MyEvals.dll                                    # the [Task] methods of an assembly (-F light=true filters)
+$I eval hello --assembly bin/MyEvals.dll --model mockllm/model    # offline: Python's mockllm stands in for a deployment
+$I eval hello --assembly bin/MyEvals.dll --model azureai/gpt-5.4-mini -T count=5 --limit 3 --epochs 2 --log-format eval
+$I eval hello --assembly bin/MyEvals.dll --model claude-sonnet-4-6 --solver basic_agent -S max_attempts=2 \
+     --cache 1W --approval policy.json --cost-limit 0.5 --token-limit 200000 --time-limit 600
+$I eval-set hello other_task --assembly bin/MyEvals.dll --model gpt-5.4-mini --log-dir logs/set --retry-attempts 3   # re-run to resume
+$I eval-retry logs/set/*.eval --assembly bin/MyEvals.dll         # retry the failed samples of finished logs
+$I score logs/2026-…_hello_…​.eval --scorer includes --overwrite  # re-score in place (--action append|overwrite, --output-file)
+$I log list --json; $I log dump logs/x.eval; $I log convert logs --to json --output-dir out; $I log schema
+$I cache list; $I cache prune; $I cache path                     # the prompt cache (INSPECT_CACHE_DIR)
+$I info version
+$I view --log-dir logs                                           # hands off to Python's `inspect view` when it is on PATH
+```
+
+Exit codes follow the rest of the solution: 0 success, 1 a run whose log is not `success`, 2 usage or
+prerequisite, 3 sign-in, Azure, sandbox or cancellation. Environment variables keep Python's names
+(`INSPECT_EVAL_MODEL`, `INSPECT_LOG_DIR`, `INSPECT_LOG_FORMAT`, `INSPECT_EVAL_TASK_ARGS`, ...); `INSPECT_EVAL_ASSEMBLY`
+and `INSPECT_EVAL_HOOKS` are this port's.
+
+## Ported from inspect_ai
+
+Each subsystem has a note under `docs/ports/` recording what was ported, from which Python files, the public C#
+API, every deviation and why, and what was not ported; [docs/ports/README.md](docs/ports/README.md) is the index
+with the deviations in one line each. Python paths are relative to `src/inspect_ai/`.
+
+| Area | Python | .NET | Note |
+|---|---|---|---|
+| Scoped limits, error policy, sample retries, early stopping | `util/_limit.py`, `_eval/task/{error,run,util}.py` | `Eval/Context/*Limit*.cs`, `Eval/Runner/` | [runner-extras](docs/ports/runner-extras.md) |
+| Connection concurrency, adaptive controllers, throughput | `util/_concurrency.py`, `model/_throughput.py` | `Eval/Concurrency/` | [concurrency](docs/ports/concurrency.md) |
+| Model database, pricing, cost limit | `model/_model_data/`, `model/_model_info.py` | `Eval/Model/Cost/` | [cost](docs/ports/cost.md) |
+| Prompt cache | `model/_cache.py` | `Eval/Model/Cache/` | [prompt-cache](docs/ports/prompt-cache.md) |
+| Structured output, JSON schema, reflection tools, stall scopes, fallbacks, roles | `model/_generate_config.py`, `util/_json.py`, `tool/_tool_info.py`, `model/_stream.py` | `Provider/Core/`, `Eval/Model/` | [model-extras](docs/ports/model-extras.md) |
+| Message trimming and compaction | `model/_trim.py`, `model/_compaction/` | `Eval/Model/Compaction/` | [compaction](docs/ports/compaction.md) |
+| Multiple choice, chain of thought, self critique, fork, choice and answer scorers | `solver/_multiple_choice.py`, `_prompt.py`, `_critique.py`, `_fork.py`, `scorer/_choice.py`, `_answer.py` | `Eval/Solvers/`, `Eval/Scorers/ChoiceScorers.cs` | [solvers](docs/ports/solvers.md) |
+| Metrics, reducers, classification / cascade / multi / precomputed / math scorers | `scorer/_metrics/`, `_reducer/`, `_classification.py`, `_math.py` | `Eval/Scorers/` | [metrics](docs/ports/metrics.md) |
+| React agent, handoff, as_tool, run, message filters | `agent/_react.py`, `_handoff.py`, `_as_tool.py`, `_filter.py`, `_run.py` | `Eval/Agents/` | [react-agents](docs/ports/react-agents.md) |
+| think, web_search, read_file, list_files, grep, todo_write, update_plan; Anthropic web search | `tool/_tools/`, `model/_providers/anthropic.py` | `Eval/Tools/Builtin/`, `Provider/Anthropic/` | [builtin-tools](docs/ports/builtin-tools.md) |
+| text_editor, bash_session, sandbox-tools injection and JSON-RPC | `tool/_tools/_text_editor.py`, `_bash_session.py`, `tool/_sandbox_tools_utils/`, `util/_sandbox/` | `Eval/Tools/Support/`, `Eval/Tools/` | [sandbox-tools](docs/ports/sandbox-tools.md) |
+| MCP tool sources | `tool/_mcp/` | `Eval/Tools/Mcp/` | [mcp-tools](docs/ports/mcp-tools.md) |
+| Tool-call approval policies (incl. the agent bridge) | `approval/` | `Eval/Approval/` | [approval](docs/ports/approval.md) |
+| Lifecycle hooks | `hooks/` | `Eval/Hooks/` | [hooks](docs/ports/hooks.md) |
+| Store and state tracking, JSON changes, replay, subtasks | `_util/json.py`, `util/_store.py`, `util/_store_model.py`, `util/_subtask.py` | `Eval/Context/` | [store-replay](docs/ports/store-replay.md) |
+| Log data model, transcript events, the `.json` format | `log/_log.py`, `event/`, `log/_recorders/json.py` | `Eval/Log/`, `Eval/Log/Json/` | [log-schema](docs/ports/log-schema.md) |
+| The `.eval` zip format, recorders, log listing | `log/_recorders/eval.py`, `log/_file.py`, `_util/zipfile.py` | `Eval/Log/EvalFormat/` | [eval-format](docs/ports/eval-format.md) |
+| Score edits, invalidation, recovery, conversion, bundling | `log/_score.py`, `log/_recover/`, `log/_convert.py`, `log/_bundle.py` | `Eval/Log/Tools/` | [log-tools](docs/ports/log-tools.md) |
+| Scoring existing logs, results recomputation | `_eval/score.py`, `_eval/task/results.py`, `log/_metric.py` | `Eval/Runner/Scoring/` | [score-logs](docs/ports/score-logs.md) |
+| Tabular analysis: evals, samples, messages, events | `analysis/` | `Eval/Analysis/` | [analysis](docs/ports/analysis.md) |
+| Eval sets, resume, eval_retry | `_eval/evalset.py`, `_eval/eval.py` | `Eval/Runner/EvalSet/` | [eval-set](docs/ports/eval-set.md) |
+| The `inspect` command line | `_cli/` | `Cli/` | [cli](docs/ports/cli.md) |
+| How the area branches were merged and unified | — | — | [integration](docs/ports/integration.md) |
+| How the apps and SWE agents use the ported subsystems | — | `SweShowcase/`, `ModelMatrix/`, `Sample/`, `Swe/` | [showcase-wiring](docs/ports/showcase-wiring.md) |

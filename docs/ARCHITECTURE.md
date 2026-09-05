@@ -12,12 +12,12 @@ InspectAzureAI is a C# port of three Python code bases, stacked into four layers
 
 | Layer | Project | Ports | Lines |
 |---|---|---|---|
-| 1 | `InspectAzureAI.Provider` | Inspect AI's `azureai` model provider plus its Anthropic-on-Azure path: the data model (messages, content, tools, config, output), Entra ID auth, streaming, tool calling, reasoning parameters | ~5,400 |
-| 2 | `InspectAzureAI.Eval` | Inspect AI's eval engine: ambient sample context, the `Model` wrapper with retries and limits, tools, solvers, agents, datasets, tasks, sandboxes (Docker and local), the agent bridge, scorers, the JSON log | ~11,700 |
-| 3 | `InspectAzureAI.Swe` | inspect_swe's two SWE agents: a native port of mini-swe-agent and a Claude Code CLI agent | ~2,500 |
-| 4 | `InspectAzureAI.SweShowcase`, `InspectAzureAI.ModelMatrix`, `InspectAzureAI.Sample` | Console apps that compose the libraries: a three-task eval showcase, a matrix runner over every deployment, and a provider-only CLI with diagnostics | ~1,100 / ~800 / ~1,900 |
+| 1 | `InspectAzureAI.Provider` | Inspect AI's `azureai` model provider plus its Anthropic-on-Azure path: the data model (messages, content, tools, the full `GenerateConfig`, output), Entra ID auth, streaming, tool calling, reasoning parameters, structured output, JSON-schema generation, stall scopes, Anthropic web search | ~7,000 |
+| 2 | `InspectAzureAI.Eval` | Inspect AI's eval engine: ambient sample context, the `Model` wrapper with retries, adaptive concurrency, the prompt cache, cost and roles, scoped limits, tools (built-in, sandbox, MCP), solvers, agents, datasets, tasks, sandboxes (Docker and local), the agent bridge, approval, hooks, scorers and metrics, store tracking, the `.json` and `.eval` logs with their tools, re-scoring, analysis tables, eval sets | ~52,900 |
+| 3 | `InspectAzureAI.Swe` | inspect_swe's two SWE agents: a native port of mini-swe-agent and a Claude Code CLI agent | ~2,700 |
+| 4 | `InspectAzureAI.Cli`, `InspectAzureAI.SweShowcase`, `InspectAzureAI.ModelMatrix`, `InspectAzureAI.Sample` | Console apps that compose the libraries: the `inspectai` command line (the port of `inspect`), a three-task eval showcase, a matrix runner over every deployment, and a provider-only CLI with diagnostics | ~3,900 / ~1,700 / ~1,100 / ~2,100 |
 
-Four xunit projects (about 12,000 lines) test the layers offline. `docs/swe-showcase.md` and the README carry the Python-to-C# mapping tables; this document explains the runtime mechanics instead.
+Six xunit projects (about 38,000 lines) test the layers offline. `docs/swe-showcase.md` and the README carry the Python-to-C# mapping tables and `docs/ports/` the per-subsystem port notes with their deviations from Python (`docs/ports/README.md` is the index); this document explains the runtime mechanics instead.
 
 Three ideas recur everywhere, so it is worth naming them now:
 
@@ -32,13 +32,14 @@ Three ideas recur everywhere, so it is worth naming them now:
 ```mermaid
 flowchart TB
     subgraph apps["Console apps"]
-        SAMPLE["Sample: chat, stream, tools, models, test-all, params, capture"]
+        ICLI["inspectai: eval, eval-set, eval-retry, score, list, log, cache, info, view"]
+        SAMPLE["Sample: chat, stream, tools, models, test-all, params, capture, cache, cost, structured"]
         SHOW["SweShowcase: list, run, show"]
         MATRIX["ModelMatrix: every deployment x task x agent"]
     end
     subgraph libs["Class libraries"]
         SWE["Swe: mini-swe-agent, Claude Code agent"]
-        EVAL["Eval: runner, solvers, tools, scorers, sandboxes, agent bridge, log"]
+        EVAL["Eval: runner and eval sets, solvers, tools, agents, scorers, limits, sandboxes, agent bridge, cache, cost, hooks, approval, logs and analysis"]
         PROV["Provider: AzureAIModelApi, AnthropicFoundryModelApi, Core types"]
     end
     subgraph ext["Outside the process"]
@@ -47,8 +48,13 @@ flowchart TB
         ARM["Azure Resource Manager"]
         DOCKER["Docker daemon"]
         CLI["Claude Code CLI inside a container"]
+        MCP["MCP servers: stdio, HTTP, in the sandbox"]
+        SEARCH["Web search APIs: Tavily, Exa, Perplexity"]
+        TOOLS["inspect-sandbox-tools release bucket"]
     end
+    ICLI --> EVAL
     SAMPLE --> PROV
+    SAMPLE --> EVAL
     SHOW --> SWE
     MATRIX --> SHOW
     SWE --> EVAL
@@ -57,6 +63,9 @@ flowchart TB
     PROV -->|"chat completions or Anthropic messages"| FOUNDRY
     PROV -->|"deployment discovery"| ARM
     EVAL -->|"docker run, exec, cp"| DOCKER
+    EVAL -->|"JSON-RPC over the SDK transport"| MCP
+    EVAL -->|"web_search tool"| SEARCH
+    EVAL -->|"downloads the pinned binary once"| TOOLS
     SWE -->|"launches"| CLI
     CLI -->|"POST /v1/messages to the host bridge"| EVAL
 ```
@@ -65,39 +74,51 @@ flowchart TB
 
 > **In plain English:** Each part only knows about the parts below it, like a company where the intern never gets to boss the manager. That keeps things predictable: you can change something at the top and nothing underneath notices.
 
-The dependency graph is strictly layered. Nothing below references anything above, and the two console apps that drive evals reach the provider only through `Eval`.
+The dependency graph is strictly layered. Nothing below references anything above, and the apps that drive evals reach the provider through `Eval`.
 
 ```mermaid
 flowchart LR
     PROV["InspectAzureAI.Provider"]
     EVAL["InspectAzureAI.Eval"]
     SWE["InspectAzureAI.Swe"]
+    ICLI["InspectAzureAI.Cli"]
     SHOW["InspectAzureAI.SweShowcase"]
     MATRIX["InspectAzureAI.ModelMatrix"]
     SAMPLE["InspectAzureAI.Sample"]
     NUGET["Azure.AI.Inference 1.0.0-beta.5, Azure.Identity 1.21.0"]
+    NUGET2["ModelContextProtocol 2.2.0"]
+    NUGET3["System.CommandLine 2.0.2"]
     T1["InspectAzureAI.Tests"]
     T2["InspectAzureAI.Eval.Tests"]
     T3["InspectAzureAI.Swe.Tests"]
     T4["InspectAzureAI.ModelMatrix.Tests"]
+    T5["InspectAzureAI.Cli.Tests"]
+    T6["InspectAzureAI.Sample.Tests"]
     EVAL --> PROV
     SWE --> EVAL
     SWE --> PROV
+    ICLI --> EVAL
+    ICLI --> PROV
     SHOW --> SWE
     SHOW --> EVAL
     SHOW --> PROV
     MATRIX --> SHOW
     SAMPLE --> PROV
+    SAMPLE --> EVAL
     PROV --> NUGET
+    EVAL --> NUGET2
+    ICLI --> NUGET3
     T1 -.-> PROV
     T2 -.-> EVAL
     T3 -.-> SWE
     T3 -.-> SHOW
     T3 -.-> T2
     T4 -.-> MATRIX
+    T5 -.-> ICLI
+    T6 -.-> SAMPLE
 ```
 
-Only the Provider has NuGet dependencies. Eval, Swe and the apps use the BCL alone (`HttpListener`, `Process`, `System.Text.Json`). Test projects reach internal seams through `InternalsVisibleTo`.
+Three NuGet dependencies in total: the Provider on the Azure SDKs, Eval on the official MCP SDK (4.19) and the CLI on System.CommandLine (6.5). Everything else, including the `.eval` zip reader with its zstandard decoder, the JSON-RPC transport, the sandbox agent bridge and the sandboxes, is BCL alone (`HttpListener`, `Process`, `System.Text.Json`, `System.IO.Compression`). Test projects reach internal seams through `InternalsVisibleTo`.
 
 ### Two runtime shapes
 
@@ -107,6 +128,8 @@ Everything the solution does is one of two shapes:
 
 1. **A single generate.** Caller builds a list of `ChatMessage`, optional `ToolInfo`s and a `GenerateConfig`, calls `IModelApi.GenerateAsync`, and receives a `GenerateResult`. The Sample app and the Eval `Model` wrapper are both such callers. Section 3 covers this shape end to end.
 2. **An eval run.** `Eval.RunAsync` takes an `EvalTask` and `EvalOptions`, runs every (sample, epoch) through a solver inside an ambient `SampleContext` with a sandbox, scores it and writes an `EvalLog`. Agents are solvers; the Claude Code agent adds an HTTP bridge so a CLI in the container can use the same model. Sections 4 to 6 cover this shape.
+
+Everything else is a driver around the second shape: an eval set (4.28) runs several tasks into one directory and resumes from what is there, `inspectai` (6.5) turns command-line flags into `EvalOptions`, and the log tools (4.25 to 4.27) work on the files a run leaves behind.
 
 ## 3. Layer 1: the Provider
 
@@ -928,7 +951,7 @@ Where things surface on this path:
 
 > **In plain English:** The Eval engine is the exam hall. It takes a set of questions, gives each one to the AI (or to an AI agent), scores the answers, and writes a report. It also provides safe rooms, called sandboxes, where an AI can run commands without touching your real computer.
 
-`InspectAzureAI.Eval` ports the parts of Inspect AI needed to run agentic SWE tasks: the ambient sample context, the `Model` wrapper, tools and their executor, solvers and `TaskState`, agents, datasets and tasks, sandboxes, the agent bridge, scorers, the runner and the JSON log. It has one project reference (Provider) and no NuGet packages.
+`InspectAzureAI.Eval` ports Inspect AI's eval engine. Sections 4.1 to 4.7 are the core needed to run agentic SWE tasks: the ambient sample context, the `Model` wrapper, tools and their executor, solvers and `TaskState`, agents, datasets and tasks, sandboxes, the agent bridge, scorers, the runner and the log. Sections 4.8 onwards are the subsystems ported on top of that core, one per `docs/ports/*.md` note, in the order a sample meets them: limits and error policy, concurrency, the cache, cost, model extras, compaction, agents and solvers, metrics, the three tool families, approval, hooks, store tracking, the log formats and their tools, re-scoring, analysis, and eval sets. It has one project reference (Provider) and one NuGet package (the MCP SDK, 4.19).
 
 ### 4.1 Ambient sample context
 
@@ -960,7 +983,7 @@ Because `AsyncLocal` flows into awaited continuations and child tasks but not ba
 | `ActiveModel` | `Model` | The eval's model, wrapped with retries and event recording. |
 | `Store` | `Store` | A lock-guarded key/value bag shared by solvers, tools and agents; snapshotted into the log. |
 | `Transcript` | `Transcript` | The ordered event list of the sample. `Span()` opens a begin/end pair whose id is tracked in its own `AsyncLocal` and stamped onto every event added inside it. |
-| `Limits` | `Limits` | Message, token and time limits with accumulated `ModelUsage`; `Suspend()` stops enforcement so scorers can still generate. |
+| `Limits` | `Limits` | The sample's usage ledger (`ModelUsage` per model, waiting time, cost) and the cost limit; the message, token, turn, time and working limits are enforced by the scoped limit stack of 4.8, which the runner roots here. `Suspend()` stops enforcement so scorers can still generate. |
 | `Sandboxes` | `SandboxEnvironments` | Named environments; the first is the default. `Sandbox(name)` resolves one. |
 | `SampleState`, `Scorer` | `TaskState`, callback | The runner's own state and an intermediate-scoring callback agents use between attempts. |
 
@@ -1020,7 +1043,9 @@ This is the provider's outcome contract consumed. A returned terminal error beco
 
 > **Gotcha.** `IModelApi` does not declare `should_retry` or `collapse_user_messages`, so `ModelApiHooks` pattern-matches the concrete types (`AzureAIModelApi`, `AnthropicFoundryModelApi`, `ScriptedModelApi`). Any other implementation silently gets the status-code default and no user-message collapsing. The Anthropic route always collapses consecutive user messages because the Messages API requires strict alternation.
 
-The ambient token limit is checked only after a successful call via `Limits.AddUsage`, so a generate can succeed, be recorded, and still surface a `LimitExceededException` instead of its output. That mirrors Python.
+The token limit is checked only after a successful call, so a generate can succeed, be recorded, and still surface a `LimitExceededException` instead of its output. That mirrors Python.
+
+The diagram shows the core path. The ported subsystems hook into the same method in this order, each detailed in its own section: `MessageLimit.CheckMessageLimit` on the scoped stack (4.8) before anything else; a `ConnectionSlot` held for the whole retry loop and a `Concurrency.BeginRequest` scope (4.9); per attempt, the `before generate` hook (4.21), the prompt-cache lookup (4.10), then the provider call inside a `GenerateAttempt` that arms the stall and attempt timeouts (4.12); on success, pricing (4.11), throughput and role-usage accounting (4.9, 4.12), `TokenLimit.RecordModelUsage` / `CheckTokenLimit` then the cost limit (4.8, 4.11), the `usage` hook, and the cache store; on failure, the auth-failure retry rule for api-key overrides (4.21), `ReportHttpRetry` for the adaptive controller, the `retry` hook and the retry wait recorded as sample waiting time. `CompleteGenerate` runs on every return, cache hits included: it rolls up a fallback (4.12) and records a turn against the turn limits (4.8).
 
 ### 4.3 Solvers, TaskState, the generate loop and tools
 
@@ -1108,11 +1133,13 @@ sequenceDiagram
         return new ExecuteToolsResult(results);
 ```
 
-`RunOneAsync` opens a `tool` span, turns a `ParseError` into a parsing tool error, reports unknown functions, validates required parameters, invokes the tool, and maps exceptions to `ToolCallError` codes (timeout, sandbox_unavailable, permission, file_not_found, limit, and so on). Text results are truncated to `tool.MaxOutput ?? 16 KiB`, keeping the tail, and the `ToolEvent` records what the model actually saw. `SandboxTools.Bash` and `Python` are the built-in sandbox tools; they resolve the sandbox from the ambient context and return stderr followed by stdout.
+`RunOneAsync` opens a `tool` span, turns a `ParseError` into a parsing tool error, reports unknown functions, validates required parameters, invokes the tool, and maps exceptions to `ToolCallError` codes (timeout, sandbox_unavailable, permission, file_not_found, limit, approval, and so on). Text results are truncated to `tool.MaxOutput ?? 16 KiB`, keeping the tail, and the `ToolEvent` records what the model actually saw. `SandboxTools.Bash` and `Python` are the built-in sandbox tools; they resolve the sandbox from the ambient context and return stderr followed by stdout.
+
+Three ported pieces sit on this path. Every call's arguments are validated against the tool's JSON schema by `ToolInputValidator` (4.17) after the required-parameter check, as Python's `call_tool` does; the ambient approval policy, when one is installed, decides before the tool runs (4.20); and a `ToolDef` with `Handoff` set is a handoff to another agent (4.14) rather than a function. `ToolDef.FromMethod` (4.12) builds a `ToolDef` from an ordinary C# method by reflection, and `BuiltinTools`, `TextEditor`, `BashSession` and MCP servers (4.17 to 4.19) supply the rest of the tool library.
 
 **Built-in solvers.** `Solvers.SystemMessage`, `PromptTemplate`, `UserMessage` and `UseTools` are the prompt and tool helpers. `Solvers.BasicAgent` composes a ReAct loop: a system message with a `submit` tool, the generate loop, a loop-scoped token limit, a continue message when the model made no tool call, and scoring between attempts through `SampleContext.Scorer` when `maxAttempts > 1`.
 
-**Agents.** An `AgentDef` wraps an `Agent` delegate over an `AgentState` (messages plus a synthesised output). `Agents.AsSolver` runs it inside an `agent` span and, in a `finally` block, copies the agent's messages and output back onto the `TaskState`, so an agent that throws still leaves its partial conversation for logging and scoring. The SWE agents in section 5 are `AgentDef`s.
+**Agents.** An `AgentDef` wraps an `Agent` delegate over an `AgentState` (messages plus a synthesised output). `Agents.AsSolver` runs it inside an `agent` span and, in a `finally` block, copies the agent's messages and output back onto the `TaskState`, so an agent that throws still leaves its partial conversation for logging and scoring. The SWE agents in section 5 are `AgentDef`s, and so is Python's general-purpose `react` agent with its handoff, as_tool and run companions (4.14). The multiple-choice, chain-of-thought, self-critique and fork solvers are in 4.15.
 
 ### 4.4 Datasets and tasks
 
@@ -1124,8 +1151,13 @@ sequenceDiagram
 |---|---|
 | `Dataset`, `Setup`, `Solver` | What to run; `Solver` defaults to `Solvers.Generate()`. |
 | `Scorers`, `Metrics` | `ScorerDef`s with their own metrics, or a task-level metrics override. |
-| `Sandbox`, `Epochs` | The `SandboxSpec` (type and config) and epoch count with optional reducers. |
-| `MessageLimit`, `TokenLimit`, `TimeLimit`, `FailOnError` | Per-sample limits; `FailOnError` defaults to true. |
+| `Sandbox`, `Epochs`, `Config` | The `SandboxSpec` (type and config), the epoch count with optional reducers, and the task's `GenerateConfig`. |
+| `MessageLimit`, `TokenLimit`, `TurnLimit`, `TimeLimit`, `WorkingLimit`, `CostLimit` | Per-sample limits, rooted on the scoped limit stack (4.8) and the cost ledger (4.11). |
+| `FailOnError`, `ContinueOnFail`, `RetryOnError`, `EarlyStopping` | The error policy (4.8): `FailOnError` defaults to `Always`. |
+| `Approval`, `ModelRoles` | The task's tool-approval policies (4.20) and named model roles (4.12); an eval-level value wins over both. |
+| `Name`, `Version`, `Metadata`, `TaskArgs` | Identity: `TaskArgs` and `Version` feed the task identifier that eval sets (4.28) resume by. |
+
+`[Task]` on a `public static` method returning an `EvalTask` is Python's `@task` decorator for the CLI (6.5).
 
 ### 4.5 The runner, scoring and the log
 
@@ -1185,6 +1217,8 @@ flowchart TD
 ```
 
 Cancellation and fail-on-error share one linked token source: cancelling it stops in-flight samples and makes queued ones return before they start, leaving a null slot that the log omits. Sandbox `TaskCleanupAsync` runs with `CancellationToken.None` so cleanup completes even when the caller cancelled.
+
+The diagram is the shape of one attempt. Around it, `Eval.RunAsync` now runs the attempt loop of 4.8 (`SampleErrorHandler` for the `FailOnError` policy, `RetryOnError` re-queueing, early stopping), takes its sample semaphore from the scheduler of 4.9, reuses finished samples from a previous log when an eval set resumes (4.28), emits the hooks of 4.21, and records each sample into an `ILogRecorder` as it completes (4.24) instead of writing once at the end.
 
 **Per sample.** `SampleRunner.RunAsync` builds a fresh `Store`, `Transcript`, `Limits` and `TaskState`, initialises the sandbox inside an `init` span (container up, sample files copied, the setup script run once under `INSPECT_SANDBOX_SETUP_TIMEOUT`), installs the `SampleContext`, and runs setup and solver under a token that fires at the time limit.
 
@@ -1280,7 +1314,7 @@ Sample identity follows Python's value semantics: the int `1` and the string `"1
         options.MakeReadOnly(populateMissingResolver: true);
 ```
 
-The output is valid JSON where Python's is not: NaN and Infinity are written as `null` and read back as NaN. `EvalLog.Version` is 1. The log path is `LogFileNaming.LogFilePath(logDir, spec, format)`: `<logDir>/<created>_<task>_<task_id>.<ext>` with Python's `clean_filename_component` applied to each part (`_`, `/`, `:`, `+` become `-`).
+Since the log-schema port (4.23) the output is byte for byte what pydantic writes, non-finite floats included: `NaN` and `Infinity` appear as the bare constants Python emits (`ser_json_inf_nan="constants"`) and read back as such, legacy shapes are migrated on read, and `EvalLog.Version` is 2 (a newer version is rejected, older ones are normalised). The default on-disk format is the `.eval` zip of 4.24, written sample by sample through an `ILogRecorder`; `EvalLogWriter.Read` / `Write` route either extension to the right format. The log path is `LogFileNaming.LogFilePath(logDir, spec, format)`: `<logDir>/<created>_<task>_<task_id>.<ext>` with Python's `clean_filename_component` applied to each part (`_`, `/`, `:`, `+` become `-`), so Python's `list_eval_logs` parses it.
 
 ### 4.6 Sandboxes: Docker and local
 
@@ -1459,6 +1493,200 @@ Three things happen on every bridged request:
 - **Thread tracking.** `TrackState` fingerprints input plus output (role and text hash) and decides whether this call is the scaffold's main conversation or a side thread (a sub-agent, a summary), adopting it into `AgentState.Messages` and `Output` when it extends or supersedes the tracked thread. That reconstruction is what the Claude Code agent returns; nothing is parsed from the CLI's own result event.
 
 Errors map per dialect: a `LimitExceededException` is stored as `LimitError` and cancels `LimitReached`, which tears down the CLI's exec; `ModelGenerateException` and bad requests answer 400; anything else 500, as an `event: error` frame once a stream has started.
+
+### 4.8 Scoped limits, error policy, retries and early stopping
+
+> **In plain English:** Limits used to be one flat checklist per question. Now they stack: the exam sets a budget, an agent inside it can set a smaller one, and a helper inside that a smaller one still, and every use is counted against the whole stack from the outside in. The same section covers what happens when a question crashes: retry it from scratch, count it against a failure threshold, or stop the whole exam early.
+
+Python's `util/_limit.py` keeps each limit kind on a tree of nested scopes; `Context/Limit.cs` and `LimitTree.cs` port that base with one concrete class per kind (`TokenLimit`, `MessageLimit`, `TurnLimit`, `TimeLimit`, `WorkingLimit`). A limit is entered with `.Enter()` inside a `using` (or `Limit.Apply(...)` / `LimitScope.RunAsync`), records on itself and its ancestors, and is checked root first; the limit that trips is `LimitExceededException.SourceLimit`. `SampleRunner` applies the task's limits as the root nodes, agents push their own beneath them (4.14), and `Model.GenerateAsync` calls the statics: `MessageLimit.CheckMessageLimit` before the call, `TokenLimit.RecordModelUsage` / `CheckTokenLimit` after it, `TurnLimit.RecordTurn` on every return, cache hits included. Every trip records a `SampleLimitEvent` on the transcript. The flat `Limits` class of 4.1 remains the per-sample usage ledger and carries the cost limit (4.11).
+
+| Policy | Where | Behaviour |
+|---|---|---|
+| `FailOnError` (bool or number) | `EvalTask` / `EvalOptions` / `EvalConfig` | `Always`, `Never`, a fraction or a count; `ContinueOnFail` defers the decision to the end of the run. |
+| `RetryOnError` | `SampleRunner` is one attempt per call; `Eval.RunAsync` loops | A failed sample re-runs from scratch (fresh store, transcript and sandbox, same uuid) at the back of the queue; the retried errors land in `EvalSample.ErrorRetries` with the events from the attempt's last model call on. |
+| `IEarlyStopping` | `EvalTask.EarlyStopping` | `StartTask` / `ScheduleSample` / `CompleteSample` / `CompleteTask` callbacks; a halted sample is never logged and the summary lands in `EvalResults.EarlyStopping`. |
+| `EvalOptions.SampleIds` | `SampleIdFilter` | fnmatch globs over normalised ids with `task:id` scoping. |
+
+Timing follows Python: `TotalTime` runs from after sandbox init and `WorkingTime` subtracts the waiting time that model retries report. Deviations: `TimeLimit` is a cancellation-token deadline, so the body sees an `OperationCanceledException` that `LimitScope` converts; the working-limit monitor sleeps until the earliest possible trip instead of polling; token-limit formulas and the `500k` / `1m` syntax are not ported. Port note: `docs/ports/runner-extras.md`.
+
+### 4.9 Connection concurrency and throughput
+
+> **In plain English:** Too many simultaneous calls get you throttled; too few waste time. The engine starts small, opens more connections while calls succeed, backs off when the server pushes back, and reports tokens per second as it goes.
+
+`Concurrency/` ports `util/_concurrency.py`, the connection-slot bookkeeping of `model/_model.py` and `model/_throughput.py`. A `Model` without an explicit `MaxConnections` gates its generates with an `AdaptiveConcurrencyController` (slow start, additive increase / multiplicative decrease, a saturation gate and a cooldown debounce; start 10, default 20, max 100) keyed by `Model{ApiType}:{ConnectionKey}`, where the Foundry routes key on `{endpoint}:{model}`. `Model.GenerateAsync` holds one `ConnectionSlot` across the whole retry loop and its backoff sleeps, reports every retry decision through `Concurrency.ReportHttpRetry`, and feeds `Throughput.RecordGenerate` / `RecordRetryWait`, which `ConsoleEvalReporter` prints as the footer line (`IEvalReporter.Stats`). The runner's sample semaphore comes from `SampleScheduler.CreateSampleSemaphore`: a `DynamicSampleLimiter` that follows the controller (limit plus 5) when adaptive connections are active, else `MaxConnections`. The controller's history is written to the log as `stats.connection_limit_history`.
+
+Deviations: registries, limiters and controllers are lock-protected (generates complete on the thread pool, not on one event loop) and process-global, and `Eval.RunAsync` does not reset them because `MatrixRunner` runs evals concurrently; `EvalOptions.MaxSamples` became `int?` (null derives it as Python does); `MaxConnections = 0` is rejected rather than treated as unset; batch mode, the hard-pause gate and the control channel are not ported. Port note: `docs/ports/concurrency.md`.
+
+### 4.10 The prompt cache
+
+> **In plain English:** Ask the same question twice with the same settings and the second answer comes from a folder on disk instead of the model. Entries expire, can be listed and pruned, and every use is marked in the report.
+
+`Model/Cache/` ports `model/_cache.py`. `Model.GenerateAsync(..., cache: CachePolicy)` builds a `CacheEntry` from exactly what the provider would see (system message prepended, user messages collapsed, `max_tokens` defaulted), looks it up on every attempt of the retry loop, and stores the output after the token-limit check, so an output that breached the limit is never cached; a `content_filter` output never is either. The key is an MD5 over the components Python hashes in the order Python hashes them (config minus the connection and retry fields, messages minus ids, base URL, tool choice, tools, expiry in seconds, scopes, and the epoch when `PerEpoch`); the layout under `INSPECT_CACHE_DIR` (or the platform cache directory) is `generate/<model>/<key>`. A hit records a `ModelEvent` with `cache: "read"` and no `ModelCall`; every attempt under a policy records `cache: "write"`. `CacheOps` carries the list, clear, prune and size operations behind `inspectai cache`.
+
+Deviations: the key hashes canonical JSON rather than `str()` of pydantic dumps, so a Python process and a .NET process never share entries; entries are JSON, not pickle; an invalid expiry fails at policy construction; unreadable entries are warned about and treated as misses. Port note: `docs/ports/prompt-cache.md`.
+
+### 4.11 Model info, pricing and the cost limit
+
+> **In plain English:** A built-in catalogue knows each model's context size and release date, and a price list you supply turns token counts into dollars. A question can be given a dollar budget the same way it is given a token budget.
+
+`Model/Cost/` ports `model/_model_data/` (the 781-entry YAML database, converted to embedded JSON by `scripts/convert-model-data.py` with the source commit pinned in `manifest.json`), `model/_model_info.py` (`ModelInfoLookup`: exact, case-insensitive, then fuzzy match at the 60 threshold) and `compute_model_cost` (`ModelCosts`, bit-identical to the venv). Prices come only from `INSPECT_AZUREAI_MODEL_COST_CONFIG`, `EvalOptions.ModelCostConfig` or `ModelInfoLookup.SetModelCost`, because the Python data carries none. `Model.GenerateAsync` prices the output (`ModelCosts.PriceOutput`) before the event is recorded, so the `ModelEvent`, `EvalSample.ModelUsage` and `EvalStats.ModelUsage` all carry `total_cost`, then records and checks `Limits.CostLimit` after the token limits, in Python's order. `FoundryModelOverlay` maps a bare deployment name to its vendor's database key (`azureai/grok-4.6` resolves to xAI's entry, which Python's direct lookup misses).
+
+Deviations: the price file is JSON only; a `cost_limit` without cost data is a `PrerequisiteError` before any sample runs; `cache_ttl` is always the 5-minute rate; only the eval model is checked. Port note: `docs/ports/cost.md`.
+
+### 4.12 Model extras: structured output, JSON schema, reflection tools, stall scopes, fallbacks, roles
+
+> **In plain English:** Things the Python `Model` does that the first cut skipped: asking for answers in a fixed JSON shape, turning an ordinary C# method into a tool, giving up on a stream that goes quiet, switching to a backup model, and naming models by role (grader, critic) rather than by deployment.
+
+| Feature | Where | Mechanism |
+|---|---|---|
+| Every `GenerateConfig` field | `Provider/Core/GenerateConfig.cs`, `GenerateConfigTypes.cs` | A test checks the C# properties against `GenerateConfig.model_fields`. |
+| Structured output | `Provider/Tools/ResponseFormat.cs` | `ResponseSchema` becomes `response_format: {type: json_schema, ...}` on the chat-completions route (port-only; Python's `azureai` ignores it) and `output_format` plus the `structured-outputs-2025-11-13` beta on the Anthropic route. |
+| `JsonSchema` and `JsonSchemaOf<T>` | `Provider/Core/JsonSchema.cs`, `JsonSchemaGenerator.cs` | Records, enums, nullables, collections, dictionaries and `Description` attributes; cross-checked with the venv's `json_schema()`. |
+| Reflection tools | `Tools/ToolDef.Reflection.cs` | `ToolDef.FromMethod` / `ParseToolInfo` / `ToolWith`; binding uses exact property names and never coerces, and the executor validates the call against the schema first. |
+| Stall and attempt timeouts | `Provider/Core/StallScope.cs`, `Model/GenerateAttempt.cs`, `ModelTimeouts.cs` | `stream_idle_timeout` reschedules a `CancellationTokenSource` timer on every chunk; `attempt_timeout` links a second one; both raise exceptions the retry loop treats as transient. |
+| Fallbacks | `Provider/Core/ModelFallback.cs`, `Model/FallbackModelApi.cs`, `SampleModelAccumulators.cs` | Server-side `fallback_models` is warned and ignored as Python does on Azure; `FallbackModelApi` (port-only) switches client-side after N failures and stamps the same `ModelFallback` record, rolled up per sample. |
+| Roles | `Model/ModelRoles.cs` | `ModelRoles.Resolve` / `Merge` with Python's error messages, an ambient `Begin` scope, `ModelRoles.GetModel(role)`, `ModelEvent.Role`; `Eval.RunAsync` installs the merged eval-level and task-level roles. |
+
+`TokenEstimation` ports the media constants of `model/_tokens.py`; text is a character heuristic because no tokenizer package is allowed. Port note: `docs/ports/model-extras.md`.
+
+### 4.13 Message trimming and compaction
+
+> **In plain English:** Long agent conversations outgrow the model's memory. Compaction shrinks the history before each call, by dropping old tool output, summarising, trimming, or a memory tool, and can rescue a call that failed because the history was too long.
+
+`Model/Compaction/` ports `model/_trim.py` and `model/_compaction/`. `TrimMessages.Trim` keeps the system and input messages and the last `preserve` fraction of the conversation, dropping orphaned tool calls and results. The strategies (`CompactionEdit`, `CompactionSummary` with the Python prompt templates verbatim, `CompactionTrim`, `CompactionMemory`, `CompactionAuto`) implement `ICompactionStrategy` and are driven by an `ICompact` from `Compaction.Create`, whose threshold is an absolute token count or a fraction of the context window. The agent-loop seam is the `CompactionHook` delegate: a loop calls `CompactInputAsync` before each generate, `RecordOutputAsync` after it, and `Compaction.TryRecoverOverflowAsync` on a `model_length` stop. `BasicAgent`, `Agents.React` and the mini-swe loop all use it, and each compaction records a `CompactionEvent`.
+
+Deviations: token counting is `ceil(chars / 4) * 1.1` unless the api implements `ICompactionModelApi`, so absolute thresholds trigger at different points than in Python; the context window comes from `CompactionModelInfo`, the api, or 128,000 for the scripted model; native compaction is `NotSupportedException` and `CompactionAuto` falls back to summary; no checkpointing. Port note: `docs/ports/compaction.md`.
+
+### 4.14 React agents, handoff, as_tool and run
+
+> **In plain English:** The general-purpose agent recipe from Python: think, call tools, repeat, then submit. Agents can hand a conversation to another agent, be offered to a model as a tool, or be run on their own, each within its own smaller budget.
+
+`Agents/React.cs` ports `agent/_react.py`: `Agents.React(name, description, prompt, tools, model, attempts, submit, onContinue, retryRefusals, compaction, truncation, approval)` returns an `AgentDef` whose loop generates, executes tools, scores between attempts and stops on submit. `Handoff` wraps an agent as a `ToolDef` with `ToolDef.Handoff` set, so `ToolExecutor` runs it under a `handoff` span, appends the agent's messages after the tool message and stamps `ToolEvent.Agent`; `AsTool` exposes an agent as an ordinary tool; `Agents.RunAsync` runs one standalone and returns `AgentRunResult(State, LimitError)`. `AgentLimits` (message, token, time) enter as child nodes on the shared limit trees of 4.8 through `AgentLimitScope`, so agent budgets nest under the sample's. `MessageFilters` (`ContentOnly`, `RemoveTools`, `LastMessage`, `TrimMessages`) are the input and output filters.
+
+Deviations: `on_continue` and `model` are each split into a string and a callable parameter; a model name string is not accepted; agents take no parameters, so a handoff tool's schema is empty and options travel by closure; the sample's limits are always checked alongside the agent's (stricter than Python's innermost-only message check); no checkpoints, operator channel or `agent_span_id`. Port note: `docs/ports/react-agents.md`.
+
+### 4.15 Multiple choice, chain of thought, self critique and fork
+
+> **In plain English:** The classic exam formats: pick A, B, C or D (with shuffled options un-shuffled again for marking), think step by step first, critique your own answer and rewrite it, or try several recipes on the same question at once.
+
+`Solvers/MultipleChoice.cs` ports `solver/_multiple_choice.py` line for line: the templates, the strict `ANSWER:` parse with its lenient fallback, multi-answer forms (`AB`, `A,B`, `A and B`), shuffling through Python's own Fisher-Yates over `TaskState.Choices` (now a `Choices` object with marks), and the "pretend we didn't shuffle" rewrite of the prompt and the final message. `Scorers.Choice()` and `Scorers.Answer("letter" | "word" | "line")` are the matching scorers. `Solvers.ChainOfThought`, `AssistantMessage` and `SelfCritique` port `_prompt.py` and `_critique.py` with the default templates verbatim; `Solvers.Fork(state, solvers, generate)` runs each branch on a `TaskState.Copy()` under a `subtask` span and fails fast like `tg_collect`. `PythonFormat.Format` is the strict `str.format` subset the templates need.
+
+Deviations: a seed does not reproduce a Mersenne Twister order (the algorithm matches, the generator does not); `shuffle` takes a `Random?`; `fork` takes the `Generate` delegate explicitly rather than reading a context variable; `TaskState.Copy()` shares the values inside metadata and store. Port note: `docs/ports/solvers.md`.
+
+### 4.16 Metrics, extra scorers and reducers
+
+> **In plain English:** Every statistic Python can put in the results table (variance, standard error with clustering, bootstrap and Wilson confidence intervals, grouped and categorical breakdowns, Krippendorff's alpha, perplexity), plus the scorers that combine or pre-compute scores and a maths-answer checker.
+
+`Scorers/Metrics/` ports `scorer/_metrics/` (`Var`, `Stderr(cluster)`, `BootstrapStderr`, `Ci`, `CiWilson`, `Grouped`, `Frequency`, `Categorical`, `Aggregate`, `KrippendorffAlpha`, `PerplexityPerToken` / `PerSeq`), with `Distributions` porting the t and normal quantiles from CPython's `statistics`; reference values were computed with the venv and are asserted within 1e-9. `Reducers.Majority`, `PassK`, `Collect`, `Create(name)` and `Validate` complete the reducer set; `Scorers.F1`, `Exact`, `Cascade`, `MultiScorer`, `PrecomputedScores` and `Math` are the extra scorers. `MetricScores.Unreduced` metrics get their own reducer-less `EvalScore` over every epoch, as `compute_eval_scores_for_views` does.
+
+Deviations: the math scorer has no SymPy, so it evaluates the numeric subset exactly (big-integer rationals, `\frac`, `\sqrt`, `\binom`, units, tuples) and compares anything symbolic as text; the C# `Scorer` cannot return `None`, so NaN stands in for an unscored result in `cascade` and `multi_scorer`; bootstrap randomness is `System.Random`. Port note: `docs/ports/metrics.md`.
+
+### 4.17 Built-in tools and web search
+
+> **In plain English:** Ready-made tools an agent can be given: a scratchpad to think in, web search through a search API, reading, listing and grepping files in the sandbox, and a to-do list or plan the agent keeps updated.
+
+`Tools/Builtin/` ports `tool/_tools/`: `BuiltinTools.Think`, `WebSearch`, `ReadFile`, `ListFiles`, `Grep`, `TodoWrite` and `UpdatePlan`. Every factory's name, description, schema, `options` and `parallel` flag are asserted byte for byte against the Python `ToolDef` dump in `fixtures/tools/tool_info.json`. Web search follows Python's provider design: an external provider (`TavilySearchProvider`, `ExaSearchProvider`, and a .NET-only `PerplexitySearchProvider`) created lazily on the first call, with `BaseHttpProvider` supplying the per-provider concurrency and tenacity-style retries; Claude's server-side `web_search_20250305` is passed through on the Anthropic route and its `server_tool_use` / `web_search_tool_result` blocks come back as `ContentToolUse` with `UrlCitation`s. `ToolInputValidator` ports `validate_tool_input` (Draft 7 messages, same wording), and `ToolExecutor` runs it for every call.
+
+Deviations: Perplexity is used only when listed explicitly (Python's default configuration still fails with "No valid provider found."); the `google` provider and `web_fetch` are not ported. Port note: `docs/ports/builtin-tools.md`.
+
+### 4.18 Sandbox tools over JSON-RPC: text_editor and bash_session
+
+> **In plain English:** Two tools that need a helper program inside the sandbox: a file editor with undo, and a persistent shell session. The helper is the same published binary Python uses, downloaded, checked against its published checksum, copied in, and spoken to over a small request-and-response protocol.
+
+`Tools/Support/` ports the injection and the transport: `SandboxToolsBinary` downloads the pinned `inspect-sandbox-tools` release (v29, vendored `SHA256SUMS`) into `INSPECT_SANDBOX_TOOLS_BINARIES_DIR`; `SandboxToolSupport` runs Python's injection sequence (detector, `SandboxRecon` for architecture, libc and OS, root or rootless install, `tar xzf`, `start-server`) once per sandbox under a lock; `JsonRpc` and `SandboxJsonRpcTransport` send `json.dumps`-formatted requests through `ISandboxEnvironment.ExecAsync([cli, "exec"])` with the chunked-response reassembly of the Python transport. `TextEditor.Create` and `BashSession.Create` are the tools, with schemas byte-identical to the venv's and the `bash_session` state kept in the sample store under Python's `BashSessionStore` keys.
+
+Deviations: a `version` RPC verifies each fresh injection; digest verification is always strict and binaries are never bundled; `ExecAsync` has no `timeout_retry` / `concurrency`; `type_submit` without `input` sends only the return key (Python's f-string types the literal `None`). Port note: `docs/ports/sandbox-tools.md`.
+
+### 4.19 MCP tool sources
+
+> **In plain English:** The Model Context Protocol is a standard way for a program to offer tools. An eval can connect to such a server (a local process, a web address, or a program started inside the sandbox) and hand its tools to the model like any other.
+
+`Tools/Mcp/` ports `tool/_mcp/` on the official `ModelContextProtocol` SDK, the one NuGet dependency of the Eval project. `Mcp.McpServerStdio` / `McpServerHttp` / `McpServerSse` / `McpServerSandbox` build servers, `Mcp.McpTools(server, names)` filters their tools into an `IToolSource`, and `await using var c = await McpConnection.ConnectAsync(tools)` holds one session across calls. Tools resolve to ordinary `ToolDef`s (schemas through `BridgeJson.ToolParamsFromSchema`), results map to `ToolResult` contents, `isError` results raise `ToolError`, and JSON-RPC error codes map as Python's error mapper does. The sandbox transport implements the SDK's `IClientTransport` over the same `mcp_launch_server` / `mcp_send_request` carrier protocol as Python, through the injected CLI of 4.18.
+
+Deviations: a session lives per async flow (`AsyncLocal`) rather than per task; sampling is not wired (the SDK marks it obsolete); solvers hold a `List<ToolDef>`, so callers resolve `ToolsAsync()` under a connection first. Port note: `docs/ports/mcp-tools.md`.
+
+### 4.20 Tool-call approval
+
+> **In plain English:** A gate in front of every tool call. A policy says which tools need which approver: approve automatically, ask a human at the console, modify the call, reject it with an explanation, or stop the whole sample. The bridged Claude Code agent gets the same gate on every response.
+
+`Approval/` ports `inspect_ai/approval`. `ApprovalPolicy(approver, tools)` matches prefix globs with `fnmatch` over `format_function_call(...)`; the first match decides and `escalate` continues down the chain. `ApprovalPolicies.FromFile` reads the JSON form of the policy file and `ToConfig` records it as `EvalConfig.approval`. `ToolApproval.Begin` installs the policies ambiently, exactly as `eval(approval=)` does, so `ToolExecutor` (before running a tool), `Agents.React`, the mini-swe loop and the bridge all consult the same scope. `approve` and `modify` run the tool (the tool message keeps the model's original call), `reject` becomes a `ToolCallError("approval", ...)`, and `terminate` throws `TerminateSampleException`, which the runner records as the `operator` sample limit and still scores. Every decision is an `ApprovalEvent`. `BridgeApproval` applies the gate to a bridged response: a rejection replays the assistant turn plus one `approval` tool result per call and regenerates, and three consecutive rejections terminate.
+
+Deviations: policy files are JSON only; the human approver is console-only behind `IApprovalPrompter` (no `modify`, no notifications, no ACP or panel routing); approvers are `ApproverDef`s registered with `ApproverRegistry` rather than registry-tagged closures; upstream's host-tool execution grants are not needed because the .NET bridge exposes no host-tool surface. Port note: `docs/ports/approval.md`.
+
+### 4.21 Lifecycle hooks
+
+> **In plain English:** Callbacks at every stage of a run (run, task, sample, attempt, model call, retry, cache hit) so a host can log, meter or route events elsewhere without touching the engine.
+
+`Hooks/` ports `hooks/_hooks.py` and `_startup.py`: the abstract `Hooks` with seventeen no-op virtual callbacks and `OverrideApiKey`, the payload records with Python's names, `HookRegistry` (the `@hooks` decorator) plus per-run `EvalOptions.Hooks`, `HookEmitter` with every `Emit*Async`, and `HookStartup.InitHooks` with the `INSPECT_REQUIRED_HOOKS` check. Emission order and gating are Python's: run start, task start, sample init, sample start, attempt start, sample events (queued to a background emitter and drained before the attempt end), scoring, attempt end, sample end, task end, run end; `Model.GenerateAsync` emits before-generate, cache usage, usage and retry. A throwing hook is logged and the rest still run; a `LimitExceededException` propagates. An eval set (4.28) wraps its passes in eval-set start and end and runs each pass under one `HookRunGroup`.
+
+Deviations: registration is explicit (no entry points or legacy telemetry hooks); `init_hooks` runs at `Eval.RunAsync`; `RunEnd.Logs` holds the logs written before an exception; the `BeforeModelGenerate` payload is read-only; the Foundry providers authenticate with Entra ID only, so `ApiKeyOverride` is never consulted by them. Port note: `docs/ports/hooks.md`.
+
+### 4.22 Store and state tracking, JSON changes, replay and subtasks
+
+> **In plain English:** The shared notepad and the solver's state are diffed at every step and the differences go in the report, so a log can be replayed to see what the notepad held at any point. Sub-tasks get their own notepad and their own diary entry.
+
+`Context/JsonChanges.cs` and `JsonPatch.cs` port `json_changes` and the `jsonpatch` library (the six operations, `replaced` values, the list-append convention); a cross-check runs the venv's `json_changes` over 24 documents and asserts the same operations. `Transcript.Span` now snapshots the ambient store on entry and records a `StoreEvent` on dispose, exactly where Python's `span()` wraps `track_store_changes()`; `SolverTranscript` and `ChainSolver` record a `StateEvent` after each step; `StoreReplay.StoreFromEvents` rebuilds a store from a log. `StoreModel` is the typed view (`{TypeName}:{instance}:{field}` keys, so a .NET model reads a Python log's store and vice versa); `Subtask.RunAsync` swaps the ambient store, opens a `subtask` span and updates a pending `SubtaskEvent` in place.
+
+Deviations: a `StoreEvent` is recorded even when the span body throws; patches visit keys in document order (Python: set order); `StoreModel` raises on a failed coercion instead of returning the raw value; `StoreAs` outside a context throws. Port note: `docs/ports/store-replay.md`.
+
+### 4.23 The log data model and the `.json` format
+
+> **In plain English:** The report's vocabulary, every kind of diary entry and every field of the summary, matches Python's exactly, byte for byte where it matters, so Python's own viewer and reader open these files and old Python files open here.
+
+`Log/EvalLog.cs`, `EvalLogModels.cs` and `Context/TranscriptEventTypes.cs` port `log/_log.py` and all 23 members of the `Event` union (`SampleInit`, `SampleLimit`, `Sandbox`, `State`, `Store`, `Model`, `Tool`, `Anchor`, `Approval`, `Branch`, `Checkpoint`, `Compaction`, `Input`, `Interrupt`, `Score`, `ScoreEdit`, `Error`, `Logger`, `Info`, `SpanBegin`, `SpanEnd`, `Step`, `Subtask`), with `EvalLogEdits` (tags, metadata and score edits with provenance), `Timeline`, `LogThinning` (the `.eval` summary view), `LogAttachments` (`condense_sample`, with a MurmurHash3 identical to Python's `mm3_hash`) and `LegacyLogMigrations` (the `mode="before"` validators). `EvalLogWriter` writes Python's `.json` exactly: snake_case in pydantic field order, 2-space indent, `exclude_none`, `datetime.isoformat()` timestamps and the bare `NaN` / `Infinity` constants pydantic writes; reads tolerate those constants, migrate legacy shapes, reject a version above 2 and normalise older ones. The fixture `python_eval_log.json` is generated by the venv and round-tripped.
+
+Deviations: `TimelineEvent` holds a uuid rather than the event; `EvalConfig` splits Python's unions into typed pairs; `ApprovalPolicyConfig`, `events_data` and the RFC 6902 `changes` stay raw JSON; an empty `eval_id` gets a fresh short uuid (no blake2s in the BCL); a `ToolCall.view` inside a message is dropped on read. Port note: `docs/ports/log-schema.md`.
+
+### 4.24 The `.eval` zip format and recorders
+
+> **In plain English:** Python's compact log is a zip file written one question at a time, so a crashed run still leaves a readable file. The port writes the same members in the same order and reads Python's files, including the compressed ones it cannot itself produce.
+
+`Log/EvalFormat/` ports `log/_recorders/eval.py` and `log/_file.py`. `EvalRecorder` is the `ILogRecorder` the runner drives: `LogInit`, `LogStart` (`_journal/start.json`), `LogSample` per completed sample (`samples/{id}_epoch_{n}.json`, condensed, buffered and flushed with `_journal/summaries/{k}.json`), `LogFinish` (`summaries.json`, `reductions.json`, `header.json`), every flush an atomic copy over the destination. `JsonRecorder` is the whole-file alternative. `EvalLogFiles` ports `read_eval_log`, `write_eval_log`, `list_eval_logs`, the sample and summary readers and `write_log_dir_manifest`; `EvalLogWriter.Read` / `Write` / `ReadHeader` route `.eval` paths here, so every existing caller reads either format. `ZipLogReader` / `ZipLogWriter` handle the archive by hand, and `ZstdDecoder` is an RFC 8878 decoder for the zstandard members Python writes. `EvalOptions.LogFormat` defaults to `eval` (`INSPECT_LOG_FORMAT`), `LogDir` to `INSPECT_LOG_DIR`, and the file is named `{created}_{task}_{id}` so Python's `list_eval_logs` parses it.
+
+Deviations: written members are deflate (the BCL cannot produce zstandard; Python reads deflate); local files only; `.eval` reads resolve the `events_data` pools into the model events; a snapshot write blocked by a reader is skipped and retried at the next flush; the chunked writer and the realtime buffer are not ported. Port note: `docs/ports/eval-format.md`.
+
+### 4.25 Log tools: editing, recovery, conversion and bundling
+
+> **In plain English:** Things you do to reports after the fact: correct a score, mark samples invalid, salvage a crashed run's partial file, convert between the two formats, and package a folder of reports with the viewer for a static website.
+
+`Log/Tools/` ports `log/_score.py`, the invalidation half of `log/_edit.py`, `log/_recover/`, `log/_convert.py` and `log/_bundle.py`. `EvalLogEdits.EditScore` prepends the pre-edit state to the score's history, places a `ScoreEditEvent` in the last scorers span and recomputes metrics from the header's scorers (a `PythonFact` edits the same log with `edit_score` and compares); `InvalidateSamples` / `UninvalidateSamples` carry provenance. `EvalLogRecovery` recognises a log with `_journal/start.json` and no `header.json`, and streams its flushed samples into a clean file with recomputed stats and results and a "recovered" `EvalError`. `LogConversion.ConvertEvalLogsAsync` converts files or directories both ways (`json` to `eval` to `json` is JSON-identical), and `LogBundle` assembles viewer assets, `index.html` with the `log_dir_context` script, `robots.txt` and `logs/listing.json` in a temp directory. `LogCommands` are the `inspect log` helpers the CLI's `log` commands call.
+
+Deviations: recovery is journal-only, because there is no SQLite sample buffer, so samples since the last flush are lost; viewer assets are not shipped (`INSPECT_VIEW_DIST_DIR` or the Python package's `_view/dist`); no Hugging Face target or progress display. Port note: `docs/ports/log-tools.md`.
+
+### 4.26 Scoring existing logs
+
+> **In plain English:** Re-mark a finished exam with a different marking scheme, either adding the new marks next to the old ones or replacing them, and recompute the summary table.
+
+`Runner/Scoring/ScoreLogs.ScoreAsync(log, scorers, action, epochsReducer, options)` ports `_eval/score.py`: every sample is scored (errored ones included) under a `SampleContext` built from the log with `Transcript(events)`; `ScoreAction.Append` keeps the existing scores (a reused scorer name becomes `name1`) and places the new scorer spans in the sample's last `scorers` span, `Overwrite` replaces them in place. `EvalResultsBuilder.ComputeResults` is the one results computation shared with the runner, so runner logs carry `reductions`, `results.headline` and `eval.config.epochs_reducer` as Python's do; `LogHeader.MetricsFromLogHeader` and `ReducersFromLogHeader` re-create the built-ins from the header. Two `PythonFact`s read the re-scored fixture back with the venv and compare `eval_results` over the same samples.
+
+Deviations: the model and roles are passed in through `ScoreLogOptions` (there is no registry to rebuild them from the header; a scorer that generates without one is a `PrerequisiteError`); header metrics beyond the built-in table are `NotSupportedException`; the headline fallback is silent; timelines are not restored. Port note: `docs/ports/score-logs.md`.
+
+### 4.27 Tabular analysis of logs
+
+> **In plain English:** Turn a folder of reports into tables, one row per eval, per sample, per message or per event, with the same column names Python's data-frame helpers produce, ready to write out as CSV or JSON Lines.
+
+`Analysis/` ports `analysis/_dataframe/`. A `Column` pairs a JSONPath (evaluated against the log-format JSON of the record, so every default path sees what `model_dump(mode="json", exclude_none=True)` sees) or a typed extractor with a `ColumnType`; `EvalColumns`, `SampleColumns`, `MessageColumns` and `EventColumns` are the Python column groups; `EvalsTable`, `SamplesTable`, `MessagesTable` and `EventsTable` read logs (`LogSource` ports `resolve_logs`) into a `Table` of ordered columns and native cells, with `Read` raising `ColumnImportException` and `ReadWithErrors` returning the `strict=False` tuple. `Prepare` ports the `_prepare` operations (`ScoreToFloat`, `ModelInfo` over the lookup of 4.11, `TaskInfo`, `Frontier`). Column names, sample ids (uuid, or MD5 to shortuuid, bit-identical), merged column order and tool-event rows were verified against the venv over inspect_ai's own test logs.
+
+Deviations: a `Table`, not a `DataFrame`; a JSONPath subset (fields, `*`, `[n]`, `[-n]`, `[*]`) with no schema validation; a YAML coercion subset; sample extractors always receive the summary; `pprint` values are not wrapped. Port note: `docs/ports/analysis.md`.
+
+### 4.28 Eval sets, resume and eval-retry
+
+> **In plain English:** Run several exams as one batch into one folder, and run the batch again to pick up where it left off: finished exams are kept, failed questions are re-asked, and the same question is never paid for twice. A single finished report can also be retried on its own.
+
+`Runner/EvalSet/` ports `_eval/evalset.py` and `eval_retry`. `TaskIdentifier.Compute` produces Python's `{task}#{args_hash}/{model}/{additional_hash}` (version 3; `PydanticJson` reproduces `pydantic_core.to_json` byte for byte, cross-checked with `task_identifier(read_eval_log(...))` on a log this runner wrote). `EvalSet.RunAsync(tasks, EvalSetOptions)` lists the latest log per identifier in the directory, keeps the complete ones as headers, feeds each incomplete one back as an `EvalSampleSource` (finished samples reused and re-logged, errored ones re-run with their error history seeded), and retries the pass with `RetryAttempts` (10), exponential `RetryWait` (30 s doubling to 1 h) and `RetryConnections` decay, cleaning up older logs of a retried task unless `RetryCleanup` is off. Every pass runs under one hook run. `EvalRetry.RunAsync(logs, options)` rebuilds a task and model from a log's header and does the same for a single log.
+
+```mermaid
+flowchart TD
+    A["EvalSet.RunAsync(tasks, options)"] --> B["TaskIdentifier per task x model; validate the log dir"]
+    B --> C["LatestEvalLogs: complete logs kept as headers, incomplete ones become an EvalSampleSource"]
+    C --> D["Eval.RunAsync per remaining task with SampleSource, TaskId, EvalSetId, InitialModelUsage"]
+    D --> E{"all succeeded, or attempts exhausted, or cancelled?"}
+    E -->|"no"| F["wait RetryWait, decay MaxConnections, CleanupOlderEvalLogs"]
+    F --> C
+    E -->|"yes"| G["EvalSetResult(Success, Logs); eval-set.json and .eval-set-id in the log dir"]
+```
+
+Deviations: there is no task registry, so in-memory identifiers carry no `file@` prefix or solver steps (tasks differing only by solver must differ in name, `TaskArgs`, `Version` or config) and `EvalRetry` takes the tasks explicitly; reducers are always applied; logs are read whole (a crashed `started` log is re-run, not recovered); a configuration exception stops the set. Port note: `docs/ports/eval-set.md`.
 
 ## 5. Layer 3: the SWE agents
 
@@ -1776,11 +2004,13 @@ flowchart TD
     K --> L
 ```
 
+**The ported subsystems in `run`.** `--log-format eval|json`, `--approval <policy.json|approver>`, `--cache <expiry|off>`, `--compaction edit|summary|trim|auto[:threshold]`, `--hooks sample-log[=file]`, `--cost-limit` and `--model-cost-config` are parsed by `RunOptions` (validated up front as usage errors) and wired by `RunWiring` into `EvalOptions`, so they reach the agents exactly as `eval(approval=)`, `generate(cache=)`, `react(compaction=)` and `@hooks` would: approval is installed ambiently by the runner (4.20) and consulted by the basic agent's executor, the mini-swe loop and the Claude Code bridge; the cache policy is passed to every generate (4.10); compaction is the `CompactionHook` seam (4.13), refused for Claude Code because the CLI compacts its own context; `sample-log` is a `Hooks` subclass registered per run (4.21). `show` reads either format through `EvalLogFiles.ReadEvalLog` and prints the recorded approval config, per-sample cost, cache hits, approvals by decision and compactions. `docs/ports/showcase-wiring.md` records the wiring and why mini-swe keeps its own loop rather than `Agents.React`.
+
 ### 6.2 ModelMatrix
 
-> **In plain English:** Runs the same exam on every model deployed on your account and prints a comparison table. It is new and still being worked on.
+> **In plain English:** Runs the same exam on every model deployed on your account and prints a comparison table. Run it again into the same folder and it picks up where it left off.
 
-`InspectAzureAI.ModelMatrix` (untracked in git at the time of writing, so treat it as in progress) is a thin runner over the showcase: it discovers every deployment on the Foundry resource behind `AZUREAI_BASE_URL` through `FoundryCatalog`, selects rows (`--only`, `--exclude`, ARM format filters, a skip reason for failed or non-chat deployments), and runs the chosen showcase task and agent (Claude Code by default) against each deployment through the same `Eval.RunAsync`, with bounded parallelism. Each deployment yields an eval log and one `MatrixRow` (score, accuracy, tokens, seconds, error or skip reason); the run ends with a console table, a JSON summary and an optional Markdown table. It reuses the showcase's internals (`RunOptions.Parse`, `ShowcaseTasks`, `AgentChoice`, `FakeScripts`) through `InternalsVisibleTo`, and its exit codes follow the showcase. A deployment that fails is recorded, not fatal; only a sign-in failure or cancellation stops the matrix.
+`InspectAzureAI.ModelMatrix` is a thin runner over the showcase: it discovers every deployment on the Foundry resource behind `AZUREAI_BASE_URL` through `FoundryCatalog`, selects rows (`--only`, `--exclude`, ARM format filters, a skip reason for failed or non-chat deployments), and runs the chosen showcase task and agent (Claude Code by default) against each deployment, with bounded parallelism. Each deployment runs as its own eval set (4.28) in `<log-dir>/<deployment>/` (`EvalSet.RunAsync([task], ...)` with `MaxTasks = 1`, `LogDirAllowDirty = true` and `--retry-attempts` immediate retries, default 2), so a second run into the same directory resumes and reuses finished samples. Each deployment yields an eval log and one `MatrixRow` (score, accuracy, tokens, seconds, cost, tokens per second, reused samples, error or skip reason); the run ends with a console table, a JSON summary and an optional Markdown table. Hooks lines are prefixed with the deployment, and a `sample-log=FILE` destination is opened once per matrix run and shared by every deployment. It reuses the showcase's internals (`RunOptions.Parse`, `ShowcaseTasks`, `AgentChoice`, `FakeScripts`) through `InternalsVisibleTo`, and its exit codes follow the showcase. A deployment that fails is recorded, not fatal; only a sign-in failure or cancellation stops the matrix.
 
 ### 6.3 End to end: a showcase run
 
@@ -1853,7 +2083,7 @@ What the log captures for such a run: per sample, the messages, output, scores, 
 
 > **In plain English:** The simplest app: ask a model a question, watch it stream, try a tool, check your login, list your models, and smoke-test every deployment. Its recordings of the raw network traffic feed the dashboard and the README table.
 
-`InspectAzureAI.Sample` is the provider-only front end. It references nothing but the Provider and is not referenced by anything else. Its top-level statements strip options into static properties on `Cli`, then dispatch on the command.
+`InspectAzureAI.Sample` is the provider-only front end. It references the Provider and, for its three engine demos (`cache`, `cost` and `structured`: two generations under a `CachePolicy`, one priced generation, and a `ResponseSchema` from `JsonSchemaOf<T>` parsed back), the Eval library; nothing references it but its tests. Its top-level statements strip options into static properties on `Cli`, then dispatch on the command.
 
 ```mermaid
 flowchart TD
@@ -1939,18 +2169,54 @@ One compensation is worth knowing: some reasoning deployments (MAI-Thinking-1) r
 
 The three scripts wrap these commands: `scripts/test-all-models.sh` reads the endpoint and resource id from the Azure CLI and execs `test-all` over the succeeded deployments; `scripts/build-dashboard.py` embeds a `capture` report into `docs/dashboard/index.html` after refusing any report with an unredacted credential header; `scripts/build-readme-matrix.py` regenerates the README's "Parameters by model" table between its markers from the same report.
 
+### 6.5 The `inspectai` command line
+
+> **In plain English:** The port of the `inspect` command you would type in Python: run an exam, run a batch, retry, re-mark, list and convert reports, manage the cache. Exams are found inside compiled .NET libraries instead of Python files.
+
+`InspectAzureAI.Cli` (executable `inspectai`, on System.CommandLine) ports `_cli/`. `InspectCli.Build` assembles the command tree and `RunAsync(args, CliIo, CliServices)` parses, invokes and maps exceptions to exit codes; the tests drive it in-process with captured output, a `scripted/*` provider over `ScriptedModelApi` and real `.eval` and `.json` logs, with argument-parsing reference values computed by the venv's `parse_cli_args`.
+
+```mermaid
+flowchart TD
+    A["inspectai eval hello --assembly MyEvals.dll --model azureai/gpt-5.4-mini -T count=5 --cache 1W"] --> B["InspectCli.RunAsync: parse, --version, usage errors exit 2"]
+    B --> C["EvalCommands: EvalOptionSet binds every eval_options flag"]
+    C --> D["TaskRegistry.Discover over loaded assemblies plus --assembly; Resolve name or assembly@name"]
+    D --> E["TaskRegistry.Create binds -T args to the [Task] method's parameters"]
+    C --> F["ModelProviders.Resolve: azureai/, anthropic/, bare name, mockllm/model"]
+    C --> G["Catalog: --solver, --scorer, --metric, --epochs-reducer by Python name with -S args"]
+    E --> H["EvalOptions (limits, cache, approval, hooks, cost, log format)"]
+    F --> H
+    G --> H
+    H --> I["Eval.RunAsync or EvalSet.RunAsync or EvalRetry.RunAsync"]
+    I --> J["ResultsPrinter; exit 0, or 1 when the log status is not success"]
+```
+
+| Command | Ported from | What it does here |
+|---|---|---|
+| `eval`, `eval-set`, `eval-retry` | `_cli/eval.py` | `EvalOptionSet` binds the options of `eval_options` (limits, `--epochs`, `--fail-on-error`, `--retry-on-error`, `--cache`, `--approval`, `--cost-limit`, `--hooks`, `--log-format`, the `GenerateConfig` fields, `-T` / `-S` / `-M` arguments) onto `EvalOptions`, `EvalSetOptions` and `EvalRetryOptions`. |
+| `score` | `_cli/score.py` | Re-scores a `.eval` or `.json` log through `ScoreLogs` (4.26): `--scorer`, `--action append` or `overwrite`, `--output-file`, `--overwrite`. |
+| `list tasks` | `_cli/list.py` | `TaskRegistry.Discover` over the loaded assemblies plus the given paths; `-F key=value` attribute filters. |
+| `log list`, `dump`, `convert`, `schema` | `_cli/log.py` | The log tools of 4.25 (`LogCommands`, `LogConversion`). |
+| `cache list`, `clear`, `prune`, `path` | `_cli/cache.py` | `CacheOps` (4.10). |
+| `info version` (plus the hidden `log-file` and `log-schema`, as in Python) | `_cli/info.py` | Version and install path; the embedded `inspect-openapi.json`, which this port's logs conform to. |
+| `view` | `_cli/view.py` | Hands its arguments to Python's `inspect view` when `inspect` is on `PATH` (it reads this port's logs), else prints how to install it. |
+
+**Tasks and names.** `[Task]` on a `public static` method returning an `EvalTask` is the `@task` decorator (`Tasks/TaskAttribute.cs`): the name defaults to the snake_case method name, `-T name=value` arguments bind to the method's parameters through `ParameterBinder` with type conversion, and `[Task("name", "light=true")]` carries the attributes `list tasks -F` filters on. A spec is a name or `assembly@name`; assemblies come from `--assembly` or `INSPECT_EVAL_ASSEMBLY`, and with no spec every discovered task runs. Solvers, scorers, metrics and reducers are resolved by their Python names against the built-in `Solvers`, `Scorers`, `Metrics` and `Reducers` factories (`Registry/Catalog.cs`), with `-S` arguments bound the same way; `score` without `--scorer` re-creates the header's scorers likewise. `Models/ModelProviders.cs` routes `azureai/<deployment>`, `anthropic/<deployment>` and a bare name to the Foundry providers and `mockllm/model` to `MockLlmModelApi`, Python's offline model. `Args/YamlValue.cs` is the PyYAML subset `parse_cli_args` needs.
+
+Deviations: tasks are discovered in assemblies, not `.py` files; `--model a,b` runs the models one after another; options whose subsystems are absent (`--tags`, `--trace`, `--checkpoint`, `--sample-shuffle`, the `--log-*` recorder options and others listed in the note) are not defined, a few are accepted but inert (`--log-level`, `--no-ansi`) and a few refused with exit 2 (`--debug`, `--limit` ranges, the `500k` token-limit form); `--env` keeps the raw value; a log finishing with status `error` exits 1 where Python exits 0 (the section 8 contract); the `acp`, `ctl`, `trace`, `sandbox` and `download` commands are not ported. Port note: `docs/ports/cli.md`.
+
 ## 7. Testing strategy
 
-> **In plain English:** Every test runs without the internet. The network, the login and Docker are swapped for stand-ins that record what the code tried to do, so a test can check the exact bytes that would have been sent. Each layer has its own swap point.
+> **In plain English:** Every test runs without the internet. The network, the login and Docker are swapped for stand-ins that record what the code tried to do, so a test can check the exact bytes that would have been sent. Each layer has its own swap point, and where Python can compute the expected value cheaply, the test asks the real Python for it.
 
-Four xunit projects, one per layer, all offline: no network, no Azure sign-in, and no Docker unless a test is explicitly gated. The reusable doubles live in `src` (`Provider/Testing`, `Eval/Testing`) rather than in the test projects because the `--fake` modes reuse them.
+Six xunit projects, all offline: no network, no Azure sign-in, and no Docker unless a test is explicitly gated. The reusable doubles live in `src` (`Provider/Testing`, `Eval/Testing`) rather than in the test projects because the `--fake` modes reuse them. The last full run on this branch: 2,363 passed, 23 skipped (gated), 0 failed.
 
 | Layer | Project | Seam | Doubles |
 |---|---|---|---|
-| Provider | `tests/InspectAzureAI.Tests` | `AzureAIClientSettings` (transport, credential, client options) | `CannedTransport`, `FakeTokenCredential`, `FakeArmHandler` for `HttpClient` paths |
-| Eval | `tests/InspectAzureAI.Eval.Tests` | `IModelApi`, `ISandboxEnvironment`, `IProcessRunner` | `ScriptedModelApi`, `FakeSandboxEnvironment`, the real `LocalSandboxEnvironment`, `ScriptedProcessRunner` |
-| Swe and showcase | `tests/InspectAzureAI.Swe.Tests` | `ClaudeCodeAgent.BridgeFactory`, `HttpMessageHandler` for the CDN, `Cli.RunAsync` in-process | `FakeBridge`, `FakeCdn`, a scripted sandbox command table, `--fake` |
-| ModelMatrix | `tests/InspectAzureAI.ModelMatrix.Tests` | options, selection and report | fake deployments |
+| Provider | `tests/InspectAzureAI.Tests` (288) | `AzureAIClientSettings` (transport, credential, client options) | `CannedTransport`, `FakeTokenCredential`, `FakeArmHandler` for `HttpClient` paths |
+| Eval | `tests/InspectAzureAI.Eval.Tests` (1,742) | `IModelApi`, `ISandboxEnvironment` (`OnExecCall` scripts a whole exec, stdin included), `IProcessRunner`, `HttpMessageHandler` for the web-search and binary downloads, in-process MCP servers joined by `System.IO.Pipelines` | `ScriptedModelApi` (with `ConnectionLimit` / `Gate` / `PeakConcurrentCalls` for the concurrency tests), `FakeSandboxEnvironment`, the real `LocalSandboxEnvironment`, `ScriptedProcessRunner`, a fake sandbox-tools bucket |
+| Swe and showcase | `tests/InspectAzureAI.Swe.Tests` (222) | `ClaudeCodeAgent.BridgeFactory`, `HttpMessageHandler` for the CDN, `Cli.RunAsync` in-process | `FakeBridge`, `FakeCdn`, a scripted sandbox command table, `--fake` |
+| CLI | `tests/InspectAzureAI.Cli.Tests` (99) | `InspectCli.RunAsync` with `CliIo` and `CliServices`, a `scripted/*` model provider | captured output, a test assembly of `[Task]` methods, real logs in a temp directory |
+| ModelMatrix, Sample | `tests/InspectAzureAI.ModelMatrix.Tests` (29), `tests/InspectAzureAI.Sample.Tests` (6) | options, selection and report; the demo commands | fake deployments; the Sample's fake transport |
 
 ```mermaid
 flowchart LR
@@ -2074,7 +2340,9 @@ sequenceDiagram
 
 Tests that call solvers, agents, tools or scorers directly must install a context first; this scope does it with a scripted model and either the real local sandbox or a fake. Runner tests go through `Eval.RunAsync` instead and re-read the JSON log.
 
-**Adding a test.** Pick the project by seam: provider wire behaviour goes in `InspectAzureAI.Tests` with `Fixtures.Api`, a `CannedTransport` responder and assertions on `LastRequest.BodyJson`; model, solver, agent or runner behaviour goes in `Eval.Tests` with `ScriptedModelApi` plus `SampleContextScope` or `Eval.RunAsync`; mini-swe, Claude Code or the showcase go in `Swe.Tests`. Wrap environment changes in `EnvScope.Clean().Set(...)`, call `ProviderLogger.Reset()` before asserting on warnings, and gate Docker, network or python3 needs with `[DockerFact]`, `[NetworkFact]` or `[Python3Fact]`.
+**Cross-checking with Python.** Wherever a reference value is cheap to compute, the tests compute it with the inspect_ai venv and assert the C# result matches: metric values (within 1e-9), cost arithmetic (bit-exact), tool schemas and descriptions (byte for byte, from fixture dumps), the `.json` log a Python run writes, `json_changes` operations, `task_identifier`, `HeadersJson`, YAML scalar parsing and `parse_cli_args` results, `auto_id` and `mm3_hash`. Tests that need the interpreter at run time are gated with `[PythonFact]` on `INSPECT_PY` (the venv's python) and skip cleanly without it; `[PythonInteropFact]` covers the round trips where Python reads a log this port wrote. Fixtures live under `tests/InspectAzureAI.Eval.Tests/fixtures/` (Python-written logs, inspect_ai's own legacy and analysis logs, tool dumps, zstandard streams, the model database dump), located relative to the test output directory, so do not pass `--artifacts-path` to `dotnet test`.
+
+**Adding a test.** Pick the project by seam: provider wire behaviour goes in `InspectAzureAI.Tests` with `Fixtures.Api`, a `CannedTransport` responder and assertions on `LastRequest.BodyJson`; model, solver, agent, tool, log or runner behaviour goes in `Eval.Tests` with `ScriptedModelApi` plus `SampleContextScope` or `Eval.RunAsync`, one file per area; mini-swe, Claude Code or the showcase go in `Swe.Tests`; command parsing and end-to-end runs go in `Cli.Tests` through `InspectCli.RunAsync`. Wrap environment changes in `EnvScope.Clean().Set(...)`, call `ProviderLogger.Reset()` before asserting on warnings, reset process-global registries (`Concurrency.Init()`, `Throughput.Init()`, `HookRegistry.Clear()`, `ModelInfoLookup.ClearModelInfoCache()`) where a test touches them, and gate Docker, network, Python or an external MCP server with `[DockerFact]`, `[SandboxToolsDockerFact]`, `[NetworkFact]`, `[PythonFact]`, `[PythonInteropFact]` or `[StdioServerFact]`. Never require Docker, network or Azure credentials in a new test.
 
 > **Why the suites run serially.** All assemblies set `DisableTestParallelization`: the sample context, the streaming observer and the model-event sink are `AsyncLocal` ambient state, `EnvScope` mutates process environment variables, `ProviderLogger` is static, the showcase tests redirect `Console`, and the Claude Code tests bind ports and share a binary cache.
 
@@ -2097,33 +2365,49 @@ Tests that call solvers, agents, tools or scorers directly must install a contex
 | `INSPECT_SANDBOX_SETUP_TIMEOUT` | `SandboxSetup` | Setup script timeout in seconds (300). |
 | `INSPECT_SANDBOX_MAX_EXEC_OUTPUT_SIZE`, `INSPECT_SANDBOX_MAX_READ_FILE_SIZE` | `SandboxLimits` | Exec output tail (10 MiB) and file read cap (100 MiB); re-read on every call. |
 | `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_MODEL` and friends | set, not read | Written into the Claude Code CLI's environment inside the sandbox by `ClaudeCodeEnv.Build`. |
-| `INSPECT_SWE_SKIP_DOCKER`, `INSPECT_SWE_NETWORK_TESTS` | tests | Force-skip Docker tests; opt in to network tests. |
+| `INSPECT_LOG_DIR`, `INSPECT_LOG_FORMAT` (or `INSPECT_EVAL_LOG_FORMAT`), `INSPECT_EVAL_LOG_FILE_PATTERN` | `EvalOptions`, `LogFileNaming` | Log directory (`logs`), format (`eval`), and the `{created}_{task}_{id}` file-name pattern. |
+| `INSPECT_CACHE_DIR` | `CacheOps` | Root of the prompt cache; otherwise the platform cache directory under `inspect_ai`. |
+| `INSPECT_AZUREAI_MODEL_COST_CONFIG` | `ModelInfoLookup` | JSON price file applied on the first lookup; a missing or invalid file throws on every lookup. |
+| `INSPECT_REQUIRED_HOOKS` | `HookStartup` | Hooks that must be registered before a run (Python's error text). |
+| `INSPECT_SANDBOX_TOOLS_BINARIES_DIR`, `INSPECT_SANDBOX_JSON_RPC_RESPONSE_MAX_BYTES` | `SandboxToolsBinary`, `SandboxJsonRpcTransport` | Cache of the downloaded `inspect-sandbox-tools` binaries (`~/.cache/inspect-azureai/sandbox-tools`); the chunked-response threshold. |
+| `TAVILY_API_KEY`, `EXA_API_KEY`, `PERPLEXITY_API_KEY` | web-search providers | Read on the first `web_search` call; missing is a `PrerequisiteError` then, not at construction. |
+| `INSPECT_VIEW_DIST_DIR`, `INSPECT_VIEW_SCHEMA_PATH` | `ViewerAssets` | The Python package's viewer assets and OpenAPI schema for `LogBundle`. |
+| `INSPECT_EVAL_MODEL`, `INSPECT_EVAL_MODEL_BASE_URL`, `INSPECT_EVAL_TASK_ARGS`, `INSPECT_EVAL_SOLVER_ARGS`, `INSPECT_EVAL_MODEL_ARGS` and the other `INSPECT_EVAL_*` option variables | `inspectai` | Python's environment-variable defaults for the `eval` options, same names. |
+| `INSPECT_EVAL_ASSEMBLY`, `INSPECT_EVAL_HOOKS`, `INSPECT_EVAL_SET_ID`, `INSPECT_EVAL_RETRY_*` | `inspectai` | This port's additions: assemblies to discover tasks in, hooks to register, the eval-set id, retry settings. |
+| `INSPECT_SWE_SKIP_DOCKER`, `INSPECT_SWE_NETWORK_TESTS`, `INSPECT_PY`, `INSPECT_MCP_STDIO_SERVER` | tests | Force-skip Docker tests; opt in to network tests; the venv python for `[PythonFact]` cross-checks; a command line for the stdio MCP round trip. |
 
 ### Exit codes
 
 > **In plain English:** When a command finishes it reports a number. Zero means fine, one means the run worked but something was wrong with the answers, two means you typed something wrong or a setting is missing, three means a login, cloud or Docker problem.
 
-The Sample, the showcase and the matrix share one policy:
+The Sample, the showcase, the matrix and `inspectai` share one policy:
 
 | Code | Meaning |
 |---|---|
 | 0 | Success. |
-| 1 | Semantic failure: a terminal generate error, a tool loop that did not converge, any sample with an error, any `test-all` chat check not `ok`. |
-| 2 | Usage or prerequisite: bad flag, missing endpoint variable, missing task data, `--fake` with a command that needs Azure. |
-| 3 | Sign-in failure (with the `az login` hint), an Azure request or response failure, a sandbox that is unavailable, or cancellation. |
+| 1 | Semantic failure: a terminal generate error, a tool loop that did not converge, any sample with an error, a log whose status is not `success` (`inspectai`, where Python exits 0), any `test-all` chat check not `ok`. |
+| 2 | Usage or prerequisite: bad flag, unknown task, model or argument, missing endpoint variable, missing task data or files, a refused option, a cost limit without prices, `--fake` with a command that needs Azure. |
+| 3 | Sign-in failure (with the `az login` hint), an Azure request or response failure, a sandbox that is unavailable, cancellation, or any other uncaught failure in `inspectai`. |
 
 ### Ambient state
 
-> **In plain English:** The four things that get hung in the air rather than passed around, and who puts them there.
+> **In plain English:** The things that get hung in the air rather than passed around, and who puts them there.
 
 | Scope | Installed by | Read by |
 |---|---|---|
 | `SampleContext` | `SampleRunner` (and `SampleContextScope` in tests) | solvers, tools, scorers, agents, the bridge |
-| `Transcript` span id | `Transcript.Span` | `Transcript.Add`, to set `parent_id` |
-| `ModelStreamObserver` | the `onStream` overload of `GenerateAsync` | the stream accumulators, to decide streaming and deliver deltas |
+| `Transcript` span id | `Transcript.Span` (which also tracks store changes for its `StoreEvent`) | `Transcript.Add`, to set `parent_id` |
+| `ModelStreamObserver` | the `onStream` overload of `GenerateAsync`, `GenerateAttempt` for a stall scope | the stream accumulators, to decide streaming, deliver deltas and bump the idle deadline |
 | `ModelEventSinks` | `AgentBridge` per attempt, `ClaudeCodeAgent` | the `Model` wrapper, to publish `ModelEvent`s |
+| The limit trees (`TokenLimit`, `MessageLimit`, `TurnLimit`, `TimeLimit`, `WorkingLimit`) | `SampleRunner` at the root, `AgentLimitScope` and `Limit.Apply` beneath | the `Model` wrapper and agents, root first |
+| `ToolApproval` | `Eval.RunAsync` from `EvalOptions.Approval` / `EvalTask.Approval`, `AgentBridge` for its own policies | `ToolExecutor`, `Agents.React`, the mini-swe loop, `BridgeApproval` |
+| `ModelRoles` | `Eval.RunAsync` from the merged roles | `ModelRoles.GetModel(role)`, model-graded scorers |
+| `Concurrency.BeginRequest` (the active controller) | the `Model` wrapper around each generate | `ReportHttpRetry`, so an HTTP retry lands on the right controller |
+| `HookContext` | `Eval.RunAsync` and `SampleRunner` | the model-level hook payloads, for the eval and sample ids |
+| `SampleModelAccumulators` | `SampleRunner` | the `Model` wrapper, for the per-sample fallback and role-usage rollups |
+| `McpServerLocal` session | the first `McpConnection` or tool listing in an async flow | later MCP calls in that flow and its children |
 
-All four return an `IDisposable` that restores the previous value; dispose them in nesting order.
+All of them return an `IDisposable` that restores the previous value; dispose them in nesting order.
 
 ### The error contract, in one table
 
@@ -2137,13 +2421,20 @@ All four return an `IDisposable` that restores the previous value; dispose them 
 | 408, 429, 5xx, dropped body | thrown, `ShouldRetry` says retry | waits `RetryAfter` or backoff, retries up to `MaxRetries` | continues |
 | 401, 404, connection failure | thrown, `ShouldRetry` says no | rethrown | sample error; the apps map sign-in failures to exit 3 |
 | Malformed SSE, empty stream, caller cancellation | escapes unrecorded | rethrown (cancellation is never retried) | sample error or cancelled |
-| Message, token or time limit | n/a | `LimitExceededException` after usage is added | `EvalSampleLimit`; scoring still runs |
+| Message, token, turn, time, working or cost limit | n/a | `LimitExceededException` after usage is added, with `SourceLimit` set; a `SampleLimitEvent` recorded | `EvalSampleLimit`; scoring still runs |
+| Stream idle or attempt timeout | n/a | `StreamIdleTimeoutException` / `AttemptTimeoutException`, retried as transient | continues |
+| Prompt-cache hit | n/a | no provider call; `ModelEvent.cache = read`; the turn still counts | continues |
+| Approval `reject` | n/a | n/a | `ToolCallError("approval")` in the tool message; the sample continues |
+| Approval `terminate` | n/a | n/a | `TerminateSampleException` becomes the `operator` sample limit; scoring still runs |
+| Sample error under `RetryOnError` | n/a | n/a | re-run from scratch, the error kept in `error_retries`; only the final attempt is logged |
+| Sample error under `FailOnError` = never, a fraction or a count | n/a | n/a | the run continues; the policy decides the final status |
+| Eval-set pass with failures | n/a | n/a | retried after `RetryWait` with the failed samples re-run and finished ones reused |
 
 ### Python lineage
 
 > **In plain English:** Where to look if you want to compare a C# file with the Python it was copied from, and where the copies deliberately differ.
 
-The README's "Python to C# mapping" and "Fidelity notes" sections and `docs/swe-showcase.md` list, file by file, which Python module each C# file ports and where behaviour deliberately differs (no YAML tool-argument fallback, the log written as valid JSON, a 60-second backoff cap instead of Python's 30 minutes, host-side bridge instead of an in-sandbox proxy). `docs/model-parameters.md` records what each verified deployment accepted.
+Every C# file cites the Python module it ports in its header comment. The README's "Python to C# mapping" and "Fidelity notes" sections cover the provider, `docs/swe-showcase.md` the SWE agents and the showcase, and `docs/ports/` the eval subsystems: one note per area (indexed with its deviations in `docs/ports/README.md`) listing what was ported from which files, the public C# API, every deviation from Python with its reason, and what was not ported. The README's "Ported from inspect_ai" table maps areas to notes, and its "Intentionally out of scope" list is the union of the notes' "Not ported" sections. `docs/model-parameters.md` records what each verified deployment accepted.
 
 ## 9. Where to start reading
 
@@ -2163,3 +2454,12 @@ A suggested order through the code, each step building on the last:
 10. `src/InspectAzureAI.Eval/Agents/Bridge/SandboxAgentBridge.cs` and `Bridge/AgentBridge.cs`: the HTTP bridge and thread tracking.
 11. `src/InspectAzureAI.Swe/MiniSwe/MiniSweAgent.cs`, then `ClaudeCode/ClaudeCodeAgent.cs`: the two agents.
 12. `src/InspectAzureAI.SweShowcase/Cli.cs` and `FakeScripts.cs`: composition, and the offline path you can run without Azure: `dotnet run --project src/InspectAzureAI.SweShowcase -- run --task hello-swe --agent mini-swe --fake`.
+
+Then the ported subsystems, each with its note under `docs/ports/`:
+
+13. `src/InspectAzureAI.Eval/Context/Limit.cs`, `LimitTree.cs` and `TokenLimit.cs`: the scoped limit stack that everything else records against; then `Runner/SampleErrorHandler.cs` for the error policy.
+14. `src/InspectAzureAI.Eval/Concurrency/AdaptiveConcurrencyController.cs` and `ConnectionSlot.cs`: how a generate waits for a connection, and `Model/Cache/PromptCache.cs` and `Model/Cost/ModelCosts.cs`: the two things that happen around it.
+15. `src/InspectAzureAI.Eval/Agents/React.cs` and `Model/Compaction/Compaction.cs`: the general-purpose agent loop and the compaction seam it drives.
+16. `src/InspectAzureAI.Eval/Approval/ToolApproval.cs` and `Hooks/HookEmitter.cs`: the two ambient gates on tool calls and lifecycle events.
+17. `src/InspectAzureAI.Eval/Log/EvalLogWriter.cs`, `Log/EvalFormat/EvalRecorder.cs` and `Log/Json/PythonJsonFormat.cs`: how a log becomes Python's bytes in both formats; then `Runner/Scoring/ScoreLogs.cs` and `Analysis/SamplesTable.cs` for what reads them back.
+18. `src/InspectAzureAI.Eval/Runner/EvalSet/EvalSet.cs` and `TaskIdentifier.cs`: resume and retry; then `src/InspectAzureAI.Cli/InspectCli.cs` and `Commands/EvalCommands.cs`, and the offline command you can run right now: `dotnet run --project src/InspectAzureAI.Cli -- eval hello --assembly tests/InspectAzureAI.Cli.Tests/bin/Debug/net10.0/InspectAzureAI.Cli.Tests.dll --model mockllm/model` (after `dotnet build`).
