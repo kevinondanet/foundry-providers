@@ -19,7 +19,17 @@ namespace InspectAzureAI.Eval.Tools;
 /// </summary>
 public sealed partial record ToolDef
 {
-    private static readonly JsonSerializerOptions ArgumentOptions = new(JsonSerializerDefaults.Web)
+    /// <summary>
+    /// Binding is strict, like Python's <c>tool_params</c> after <c>validate_tool_input</c>: property names match
+    /// the schema exactly (case-sensitive, as <see cref="JsonSchemaGenerator"/> emits them) and a number is never
+    /// read from a string, so invalid model input is reported rather than coerced.
+    /// </summary>
+    private static readonly JsonSerializerOptions BindingOptions = new()
+    {
+        Converters = { new JsonStringEnumConverter() },
+    };
+
+    private static readonly JsonSerializerOptions ResultOptions = new(JsonSerializerDefaults.Web)
     {
         Converters = { new JsonStringEnumConverter() },
     };
@@ -137,9 +147,11 @@ public sealed partial record ToolDef
     }
 
     /// <summary>
-    /// Binds the JSON arguments to the parameters (System.Text.Json web defaults, enums by name), fills defaults,
-    /// invokes and converts the result. A missing required argument or an unconvertible value is a
-    /// <see cref="ToolParsingError"/> (Python's messages); exceptions from the method propagate unwrapped.
+    /// Binds the JSON arguments to the parameters (<see cref="BindingOptions"/>: exact names, strict numbers, enums
+    /// by name), fills defaults, invokes and converts the result. A missing required argument or an unconvertible
+    /// value is a <see cref="ToolParsingError"/> (Python's messages); exceptions from the method propagate unwrapped.
+    /// Schema validation (<c>validate_tool_input</c>) is <see cref="ToolExecutor"/>'s job, as it is <c>call_tool</c>'s
+    /// in Python; a direct <see cref="ToolDef.Execute"/> call gets the strict binder's messages instead.
     /// </summary>
     private static async Task<ToolResult> InvokeAsync(MethodInfo method, object? target, ParameterInfo[] parameters, JsonObject arguments, CancellationToken cancellationToken)
     {
@@ -197,7 +209,7 @@ public sealed partial record ToolDef
 
         try
         {
-            return node.Deserialize(type, ArgumentOptions);
+            return node.Deserialize(type, BindingOptions);
         }
         catch (Exception ex) when (ex is JsonException or NotSupportedException or InvalidOperationException)
         {
@@ -242,7 +254,7 @@ public sealed partial record ToolDef
             IEnumerable<Content> contents => ToolResult.FromContents(contents),
             bool flag => flag ? "True" : "False",
             IFormattable formattable => formattable.ToString(null, CultureInfo.InvariantCulture) ?? "",
-            _ => JsonSerializer.Serialize(result, result.GetType(), ArgumentOptions),
+            _ => JsonSerializer.Serialize(result, result.GetType(), ResultOptions),
         };
     }
 

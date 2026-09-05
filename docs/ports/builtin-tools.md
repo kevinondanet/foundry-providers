@@ -18,8 +18,10 @@
 
 Every factory returns a `ToolDef` whose name, description, parameter schema, `options` and `parallel` flag are
 asserted byte-for-byte against the Python `ToolDef(...)` dump (`tests/InspectAzureAI.Eval.Tests/fixtures/tools/tool_info.json`,
-regenerated with the venv script in the scratchpad). Each tool validates its arguments with `ToolInputValidator`
-before running, because the .NET `ToolExecutor` only checks required parameters.
+regenerated with the venv script in the scratchpad). `ToolExecutor` validates every call's arguments with
+`ToolInputValidator` (after its required-parameter check, whose "Required parameter X not provided to tool call."
+message is kept), as `call_tool` does for every tool; each built-in tool also validates in its own `Execute` so a
+direct call is checked too.
 
 ## Behaviour notes
 

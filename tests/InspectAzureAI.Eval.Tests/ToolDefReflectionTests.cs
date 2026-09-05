@@ -156,7 +156,7 @@ public class ToolDefReflectionTests
         var result = await weather.Execute(new JsonObject { ["city"] = "Oslo", ["unit"] = "Fahrenheit" }, CancellationToken.None);
         var defaulted = await weather.Execute(new JsonObject { ["city"] = "Oslo" }, CancellationToken.None);
         var flag = await simple.Execute(new JsonObject { ["a"] = 1 }, CancellationToken.None);
-        var record = await point.Execute(new JsonObject { ["data"] = new JsonObject { ["x"] = 3 } }, CancellationToken.None);
+        var record = await point.Execute(new JsonObject { ["data"] = new JsonObject { ["X"] = 3 } }, CancellationToken.None);
 
         Assert.Equal("Oslo: 21 Fahrenheit", result.Text);
         Assert.Equal("Oslo: 21 Celsius", defaulted.Text);
@@ -210,6 +210,37 @@ public class ToolDefReflectionTests
         var message = Assert.IsType<ChatMessageTool>(Assert.Single(result.Messages));
         Assert.Equal("Bergen: 21 Celsius", message.Text);
         Assert.Null(message.Error);
+    }
+
+    [Fact]
+    public async Task the_binder_does_not_coerce_string_numbers_or_case_variants()
+    {
+        var simple = ToolDef.FromMethod(SimpleFunc);
+
+        var stringNumber = await Assert.ThrowsAsync<ToolParsingError>(() => simple.Execute(new JsonObject { ["a"] = "5" }, CancellationToken.None));
+        var wrongCase = await Assert.ThrowsAsync<ToolParsingError>(() => simple.Execute(new JsonObject { ["A"] = 1 }, CancellationToken.None));
+
+        Assert.StartsWith("Unable to convert '\"5\"' to Int32", stringNumber.Message);
+        Assert.Equal("Required parameter a not provided to tool call.", wrongCase.Message);
+    }
+
+    [Fact]
+    public async Task the_executor_rejects_invalid_arguments_with_pythons_jsonschema_message()
+    {
+        var simple = ToolDef.FromMethod(SimpleFunc, name: "simple");
+        var point = ToolDef.FromMethod(PointFunc, name: "point");
+        var stringNumber = new ToolCall("c1", "simple", new JsonObject { ["a"] = "5" });
+        var nestedWrongCase = new ToolCall("c2", "point", new JsonObject { ["data"] = new JsonObject { ["x"] = 3 } });
+
+        var result = await ToolExecutor.ExecuteToolsAsync([new ChatMessageUser("hi"), new ChatMessageAssistant("", toolCalls: [stringNumber, nestedWrongCase])], [simple, point]);
+
+        Assert.Equal(2, result.Messages.Count);
+        var first = Assert.IsType<ChatMessageTool>(result.Messages[0]);
+        var second = Assert.IsType<ChatMessageTool>(result.Messages[1]);
+        Assert.Equal("parsing", first.Error!.Type);
+        Assert.Equal("Found 1 validation errors parsing tool input arguments:\n- '5' is not of type 'integer'", first.Error.Message);
+        Assert.Equal("parsing", second.Error!.Type);
+        Assert.Equal("Found 2 validation errors parsing tool input arguments:\n- Additional properties are not allowed ('x' was unexpected)\n- 'X' is a required property", second.Error.Message);
     }
 
     [Fact]

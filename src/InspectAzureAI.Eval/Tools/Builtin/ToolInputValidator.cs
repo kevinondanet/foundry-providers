@@ -10,9 +10,10 @@ namespace InspectAzureAI.Eval.Tools.Builtin;
 /// Port of <c>validate_tool_input</c> (<c>model/_call_tools.py</c>): checks a tool call's arguments against
 /// the tool's parameter schema before the tool runs and raises the same <see cref="ToolParsingError"/> message
 /// Python's jsonschema Draft 7 validator produces ("Found N validation errors parsing tool input arguments:"
-/// followed by one line per error). Python runs this for every tool; the .NET <see cref="ToolExecutor"/> only
-/// checks required parameters, so the built-in tools call it themselves. Covers the schema subset the
-/// built-in tools declare: type, enum, items, properties, required, additionalProperties and anyOf.
+/// followed by one line per error). <see cref="ToolExecutor"/> runs it for every tool after its required-parameter
+/// check, as <c>call_tool</c> does; the built-in tools also call it themselves so a direct <c>Execute</c> call is
+/// validated too. Covers the schema subset the built-in tools declare: type, enum, items, properties, required,
+/// additionalProperties and anyOf.
 /// </summary>
 internal static class ToolInputValidator
 {

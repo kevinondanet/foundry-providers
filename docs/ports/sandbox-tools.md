@@ -71,6 +71,10 @@ member, `OnExecCall`, so tests can script by the whole call (stdin included).
 7. The end-to-end Docker test is gated by `SandboxToolsDockerFact`: Docker must answer and the host-architecture
    artifact must be cached or `INSPECT_SWE_NETWORK_TESTS=1` set, since injecting requires the ~15 MB download
    (the download itself is covered by a `NetworkFact`).
+8. `bash_session(action="type_submit")` without `input` sends `"\n"` (just the return key). Python builds
+   `f"{input}\n"` from `input=None` and so types the literal text `None` before the return; that is an artefact of
+   the f-string rather than intended behaviour (the schema documents `input` as optional for `type_submit`), so it
+   is not mirrored. Transcripts of the two runtimes differ on that action's shell input.
 
 ## Not ported
 

@@ -200,6 +200,8 @@ public static class BashSession
                     AddTiming(parameters, waitSeconds);
                     break;
                 case "type_submit":
+                    // Deviation: Python interpolates a missing input as the literal text "None\n"; a bare newline
+                    // (just the return key) is sent instead, see docs/ports/sandbox-tools.md.
                     parameters["input"] = $"{input}\n";
                     AddTiming(parameters, waitSeconds);
                     break;
