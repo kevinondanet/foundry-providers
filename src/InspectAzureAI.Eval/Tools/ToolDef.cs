@@ -23,6 +23,12 @@ public sealed partial record ToolDef(string Name, string Description, ToolParams
     /// </summary>
     public Agents.AgentHandoff? Handoff { get; init; }
 
+    /// <summary>
+    /// Port of <c>ToolDef.viewer</c> (<c>@tool(viewer=...)</c>): a custom rendering of a call presented for
+    /// approval; null shows the call as a Python-style function call.
+    /// </summary>
+    public Approval.ToolCallViewer? Viewer { get; init; }
+
     /// <summary>Port of <c>ToolInfo</c> construction from a <c>ToolDef</c>: what the model sees.</summary>
     public ToolInfo ToInfo() => new(Name, Description) { Parameters = Parameters, Options = Options };
 }

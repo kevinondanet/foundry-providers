@@ -66,4 +66,7 @@ public sealed record EvalTask
 
     /// <summary>Port of <c>Task.model_roles</c>: role name → a model name, a <c>Model</c>, or a list of these (eval-level roles override these per role).</summary>
     public IReadOnlyDictionary<string, object>? ModelRoles { get; init; }
+
+    /// <summary>Port of <c>Task.approval</c>: tool use approval policies for this task (an eval-level <c>EvalOptions.Approval</c> overrides them).</summary>
+    public Approval.ApprovalOption? Approval { get; init; }
 }

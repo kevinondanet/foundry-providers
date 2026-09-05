@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json.Nodes;
+using InspectAzureAI.Eval.Approval;
 using InspectAzureAI.Eval.Context;
 using InspectAzureAI.Eval.Sandbox;
 using InspectAzureAI.Provider.Core;
@@ -20,17 +21,25 @@ public static class ToolExecutor
 {
     public const int DefaultMaxOutput = 16 * 1024;
 
-    /// <summary>Ports execute_tools: acts only when messages[^1] is a ChatMessageAssistant with tool calls. Returns the ChatMessageTool messages (one per call, in call order).</summary>
+    /// <summary>
+    /// Ports execute_tools: acts only when messages[^1] is a ChatMessageAssistant with tool calls. Returns the
+    /// ChatMessageTool messages (one per call, in call order). <paramref name="approval"/> (Python's <c>approval</c>
+    /// parameter) temporarily replaces the ambient approval policies for the duration of the call; null or empty
+    /// leaves them as they are.
+    /// </summary>
     public static async Task<ExecuteToolsResult> ExecuteToolsAsync(
         IReadOnlyList<ChatMessage> messages,
         IReadOnlyList<ToolDef> tools,
         int? maxOutput = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IReadOnlyList<ApprovalPolicy>? approval = null)
     {
         if (messages.Count == 0 || messages[^1] is not ChatMessageAssistant { ToolCalls: { Count: > 0 } toolCalls })
         {
             return new ExecuteToolsResult([]);
         }
+
+        using var approvalScope = ToolApproval.BeginIfAny(approval);
 
         var results = new ChatMessageTool[toolCalls.Count];
         var extras = new IReadOnlyList<ChatMessage>?[toolCalls.Count];
@@ -126,9 +135,21 @@ public static class ToolExecutor
             }
             else
             {
+                // Python's call_tool applies the approver before validating the arguments; a "modify" decision
+                // rebinds only the call the tool receives, the tool message and event keep the model's own call.
+                var assistantText = conversation[^1] is ChatMessageAssistant assistant ? assistant.Text : "";
+                var (approved, approval) = await ToolApproval.ApplyAsync(assistantText, call, tool.Viewer, conversation, cancellationToken).ConfigureAwait(false);
+                if (!approved)
+                {
+                    throw approval?.Decision == ApprovalDecision.Terminate
+                        ? new TerminateSampleException("Tool call approver requested termination.")
+                        : new ToolApprovalError(approval?.Explanation);
+                }
+
+                var executeCall = approval?.Modified ?? call;
                 foreach (var required in tool.Parameters.Required)
                 {
-                    if (!call.Arguments.ContainsKey(required))
+                    if (!executeCall.Arguments.ContainsKey(required))
                     {
                         throw new ToolParsingError($"Required parameter {required} not provided to tool call.");
                     }
@@ -136,7 +157,7 @@ public static class ToolExecutor
 
                 if (tool.Handoff is { } handoff)
                 {
-                    var handoffResult = await Agents.Agents.ExecuteHandoffAsync(handoff, call, conversation, cancellationToken).ConfigureAwait(false);
+                    var handoffResult = await Agents.Agents.ExecuteHandoffAsync(handoff, executeCall, conversation, cancellationToken).ConfigureAwait(false);
                     result = handoffResult.Result;
                     extra = handoffResult.Messages;
                     output = handoffResult.Output;
@@ -144,7 +165,7 @@ public static class ToolExecutor
                 }
                 else
                 {
-                    result = await tool.Execute(call.Arguments, cancellationToken).ConfigureAwait(false) ?? ToolResult.Empty;
+                    result = await tool.Execute(executeCall.Arguments, cancellationToken).ConfigureAwait(false) ?? ToolResult.Empty;
                 }
             }
         }
@@ -200,6 +221,10 @@ public static class ToolExecutor
         catch (ToolParsingError ex)
         {
             error = new ToolCallError("parsing", ex.Message);
+        }
+        catch (ToolApprovalError ex)
+        {
+            error = new ToolCallError("approval", ex.Message);
         }
         catch (ToolError ex)
         {

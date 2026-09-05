@@ -68,4 +68,11 @@ public sealed record EvalOptions
     /// scorers look them up with <c>ModelRoles.GetModel(role, ...)</c>.
     /// </summary>
     public IReadOnlyDictionary<string, object>? ModelRoles { get; init; }
+
+    /// <summary>
+    /// Port of <c>approval</c>: tool use approval policies — a policy file path, a registered approver name
+    /// (applied to every tool), a list of <c>ApprovalPolicy</c>, or an <c>ApprovalPolicyConfig</c>. Overrides
+    /// the task's own <c>Approval</c>; unset defers to the task, and no policy at all means every call runs.
+    /// </summary>
+    public Approval.ApprovalOption? Approval { get; init; }
 }

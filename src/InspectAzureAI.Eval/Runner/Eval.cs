@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Security.Cryptography;
+using InspectAzureAI.Eval.Approval;
 using InspectAzureAI.Eval.Concurrency;
 using InspectAzureAI.Eval.Context;
 using InspectAzureAI.Eval.Dataset;
@@ -46,6 +47,9 @@ public static class Eval
         var reporter = options.Reporter;
         var model = EvalModel(task, options);
         using var modelRoles = ModelRoles.Begin(ModelRoles.Merge(ModelRoles.Resolve(task.ModelRoles), ModelRoles.Resolve(options.ModelRoles)));
+        // Python: the eval-level policy replaces the task's (run.py), and init_tool_approval installs it (or none) for every sample
+        var approval = (options.Approval ?? task.Approval)?.Resolve();
+        using var approvalScope = ToolApproval.Init(approval);
         var samples = ResolveSamples(task, options, reporter);
         var epochs = options.Epochs ?? task.Epochs?.Count ?? 1;
         var failOnError = options.FailOnError ?? task.FailOnError;
@@ -103,6 +107,7 @@ public static class Eval
                 WorkingLimit = (int?)workingLimit?.TotalSeconds,
                 MaxSamples = options.MaxSamples,
                 SandboxCleanup = options.Cleanup,
+                Approval = approval is { Count: > 0 } ? ApprovalPolicies.ToConfig(approval).ToJson() : null,
             },
         };
 

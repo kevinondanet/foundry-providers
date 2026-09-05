@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using InspectAzureAI.Eval.Approval;
 using InspectAzureAI.Eval.Context;
 using InspectAzureAI.Eval.Scorers;
 using InspectAzureAI.Eval.Tools;
@@ -44,6 +45,7 @@ public static partial class Agents
     /// Python's <c>truncation</c>: null is "disabled"; <see cref="MessageFilters.TrimMessages"/> is "auto"; any
     /// other filter is applied to the conversation on a context window overflow.
     /// </param>
+    /// <param name="approval">Python's <c>approval</c>: approval policies for tool calls within this agent, temporarily replacing any active policies for the duration of each tool execution.</param>
     /// <returns>The ReAct agent.</returns>
     public static AgentDef React(
         string? name = null,
@@ -58,7 +60,8 @@ public static partial class Agents
         AgentContinue? onContinueFn = null,
         int? retryRefusals = null,
         CreateAgentCompaction? compaction = null,
-        MessageFilter? truncation = null)
+        MessageFilter? truncation = null,
+        IReadOnlyList<ApprovalPolicy>? approval = null)
     {
         if (model is not null && modelAgent is not null)
         {
@@ -100,7 +103,7 @@ public static partial class Agents
         }
 
         var systemMessage = PromptToSystemMessage(resolvedPrompt, resolvedTools, submitTool?.Name);
-        var loop = new ReactLoop(resolvedTools, systemMessage, model, modelAgent, resolvedAttempts, resolvedSubmit, submitTool, onContinue, onContinueFn, retryRefusals, compaction, truncation);
+        var loop = new ReactLoop(resolvedTools, systemMessage, model, modelAgent, resolvedAttempts, resolvedSubmit, submitTool, onContinue, onContinueFn, retryRefusals, compaction, truncation, approval);
         return new AgentDef(name ?? ReactName, description ?? "", loop.ExecuteAsync);
     }
 
@@ -232,7 +235,8 @@ public static partial class Agents
         AgentContinue? onContinueFn,
         int? retryRefusals,
         CreateAgentCompaction? compaction,
-        MessageFilter? truncation)
+        MessageFilter? truncation,
+        IReadOnlyList<ApprovalPolicy>? approval)
     {
         private const int MaxConsecutiveContentFilter = 3;
 
@@ -282,7 +286,7 @@ public static partial class Agents
 
                 if (HasToolCalls(state))
                 {
-                    var results = await ToolExecutor.ExecuteToolsAsync(state.Messages, tools, cancellationToken: cancellationToken).ConfigureAwait(false);
+                    var results = await ToolExecutor.ExecuteToolsAsync(state.Messages, tools, cancellationToken: cancellationToken, approval: approval).ConfigureAwait(false);
                     state.Messages.AddRange(results.Messages);
                     if (results.Output is { } output)
                     {
