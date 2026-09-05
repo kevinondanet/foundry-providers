@@ -64,5 +64,7 @@ finds the written span) and `eval_results` over the same sample scores gives the
   (Python raises from the registry). The runner leaves `epochs_reducer` unset when a custom (unnamed) reducer is used.
 - `ScoreLogs.ComputeResults` applies an explicit metric list to every scorer (Python's `score_async` does; its
   `recompute_metrics` uses it only for scores without a scorer, which is idempotent for Python-written headers).
+- An explicit `epochsReducer` is not validated against the log's epoch count: Python's `score_async` does not call
+  `validate_reducer` either (only `eval` does, which `Eval.RunAsync` mirrors).
 - Timelines are not restored into the transcript (the port's `Transcript` has none); `scorer_args` on score events
   is null.

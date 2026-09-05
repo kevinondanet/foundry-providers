@@ -188,7 +188,11 @@ internal static class EvalResultsBuilder
             .ToList();
     }
 
-    /// <summary>Port of <c>scorer_for_metrics</c>: metrics over the scored samples; a dict-valued metric expands per key, a list per index.</summary>
+    /// <summary>
+    /// Port of <c>scorer_for_metrics</c>: metrics over the scored samples; a dict-valued metric expands per key, a list
+    /// per index, each entry carrying the metric's name as its <c>group</c>. Python also records the metric's registry
+    /// params on every entry; <see cref="MetricDef"/> has none, so <c>params</c> stays empty.
+    /// </summary>
     private static EvalScore ScoreForMetrics(string scorerName, IReadOnlyList<SampleScore> scores, IReadOnlyList<MetricDef> metrics, string? reducerName)
     {
         var scored = scores.Where(s => !s.Score.IsUnscored).ToList();
@@ -204,7 +208,7 @@ internal static class EvalResultsBuilder
                     {
                         if (entryValue is not null)
                         {
-                            results[UniqueMetricKey(entryKey, results.Keys)] = new EvalMetric(entryKey, MetricValue(entryValue));
+                            results[UniqueMetricKey(entryKey, results.Keys)] = new EvalMetric(entryKey, MetricValue(entryValue)) { Group = metric.Name };
                         }
                     }
 
@@ -213,7 +217,7 @@ internal static class EvalResultsBuilder
                     for (var index = 0; index < list.Items.Count; index++)
                     {
                         var count = (index + 1).ToString(CultureInfo.InvariantCulture);
-                        results[UniqueMetricKey($"{key}-{count}", results.Keys)] = new EvalMetric(count, MetricValue(list.Items[index]));
+                        results[UniqueMetricKey($"{key}-{count}", results.Keys)] = new EvalMetric(count, MetricValue(list.Items[index])) { Group = metric.Name };
                     }
 
                     break;

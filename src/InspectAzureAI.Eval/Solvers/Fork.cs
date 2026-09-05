@@ -22,8 +22,8 @@ public static partial class Solvers
 
     /// <summary>
     /// Port of <c>fork(state, solvers)</c>: every solver gets its own copy of <paramref name="state"/> and they run in
-    /// parallel; the results are returned in the order of <paramref name="solvers"/>. The first failure propagates
-    /// once every branch has settled.
+    /// parallel; the results are returned in the order of <paramref name="solvers"/>. Like Python's <c>tg_collect</c>,
+    /// the first failure cancels the other branches and propagates once they have settled.
     /// </summary>
     public static async Task<IReadOnlyList<TaskState>> Fork(TaskState state, IReadOnlyList<Solver> solvers, Generate generate, CancellationToken cancellationToken = default)
     {
@@ -33,9 +33,9 @@ public static partial class Solvers
         var branches = solvers.Select(solver =>
         {
             ArgumentNullException.ThrowIfNull(solver, nameof(solvers));
-            return SolverSubtaskAsync(state, solver, generate, cancellationToken);
+            return (Func<CancellationToken, Task<TaskState>>)(ct => SolverSubtaskAsync(state, solver, generate, ct));
         }).ToArray();
-        return await Task.WhenAll(branches).ConfigureAwait(false);
+        return await TgCollect.RunAsync(branches, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>

@@ -1,3 +1,4 @@
+using System.Text.Json;
 using InspectAzureAI.Eval.Log;
 using InspectAzureAI.Eval.Runner;
 using InspectAzureAI.Eval.Scorers;
@@ -839,5 +840,40 @@ public class MetricPortTests
     public void python_float_repr_matches(double value, string expected)
     {
         Assert.Equal(expected, PythonText.FloatRepr(value));
+    }
+
+    // ---- results builder: metric groups -------------------------------------------------------------
+
+    [Fact]
+    public void dict_and_list_valued_metrics_carry_their_metric_name_as_group()
+    {
+        // Python scorer_for_metrics over scores [1, 0, 1, 1] with [accuracy(), ci(), lst()] where lst() returns [0.25, 0.75]
+        var lst = new MetricDef("lst", _ => new ScoreValue.List([0.25, 0.75]));
+        var scorer = Scorer("grade", Metrics.Accuracy(), Metrics.Ci(), lst);
+        var scores = Epochs("grade", (1, 1.0), (2, 0.0), (3, 1.0), (4, 1.0));
+
+        var metrics = Assert.Single(EvalResultsBuilder.BuildScores([scorer], ["grade"], scores, null, null)).Metrics;
+
+        Assert.Equal(["accuracy", "lower", "upper", "lst-1", "lst-2"], metrics.Keys);
+        Assert.Equal("accuracy", metrics["accuracy"].Name);
+        Assert.Null(metrics["accuracy"].Group);
+        Assert.Equal(0.75, metrics["accuracy"].Value);
+        Assert.Equal("lower", metrics["lower"].Name);
+        Assert.Equal("ci", metrics["lower"].Group);
+        Assert.Equal(-0.04561157632092616, metrics["lower"].Value, Tolerance);
+        Assert.Equal("upper", metrics["upper"].Name);
+        Assert.Equal("ci", metrics["upper"].Group);
+        Assert.Equal(1.5456115763209262, metrics["upper"].Value, Tolerance);
+        Assert.Equal("1", metrics["lst-1"].Name);
+        Assert.Equal("lst", metrics["lst-1"].Group);
+        Assert.Equal(0.25, metrics["lst-1"].Value);
+        Assert.Equal("2", metrics["lst-2"].Name);
+        Assert.Equal("lst", metrics["lst-2"].Group);
+        Assert.Equal(0.75, metrics["lst-2"].Value);
+
+        // the log writer emits the group (and omits it for a scalar metric, where Python writes null)
+        Assert.Contains("\"group\": \"ci\"", JsonSerializer.Serialize(metrics["upper"], EvalLogWriter.Options));
+        Assert.Contains("\"group\": \"lst\"", JsonSerializer.Serialize(metrics["lst-1"], EvalLogWriter.Options));
+        Assert.DoesNotContain("group", JsonSerializer.Serialize(metrics["accuracy"], EvalLogWriter.Options));
     }
 }

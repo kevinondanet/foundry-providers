@@ -1,3 +1,4 @@
+using InspectAzureAI.Eval.Context;
 using InspectAzureAI.Eval.Solvers;
 
 namespace InspectAzureAI.Eval.Scorers;
@@ -6,8 +7,8 @@ namespace InspectAzureAI.Eval.Scorers;
 public static partial class Scorers
 {
     /// <summary>
-    /// Port of <c>multi_scorer(scorers, reducer)</c>: runs every scorer concurrently and folds their scores with
-    /// <paramref name="reducer"/>. With no scorers (Python: every sub-scorer declined) the result is
+    /// Port of <c>multi_scorer(scorers, reducer)</c>: runs every scorer concurrently (the first failure cancels the
+    /// others, as with <c>tg_collect</c>) and folds their scores with <paramref name="reducer"/>. With no scorers (Python: every sub-scorer declined) the result is
     /// <c>Score.Unscored(reason: scoring_failed)</c>. The metrics are those of the first scorer, as in Python.
     /// </summary>
     public static ScorerDef MultiScorer(IReadOnlyList<ScorerDef> scorers, ScoreReducer reducer)
@@ -17,7 +18,8 @@ public static partial class Scorers
         var metrics = scorers.Count > 0 ? scorers[0].Metrics : [];
         return new("multi_scorer", async (state, target, cancellationToken) =>
         {
-            var results = await Task.WhenAll(scorers.Select(scorer => scorer.Score(state, target, cancellationToken))).ConfigureAwait(false);
+            var branches = scorers.Select(scorer => (Func<CancellationToken, Task<Score>>)(ct => scorer.Score(state, target, ct))).ToArray();
+            var results = await TgCollect.RunAsync(branches, cancellationToken).ConfigureAwait(false);
             var resolved = results.Where(score => score is not null).ToList();
             return resolved.Count == 0 ? Score.Unscored(reason: ScoreReason.ScoringFailed) : reducer(resolved);
         }, metrics);

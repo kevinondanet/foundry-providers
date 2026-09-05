@@ -46,7 +46,8 @@ the `randbelow` draws Python makes (`[0,1]` → `[2,1,0]`, `[1,1,0]` → `[2,0,3
   works outside a running sample (then without a span). Branches get a copy of the state whose `Store` is also the
   ambient `SampleContext.Store`, and run under a `subtask` span named `chain` for a chain and `fork` otherwise
   (Python uses the solver's registry name, which delegates do not have). No `SubtaskEvent` or `StateEvent` is
-  emitted — the port has no such event types yet.
+  emitted — the port has no such event types yet. Forking over several solvers mirrors `tg_collect` (`TgCollect`
+  in `Context/`): the first failing branch cancels the others and is rethrown once they have settled.
 - **`TaskState.Copy()`** copies the message list, metadata, tools, choices, scores and store *dictionary*;
   values inside them are shared (Python's `deepcopy` copies them too). Messages and outputs are immutable
   records, so that only matters for mutable metadata/store values.
