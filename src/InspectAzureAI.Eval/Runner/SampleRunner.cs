@@ -32,6 +32,12 @@ internal sealed record SampleAttempt(int RetryLimit, IReadOnlyList<EvalRetryErro
 {
     public static SampleAttempt First(int retryLimit) => new(retryLimit, [], null);
 
+    /// <summary>An attempt seeded with a previous task attempt's error history (Python's <c>previous_attempt_errors</c>), which is logged ahead of this run's own retries but never counts against its budget.</summary>
+    public static SampleAttempt First(int retryLimit, IReadOnlyList<EvalRetryError> priorErrors) => new(retryLimit, [], null) { PriorErrors = priorErrors };
+
+    /// <summary>Errors carried from earlier task attempts (see <see cref="First(int, IReadOnlyList{EvalRetryError})"/>).</summary>
+    public IReadOnlyList<EvalRetryError> PriorErrors { get; init; } = [];
+
     /// <summary>1-based attempt number.</summary>
     public int Number => Errors.Count + 1;
 
@@ -40,7 +46,7 @@ internal sealed record SampleAttempt(int RetryLimit, IReadOnlyList<EvalRetryErro
     public int RetriesRemaining => RetryLimit - Errors.Count;
 
     /// <summary>The next attempt's state after an error-retry: the error appended, the uuid carried.</summary>
-    public SampleAttempt Advance(EvalRetryError error, string sampleUuid) => new(RetryLimit, [.. Errors, error], sampleUuid);
+    public SampleAttempt Advance(EvalRetryError error, string sampleUuid) => new(RetryLimit, [.. Errors, error], sampleUuid) { PriorErrors = PriorErrors };
 }
 
 /// <summary>
@@ -264,7 +270,7 @@ internal sealed class SampleRunner(
             WorkingTime = elapsed is { } working ? Math.Round((working - limits.WaitingTime).TotalSeconds, 3) : null,
             Uuid = state.Uuid,
             Error = error,
-            ErrorRetries = attempt.Errors,
+            ErrorRetries = attempt.PriorErrors.Count > 0 ? [.. attempt.PriorErrors, .. attempt.Errors] : attempt.Errors,
             Limit = limit,
         };
         return new SampleResult(evalSample, scores, exception, cancelled) { Retry = retry };

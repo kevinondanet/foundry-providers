@@ -64,6 +64,13 @@ public sealed record EvalTask
 
     public IReadOnlyDictionary<string, object?>? Metadata { get; init; }
 
+    /// <summary>
+    /// Port of the task args <c>@task</c> records (<c>ResolvedTask.task_args</c>): the arguments this task was
+    /// built with, written to the log as <c>task_args</c> and hashed into the eval-set task identifier, so two
+    /// tasks sharing a name are told apart by their args.
+    /// </summary>
+    public IReadOnlyDictionary<string, object?>? TaskArgs { get; init; }
+
     /// <summary>Port of <c>Task.model_roles</c>: role name → a model name, a <c>Model</c>, or a list of these (eval-level roles override these per role).</summary>
     public IReadOnlyDictionary<string, object>? ModelRoles { get; init; }
 }

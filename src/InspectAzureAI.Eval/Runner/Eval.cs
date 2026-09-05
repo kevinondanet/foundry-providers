@@ -7,7 +7,9 @@ using InspectAzureAI.Eval.Log;
 using InspectAzureAI.Eval.Log.EvalFormat;
 using InspectAzureAI.Eval.Model;
 using InspectAzureAI.Eval.Model.Cost;
+using InspectAzureAI.Eval.Runner.EvalSet;
 using InspectAzureAI.Eval.Sandbox;
+using InspectAzureAI.Eval.Scorers;
 using InspectAzureAI.Eval.Tasks;
 using InspectAzureAI.Provider.Core;
 using InspectAzureAI.Provider.Util;
@@ -46,7 +48,8 @@ public static class Eval
 
         var reporter = options.Reporter;
         var model = EvalModel(task, options);
-        using var modelRoles = ModelRoles.Begin(ModelRoles.Merge(ModelRoles.Resolve(task.ModelRoles), ModelRoles.Resolve(options.ModelRoles)));
+        var resolvedRoles = ModelRoles.Merge(ModelRoles.Resolve(task.ModelRoles), ModelRoles.Resolve(options.ModelRoles));
+        using var modelRoles = ModelRoles.Begin(resolvedRoles);
         var samples = ResolveSamples(task, options, reporter);
         var epochs = options.Epochs ?? task.Epochs?.Count ?? 1;
         var failOnError = options.FailOnError ?? task.FailOnError;
@@ -73,11 +76,14 @@ public static class Eval
 
         var spec = new EvalSpec
         {
+            EvalSetId = options.EvalSetId,
             RunId = ShortUuid.Generate(),
-            TaskId = ShortUuid.Generate(),
+            TaskId = options.TaskId ?? ShortUuid.Generate(),
             Created = startedAt,
             Task = task.Name,
             TaskVersion = task.Version,
+            TaskArgs = task.TaskArgs ?? new Dictionary<string, object?>(StringComparer.Ordinal),
+            TaskArgsPassed = task.TaskArgs,
             Dataset = new EvalDataset
             {
                 Name = task.Dataset.Name,
@@ -88,11 +94,14 @@ public static class Eval
             },
             Sandbox = task.Sandbox,
             Model = model.Name,
+            ModelGenerateConfig = options.Model.Config,
+            ModelRoles = ModelRolesConfig.ToConfig(resolvedRoles),
             Config = new EvalConfig
             {
                 Limit = options.Limit,
                 SampleId = options.SampleIds,
                 Epochs = epochs,
+                EpochsReducer = EvalSetLogs.EpochsReducerNames(task.Epochs),
                 FailOnError = failOnError,
                 ContinueOnFail = continueOnFail,
                 RetryOnError = retryOnError,
@@ -119,6 +128,7 @@ public static class Eval
         var flushBuffer = recorder.DefaultLogBuffer(totalSamples, highThroughput: false);
         var pendingFlush = 0;
         var results = new SampleResult?[totalSamples];
+        var reused = new bool[totalSamples];
         var earlyStops = new EarlyStop?[totalSamples];
         // Python: continue_on_fail never aborts mid-run; the fail_on_error policy is applied again at the end
         var errorHandler = new SampleErrorHandler(continueOnFail == true ? FailOnError.Never : failOnError, totalSamples);
@@ -178,6 +188,12 @@ public static class Eval
             }
         }
 
+        if (options.SampleSource is { } sampleSource
+            && (cancellationToken.IsCancellationRequested || failure is not null || SampleErrorHandler.ShouldEvalFail(errorHandler.ErrorCount, totalSamples, failOnError)))
+        {
+            CarryForwardUnloggedSamples(sampleSource, samples, epochs, results, reused);
+        }
+
         var completed = results.OfType<SampleResult>().ToList();
         var evalSamples = completed.Select(result => result.Sample).ToList();
         var status = EvalStatus.Success;
@@ -217,6 +233,7 @@ public static class Eval
         {
             Status = status,
             Eval = spec,
+            Plan = new EvalPlan { Config = task.Config.Merge(options.Model.Config) },
             Results = new EvalResults
             {
                 TotalSamples = totalSamples,
@@ -228,7 +245,7 @@ public static class Eval
             {
                 StartedAt = startedAt,
                 CompletedAt = DateTimeOffset.UtcNow,
-                ModelUsage = AggregateUsage(evalSamples),
+                ModelUsage = CumulativeUsage(options.InitialModelUsage, results.Where((result, index) => result is not null && !reused[index]).Select(result => result!.Sample)),
                 ConnectionLimitHistory = Concurrency.AdaptiveControllers().SelectMany(controller => controller.History).ToArray(),
             },
             Error = error,
@@ -261,6 +278,26 @@ public static class Eval
         async Task RunSampleAsync(int index, Sample sample, SandboxSpec? sandbox, int epoch)
         {
             var attempt = SampleAttempt.First(retryOnError ?? 0);
+            // the prior attempt's record, consulted before the semaphore as in Python: a clean one is reused as
+            // logged, an errored one seeds this run's error_retries (task/run.py run_sample)
+            switch (options.SampleSource?.Lookup(sample.Id!, epoch))
+            {
+                case PreviousSample.Reusable reusable:
+                    var reusedResult = ReusedSampleResult(reusable.Sample);
+                    results[index] = reusedResult;
+                    reused[index] = true;
+                    reporter?.SampleCompleted(reusable.Sample);
+                    if (earlyStopping is not null)
+                    {
+                        await earlyStopping.CompleteSampleAsync(sample.Id!, epoch, reusedResult.Scores, abort.Token).ConfigureAwait(false);
+                    }
+
+                    return;
+                case PreviousSample.Errored errored:
+                    attempt = SampleAttempt.First(retryOnError ?? 0, errored.ErrorRetries);
+                    break;
+            }
+
             while (true)
             {
                 ConcurrencyLease lease;
@@ -412,6 +449,67 @@ public static class Eval
         }
 
         return usage;
+    }
+
+    /// <summary>Port of <c>init_model_usage(initial_model_usage)</c>: the previous attempt's totals (which already cover the samples reused from it) plus the usage of this attempt's own runs.</summary>
+    private static Dictionary<string, ModelUsage> CumulativeUsage(IReadOnlyDictionary<string, ModelUsage>? initial, IEnumerable<EvalSample> samples)
+    {
+        var usage = new Dictionary<string, ModelUsage>(StringComparer.Ordinal);
+        foreach (var (name, prior) in initial ?? new Dictionary<string, ModelUsage>(StringComparer.Ordinal))
+        {
+            usage[name] = prior;
+        }
+
+        foreach (var (name, added) in AggregateUsage(samples))
+        {
+            usage[name] = usage.TryGetValue(name, out var existing) ? existing + added : added;
+        }
+
+        return usage;
+    }
+
+    /// <summary>A prior attempt's record taken as this run's result: the sample as logged, with its scores as <see cref="SampleScore"/>s (Python's <c>scores_as_logged</c>); an errored record contributes no scores.</summary>
+    private static SampleResult ReusedSampleResult(EvalSample sample)
+    {
+        var scores = new Dictionary<string, SampleScore>(StringComparer.Ordinal);
+        if (sample.Error is null && sample.Scores is { } logged)
+        {
+            foreach (var (name, score) in logged)
+            {
+                scores[name] = new SampleScore(score, sample.Id, sample.Metadata, name);
+            }
+        }
+
+        return new SampleResult(sample, scores, null, false);
+    }
+
+    /// <summary>
+    /// Port of <c>carry_forward_unlogged_samples</c>: on a non-success finish, a planned sample that errored in the
+    /// previous attempt but never ran in this one (a sibling's failure stopped the run first) is re-logged from the
+    /// previous record, so the next attempt's sample source still sees its error history.
+    /// </summary>
+    private static void CarryForwardUnloggedSamples(EvalSampleSource source, IReadOnlyList<Sample> samples, int epochs, SampleResult?[] results, bool[] reused)
+    {
+        var positions = new Dictionary<string, int>(StringComparer.Ordinal);
+        for (var i = 0; i < samples.Count; i++)
+        {
+            positions[SampleIdKey(samples[i].Id)] = i;
+        }
+
+        foreach (var (id, epoch) in source.ErrorHistoryIds().OrderBy(candidate => IdText(candidate.Id), StringComparer.Ordinal).ThenBy(candidate => candidate.Epoch))
+        {
+            if (epoch < 1 || epoch > epochs || !positions.TryGetValue(SampleIdKey(id), out var position))
+            {
+                continue;
+            }
+
+            var index = position * epochs + epoch - 1;
+            if (results[index] is null && source.Lookup(id, epoch) is PreviousSample.Errored previous)
+            {
+                results[index] = ReusedSampleResult(previous.Sample);
+                reused[index] = true;
+            }
+        }
     }
 
     /// <summary>Port of the log file naming of <c>_eval/eval.py</c>: <c>&lt;local time&gt;_&lt;task&gt;_&lt;id&gt;</c> plus the format's extension, with a filename-safe task name.</summary>
