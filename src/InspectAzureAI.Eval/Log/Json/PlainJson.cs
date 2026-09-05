@@ -28,13 +28,58 @@ internal static class PlainJson
         JsonValueKind.Null or JsonValueKind.Undefined => null,
         JsonValueKind.True => true,
         JsonValueKind.False => false,
-        JsonValueKind.String => element.GetString(),
+        // a non-finite sentinel left by PythonJsonFormat.SanitizeNonFinite is the double it stood for
+        JsonValueKind.String => element.GetString() is var text && PythonJsonFormat.IsSentinel(text) && PythonJsonFormat.TryNonFinite(text, out var nonFinite) ? nonFinite : text,
         // box each branch separately: a shared ternary would promote everything to double
         JsonValueKind.Number => element.TryGetInt32(out var i) ? i : element.TryGetInt64(out var l) ? (object)l : element.GetDouble(),
         JsonValueKind.Array => element.EnumerateArray().Select(ToObject).ToList(),
         JsonValueKind.Object => element.EnumerateObject().ToDictionary(p => p.Name, p => ToObject(p.Value), StringComparer.Ordinal),
         _ => throw new JsonException($"Unsupported JSON value kind {element.ValueKind}."),
     };
+
+    /// <summary>Python <c>==</c> over plain values: numbers compare by value across int/long/double, lists and dictionaries element-wise.</summary>
+    public static bool ValueEquals(object? a, object? b)
+    {
+        switch (a, b)
+        {
+            case (null, null):
+                return true;
+            case (null, _) or (_, null):
+                return false;
+            case (bool x, bool y):
+                return x == y;
+            case (bool, _) or (_, bool):
+                return false;
+            case (string x, string y):
+                return string.Equals(x, y, StringComparison.Ordinal);
+            case (System.Collections.IDictionary x, System.Collections.IDictionary y):
+                if (x.Count != y.Count)
+                {
+                    return false;
+                }
+
+                foreach (System.Collections.DictionaryEntry entry in x)
+                {
+                    if (!y.Contains(entry.Key) || !ValueEquals(entry.Value, y[entry.Key]))
+                    {
+                        return false;
+                    }
+                }
+
+                return true;
+            case (System.Collections.IEnumerable x, System.Collections.IEnumerable y) when a is not string && b is not string:
+                return x.Cast<object?>().SequenceEqual(y.Cast<object?>(), EqualityComparer<object?>.Create(ValueEquals, _ => 0));
+            default:
+                if (IsNumber(a) && IsNumber(b))
+                {
+                    return Convert.ToDouble(a, System.Globalization.CultureInfo.InvariantCulture) == Convert.ToDouble(b, System.Globalization.CultureInfo.InvariantCulture);
+                }
+
+                return a.Equals(b);
+        }
+    }
+
+    private static bool IsNumber(object value) => value is int or long or double or float or decimal or short or byte;
 
     private static object? ToScalar(JsonValue value)
     {
@@ -60,7 +105,7 @@ internal static class PlainJson
 
         if (value.TryGetValue<string>(out var s))
         {
-            return s;
+            return PythonJsonFormat.IsSentinel(s) && PythonJsonFormat.TryNonFinite(s, out var nonFinite) ? nonFinite : s;
         }
 
         if (value.TryGetValue<JsonElement>(out var element))

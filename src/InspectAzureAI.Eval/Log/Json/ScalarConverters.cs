@@ -6,33 +6,18 @@ using InspectAzureAI.Provider.Core;
 
 namespace InspectAzureAI.Eval.Log.Json;
 
-/// <summary>Writes NaN / ±Infinity as <c>null</c> (JSON has no constants for them) and reads <c>null</c> back as NaN.</summary>
-internal sealed class NonFiniteDoubleConverter : JsonConverter<double>
-{
-    public override bool HandleNull => true;
-
-    public override double Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
-        reader.TokenType == JsonTokenType.Null ? double.NaN : reader.GetDouble();
-
-    public override void Write(Utf8JsonWriter writer, double value, JsonSerializerOptions options)
-    {
-        if (double.IsFinite(value))
-        {
-            writer.WriteNumberValue(value);
-        }
-        else
-        {
-            writer.WriteNullValue();
-        }
-    }
-}
-
 /// <summary>Port of the Python <c>StopReason</c> literal wire names ("stop", "max_tokens", ...).</summary>
 internal sealed class StopReasonConverter : JsonConverter<StopReason>
 {
     public override StopReason Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
     {
         var text = reader.GetString();
+        // Python's ChatCompletionChoice validator migrates the legacy "length" value
+        if (text == "length")
+        {
+            return StopReason.MaxTokens;
+        }
+
         foreach (var reason in Enum.GetValues<StopReason>())
         {
             if (reason.ToWire() == text)

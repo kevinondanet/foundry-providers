@@ -1,0 +1,1121 @@
+{
+  "version": 2,
+  "status": "success",
+  "eval": {
+    "eval_id": "eval-1",
+    "run_id": "run1",
+    "created": "2026-09-04T10:30:00+00:00",
+    "task": "hello-swe",
+    "task_id": "task1",
+    "task_version": 0,
+    "task_file": "tasks/hello.py",
+    "task_attribs": {},
+    "task_args": {
+      "difficulty": "easy"
+    },
+    "task_args_passed": {
+      "difficulty": "easy"
+    },
+    "solver": "generate",
+    "solver_args": {},
+    "solver_args_passed": {},
+    "tags": [
+      "needs_qa",
+      "demo"
+    ],
+    "dataset": {
+      "name": "hello",
+      "location": "/tasks/hello/dataset.json",
+      "samples": 2,
+      "sample_ids": [
+        1,
+        "s2"
+      ],
+      "shuffled": false
+    },
+    "sandbox": {
+      "type": "docker",
+      "config": "Dockerfile"
+    },
+    "model": "gpt",
+    "model_generate_config": {
+      "max_tokens": 100
+    },
+    "model_base_url": "https://example.invalid",
+    "model_args": {
+      "k": "v"
+    },
+    "config": {
+      "limit": 2,
+      "epochs": 2,
+      "fail_on_error": false,
+      "message_limit": 10,
+      "token_limit": 1000,
+      "time_limit": 300,
+      "max_samples": 4,
+      "sandbox_cleanup": true
+    },
+    "revision": {
+      "type": "git",
+      "origin": "https://example.invalid/repo.git",
+      "commit": "abc123",
+      "dirty": false
+    },
+    "packages": {
+      "inspect_ai": "0.3.262"
+    },
+    "metadata": {
+      "owner": "kev"
+    }
+  },
+  "plan": {
+    "name": "plan",
+    "steps": [
+      {
+        "solver": "generate",
+        "params": {
+          "tool_calls": "loop"
+        },
+        "params_passed": {
+          "tool_calls": "loop"
+        }
+      }
+    ],
+    "config": {
+      "temperature": 0.2
+    }
+  },
+  "results": {
+    "total_samples": 2,
+    "completed_samples": 1,
+    "scores": [
+      {
+        "name": "match",
+        "scorer": "match",
+        "reducer": "mean",
+        "scored_samples": 1,
+        "unscored_samples": 1,
+        "params": {
+          "location": "any"
+        },
+        "metrics": {
+          "accuracy": {
+            "name": "accuracy",
+            "value": 1.0,
+            "params": {}
+          },
+          "stderr": {
+            "name": "stderr",
+            "value": NaN,
+            "params": {
+              "cluster": null
+            }
+          },
+          "inf": {
+            "name": "inf",
+            "value": Infinity,
+            "params": {}
+          }
+        }
+      }
+    ]
+  },
+  "stats": {
+    "started_at": "2026-09-04T10:30:00+00:00",
+    "completed_at": "2026-09-04T10:30:05+00:00",
+    "model_usage": {
+      "gpt": {
+        "input_tokens": 10,
+        "output_tokens": 5,
+        "total_tokens": 15
+      }
+    },
+    "role_usage": {},
+    "connection_limit_history": []
+  },
+  "invalidated": false,
+  "log_updates": [
+    {
+      "edits": [
+        {
+          "type": "tags",
+          "tags_add": [
+            "qa_passed"
+          ],
+          "tags_remove": [
+            "needs_qa"
+          ]
+        },
+        {
+          "type": "metadata",
+          "metadata_set": {
+            "reviewer": "alice"
+          },
+          "metadata_remove": [
+            "owner"
+          ]
+        }
+      ],
+      "provenance": {
+        "timestamp": "2026-09-04T10:30:30Z",
+        "author": "alice",
+        "reason": "QA complete",
+        "metadata": {}
+      }
+    }
+  ],
+  "tags": [
+    "demo",
+    "qa_passed"
+  ],
+  "metadata": {
+    "reviewer": "alice"
+  },
+  "samples": [
+    {
+      "id": 1,
+      "epoch": 1,
+      "input": "What is 2+2?",
+      "target": "4",
+      "sandbox": {
+        "type": "docker",
+        "config": "Dockerfile"
+      },
+      "files": [
+        "hello.txt"
+      ],
+      "setup": "echo hi",
+      "messages": [
+        {
+          "id": "m1",
+          "content": "Be helpful.",
+          "source": "input",
+          "role": "system"
+        },
+        {
+          "id": "m2",
+          "content": "What is 2+2?",
+          "source": "input",
+          "role": "user"
+        },
+        {
+          "id": "m3",
+          "content": [
+            {
+              "type": "reasoning",
+              "reasoning": "let me look",
+              "signature": "sig",
+              "redacted": false
+            },
+            {
+              "type": "text",
+              "text": "Listing files."
+            }
+          ],
+          "source": "generate",
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "id": "call_1",
+              "function": "bash",
+              "arguments": {
+                "cmd": "ls"
+              },
+              "type": "function"
+            }
+          ],
+          "model": "gpt"
+        },
+        {
+          "id": "m4",
+          "content": "bash: not found",
+          "role": "tool",
+          "tool_call_id": "call_1",
+          "function": "bash",
+          "error": {
+            "type": "unknown",
+            "message": "bash: not found"
+          }
+        },
+        {
+          "id": "m5",
+          "content": "The answer is 4.",
+          "source": "generate",
+          "role": "assistant",
+          "model": "gpt"
+        }
+      ],
+      "output": {
+        "model": "gpt",
+        "choices": [
+          {
+            "message": {
+              "id": "m5",
+              "content": "The answer is 4.",
+              "source": "generate",
+              "role": "assistant",
+              "model": "gpt"
+            },
+            "stop_reason": "stop"
+          }
+        ],
+        "completion": "The answer is 4.",
+        "usage": {
+          "input_tokens": 10,
+          "output_tokens": 5,
+          "total_tokens": 15,
+          "input_tokens_cache_read": 2
+        },
+        "time": 0.5
+      },
+      "scores": {
+        "match": {
+          "value": "C",
+          "answer": "4",
+          "explanation": "matched",
+          "metadata": {
+            "strict": true
+          },
+          "history": []
+        },
+        "num": {
+          "value": 0.5,
+          "history": []
+        },
+        "flag": {
+          "value": true,
+          "history": []
+        },
+        "list": {
+          "value": [
+            1,
+            "a",
+            false
+          ],
+          "history": []
+        },
+        "dict": {
+          "value": {
+            "a": 1,
+            "b": null,
+            "c": "x"
+          },
+          "history": []
+        },
+        "unscored": {
+          "value": NaN,
+          "reason": "no_response",
+          "history": []
+        },
+        "listnan": {
+          "value": [
+            1.0,
+            NaN
+          ],
+          "history": []
+        },
+        "dictnan": {
+          "value": {
+            "a": NaN,
+            "b": Infinity,
+            "c": -Infinity
+          },
+          "history": []
+        }
+      },
+      "metadata": {
+        "check": "python3 -c 'print(4)'",
+        "difficulty": 1,
+        "tags": [
+          "a",
+          2
+        ],
+        "unicode": "héllo ✓ 日本"
+      },
+      "store": {
+        "mini_swe_agent_exit_status": "Submitted",
+        "steps": 3,
+        "nested": {
+          "k": null
+        }
+      },
+      "events": [
+        {
+          "uuid": "ev-00",
+          "timestamp": "2026-09-04T10:30:00+00:00",
+          "working_start": 0.0,
+          "event": "sample_init",
+          "sample": {
+            "input": "What is 2+2?",
+            "target": "4",
+            "id": 1,
+            "metadata": {
+              "difficulty": 1
+            }
+          },
+          "state": {
+            "messages": [],
+            "store": {}
+          }
+        },
+        {
+          "uuid": "ev-01",
+          "timestamp": "2026-09-04T10:30:01+00:00",
+          "working_start": 1.0,
+          "event": "span_begin",
+          "id": "span-solver",
+          "type": "solver",
+          "name": "generate"
+        },
+        {
+          "uuid": "ev-02",
+          "span_id": "span-solver",
+          "timestamp": "2026-09-04T10:30:02+00:00",
+          "working_start": 2.0,
+          "event": "step",
+          "action": "begin",
+          "type": "solver",
+          "name": "generate"
+        },
+        {
+          "uuid": "ev-03",
+          "span_id": "span-solver",
+          "timestamp": "2026-09-04T10:30:03+00:00",
+          "working_start": 3.0,
+          "event": "state",
+          "changes": [
+            {
+              "op": "add",
+              "path": "/messages/0",
+              "value": {
+                "role": "user",
+                "content": "What is 2+2?"
+              }
+            },
+            {
+              "op": "replace",
+              "path": "/output/completion",
+              "value": "4",
+              "replaced": ""
+            }
+          ]
+        },
+        {
+          "uuid": "ev-04",
+          "span_id": "span-solver",
+          "timestamp": "2026-09-04T10:30:04+00:00",
+          "working_start": 4.0,
+          "event": "store",
+          "changes": [
+            {
+              "op": "add",
+              "path": "/steps",
+              "value": 3
+            }
+          ]
+        },
+        {
+          "uuid": "ev-05",
+          "span_id": "span-solver",
+          "timestamp": "2026-09-04T10:30:05+00:00",
+          "working_start": 5.0,
+          "event": "model",
+          "model": "gpt",
+          "role": "grader",
+          "input": [
+            {
+              "id": "m2",
+              "content": "What is 2+2?",
+              "source": "input",
+              "role": "user"
+            }
+          ],
+          "tools": [
+            {
+              "name": "bash",
+              "description": "Use this function to execute bash commands.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "cmd": {
+                    "type": "string",
+                    "description": "The bash command to execute."
+                  }
+                },
+                "required": [
+                  "cmd"
+                ],
+                "additionalProperties": false
+              }
+            }
+          ],
+          "tool_choice": "auto",
+          "config": {
+            "max_tokens": 100,
+            "temperature": 0.2
+          },
+          "output": {
+            "model": "gpt",
+            "choices": [
+              {
+                "message": {
+                  "id": "m5",
+                  "content": "The answer is 4.",
+                  "source": "generate",
+                  "role": "assistant",
+                  "model": "gpt"
+                },
+                "stop_reason": "stop"
+              }
+            ],
+            "completion": "The answer is 4.",
+            "usage": {
+              "input_tokens": 10,
+              "output_tokens": 5,
+              "total_tokens": 15,
+              "input_tokens_cache_read": 2
+            },
+            "time": 0.5
+          },
+          "retries": 0,
+          "call": {
+            "request": {
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "hi"
+                }
+              ]
+            },
+            "response": {
+              "id": "resp_1",
+              "usage": {
+                "total_tokens": 15
+              }
+            },
+            "time": 0.5
+          },
+          "completed": "2026-09-04T10:30:06+00:00",
+          "working_time": 0.5
+        },
+        {
+          "uuid": "ev-06",
+          "span_id": "span-solver",
+          "timestamp": "2026-09-04T10:30:06+00:00",
+          "working_start": 6.0,
+          "event": "model",
+          "model": "gpt",
+          "input": [],
+          "tools": [],
+          "tool_choice": "none",
+          "config": {},
+          "output": {
+            "model": "",
+            "choices": [],
+            "completion": ""
+          },
+          "retries": 1,
+          "error": "rate limited"
+        },
+        {
+          "uuid": "ev-07",
+          "span_id": "span-solver",
+          "timestamp": "2026-09-04T10:30:07+00:00",
+          "working_start": 7.0,
+          "event": "tool",
+          "type": "function",
+          "id": "call_1",
+          "function": "bash",
+          "arguments": {
+            "cmd": "ls"
+          },
+          "view": {
+            "title": "bash",
+            "format": "markdown",
+            "content": "```\nls\n```"
+          },
+          "result": "a.txt\nb.txt",
+          "truncated": [
+            20000,
+            16384
+          ],
+          "error": {
+            "type": "timeout",
+            "message": "Command timed out before completing."
+          },
+          "events": [],
+          "completed": "2026-09-04T10:30:08+00:00",
+          "working_time": 1.25,
+          "failed": true,
+          "message_id": "m4"
+        },
+        {
+          "uuid": "ev-08",
+          "span_id": "span-solver",
+          "timestamp": "2026-09-04T10:30:08+00:00",
+          "working_start": 8.0,
+          "event": "tool",
+          "type": "function",
+          "id": "call_2",
+          "function": "think",
+          "arguments": {},
+          "result": [
+            {
+              "type": "text",
+              "text": "thought"
+            }
+          ],
+          "events": [],
+          "completed": "2026-09-04T10:30:09+00:00",
+          "working_time": 0.1
+        },
+        {
+          "uuid": "ev-09",
+          "span_id": "span-solver",
+          "timestamp": "2026-09-04T10:30:09+00:00",
+          "working_start": 9.0,
+          "event": "approval",
+          "message": "run ls",
+          "call": {
+            "id": "call_1",
+            "function": "bash",
+            "arguments": {
+              "cmd": "ls"
+            },
+            "type": "function"
+          },
+          "view": {
+            "call": {
+              "format": "text",
+              "content": "ls"
+            }
+          },
+          "approver": "human",
+          "decision": "approve",
+          "explanation": "fine"
+        },
+        {
+          "uuid": "ev-10",
+          "span_id": "span-solver",
+          "timestamp": "2026-09-04T10:30:10+00:00",
+          "working_start": 10.0,
+          "event": "sandbox",
+          "action": "exec",
+          "cmd": "ls",
+          "options": {
+            "timeout": 30
+          },
+          "result": 0,
+          "output": "a.txt\nb.txt",
+          "completed": "2026-09-04T10:30:11+00:00"
+        },
+        {
+          "uuid": "ev-11",
+          "span_id": "span-solver",
+          "timestamp": "2026-09-04T10:30:11+00:00",
+          "working_start": 11.0,
+          "event": "sandbox",
+          "action": "write_file",
+          "file": "/tmp/x.txt",
+          "input": "hello"
+        },
+        {
+          "uuid": "ev-12",
+          "span_id": "span-solver",
+          "timestamp": "2026-09-04T10:30:12+00:00",
+          "working_start": 12.0,
+          "event": "subtask",
+          "name": "helper",
+          "type": "subtask",
+          "input": {
+            "x": 1
+          },
+          "result": {
+            "y": 2
+          },
+          "events": [],
+          "completed": "2026-09-04T10:30:13+00:00",
+          "working_time": 0.2
+        },
+        {
+          "uuid": "ev-13",
+          "span_id": "span-solver",
+          "timestamp": "2026-09-04T10:30:13+00:00",
+          "working_start": 13.0,
+          "event": "compaction",
+          "type": "summary",
+          "tokens_before": 1000,
+          "tokens_after": 200,
+          "source": "inspect"
+        },
+        {
+          "uuid": "ev-14",
+          "span_id": "span-solver",
+          "timestamp": "2026-09-04T10:30:14+00:00",
+          "working_start": 14.0,
+          "event": "logger",
+          "message": {
+            "name": "httpx",
+            "level": "info",
+            "message": "GET /x 200",
+            "created": 1757000000000.0,
+            "filename": "_client.py",
+            "module": "_client",
+            "lineno": 42
+          }
+        },
+        {
+          "uuid": "ev-15",
+          "span_id": "span-solver",
+          "timestamp": "2026-09-04T10:30:15+00:00",
+          "working_start": 15.0,
+          "event": "input",
+          "input": "yes",
+          "input_ansi": "\u001b[1myes\u001b[0m",
+          "message": "Continue?",
+          "fields": [
+            {
+              "name": "confirm",
+              "type": "boolean",
+              "description": "Proceed"
+            }
+          ],
+          "outcome": "accepted",
+          "content": {
+            "confirm": true
+          }
+        },
+        {
+          "uuid": "ev-16",
+          "span_id": "span-solver",
+          "timestamp": "2026-09-04T10:30:16+00:00",
+          "working_start": 16.0,
+          "event": "anchor",
+          "anchor_id": "anchor-1",
+          "source": "mod.fn"
+        },
+        {
+          "uuid": "ev-17",
+          "span_id": "span-solver",
+          "timestamp": "2026-09-04T10:30:17+00:00",
+          "working_start": 17.0,
+          "event": "branch",
+          "from_anchor": "anchor-1"
+        },
+        {
+          "checkpoint_id": 1,
+          "trigger": "time",
+          "turn": 1,
+          "created_at": "2026-09-04T10:30:18Z",
+          "duration_ms": 10,
+          "size_bytes": 1024,
+          "host": {
+            "snapshot_id": "snap-h",
+            "size_bytes": 1024,
+            "duration_ms": 10,
+            "additional_files": 1
+          },
+          "sandboxes": {
+            "default": {
+              "snapshot_id": "snap-s",
+              "size_bytes": 2048,
+              "duration_ms": 20,
+              "files": [
+                "/tmp/x.txt"
+              ]
+            }
+          },
+          "uuid": "ev-18",
+          "span_id": "span-solver",
+          "timestamp": "2026-09-04T10:30:18+00:00",
+          "working_start": 18.0,
+          "event": "checkpoint"
+        },
+        {
+          "uuid": "ev-19",
+          "span_id": "span-solver",
+          "timestamp": "2026-09-04T10:30:19+00:00",
+          "working_start": 19.0,
+          "event": "interrupt",
+          "source": "limit",
+          "interrupted": "tool_call",
+          "interrupted_tool_call_id": "call_1"
+        },
+        {
+          "uuid": "ev-20",
+          "span_id": "span-solver",
+          "timestamp": "2026-09-04T10:30:20+00:00",
+          "working_start": 20.0,
+          "event": "score",
+          "score": {
+            "value": "C",
+            "answer": "4",
+            "explanation": "matched",
+            "metadata": {
+              "strict": true
+            },
+            "history": []
+          },
+          "target": "4",
+          "intermediate": false,
+          "scorer": "match",
+          "scorer_args": {
+            "location": "any"
+          },
+          "model_usage": {
+            "gpt": {
+              "input_tokens": 10,
+              "output_tokens": 5,
+              "total_tokens": 15
+            }
+          }
+        },
+        {
+          "uuid": "ev-21",
+          "span_id": "span-solver",
+          "timestamp": "2026-09-04T10:30:21+00:00",
+          "working_start": 21.0,
+          "event": "score",
+          "score": {
+            "value": NaN,
+            "reason": "no_response",
+            "history": []
+          },
+          "target": [
+            "4",
+            "four"
+          ],
+          "intermediate": true
+        },
+        {
+          "uuid": "ev-22",
+          "span_id": "span-solver",
+          "timestamp": "2026-09-04T10:30:22+00:00",
+          "working_start": 22.0,
+          "event": "score_edit",
+          "score_name": "match",
+          "edit": {
+            "value": "I",
+            "answer": "UNCHANGED",
+            "explanation": "reviewer override",
+            "reason": "UNCHANGED",
+            "metadata": "UNCHANGED",
+            "provenance": {
+              "timestamp": "2026-09-04T10:30:22Z",
+              "author": "alice",
+              "reason": "qa",
+              "metadata": {}
+            }
+          }
+        },
+        {
+          "uuid": "ev-23",
+          "span_id": "span-solver",
+          "timestamp": "2026-09-04T10:30:23+00:00",
+          "working_start": 23.0,
+          "event": "sample_limit",
+          "type": "message",
+          "message": "Message limit reached",
+          "limit": 10.0
+        },
+        {
+          "uuid": "ev-24",
+          "span_id": "span-solver",
+          "timestamp": "2026-09-04T10:30:24+00:00",
+          "working_start": 24.0,
+          "event": "error",
+          "error": {
+            "message": "boom",
+            "traceback": "Traceback...",
+            "traceback_ansi": "Traceback..."
+          }
+        },
+        {
+          "uuid": "ev-25",
+          "span_id": "span-solver",
+          "timestamp": "2026-09-04T10:30:25+00:00",
+          "working_start": 25.0,
+          "event": "info",
+          "source": "claude_code",
+          "data": {
+            "type": "system",
+            "n": 1
+          }
+        },
+        {
+          "uuid": "ev-26",
+          "span_id": "span-solver",
+          "timestamp": "2026-09-04T10:30:26+00:00",
+          "working_start": 26.0,
+          "event": "info",
+          "data": "plain text"
+        },
+        {
+          "uuid": "ev-27",
+          "span_id": "span-solver",
+          "timestamp": "2026-09-04T10:30:27+00:00",
+          "working_start": 27.0,
+          "event": "step",
+          "action": "end",
+          "type": "solver",
+          "name": "generate"
+        },
+        {
+          "uuid": "ev-28",
+          "span_id": "span-solver",
+          "timestamp": "2026-09-04T10:30:28+00:00",
+          "working_start": 28.0,
+          "event": "span_end",
+          "id": "span-solver"
+        }
+      ],
+      "timelines": [
+        {
+          "name": "Default",
+          "description": "agent view",
+          "root": {
+            "type": "span",
+            "id": "main",
+            "name": "main",
+            "span_type": "agent",
+            "content": [
+              {
+                "type": "event",
+                "event": "ev-00"
+              },
+              {
+                "type": "event",
+                "event": "ev-01"
+              },
+              {
+                "type": "event",
+                "event": "ev-02"
+              },
+              {
+                "type": "event",
+                "event": "ev-03"
+              },
+              {
+                "type": "event",
+                "event": "ev-04"
+              },
+              {
+                "type": "event",
+                "event": "ev-05"
+              },
+              {
+                "type": "event",
+                "event": "ev-06"
+              },
+              {
+                "type": "event",
+                "event": "ev-07"
+              },
+              {
+                "type": "event",
+                "event": "ev-08"
+              },
+              {
+                "type": "event",
+                "event": "ev-09"
+              },
+              {
+                "type": "event",
+                "event": "ev-10"
+              },
+              {
+                "type": "event",
+                "event": "ev-11"
+              },
+              {
+                "type": "event",
+                "event": "ev-12"
+              },
+              {
+                "type": "event",
+                "event": "ev-13"
+              },
+              {
+                "type": "event",
+                "event": "ev-14"
+              },
+              {
+                "type": "event",
+                "event": "ev-15"
+              },
+              {
+                "type": "event",
+                "event": "ev-16"
+              },
+              {
+                "type": "event",
+                "event": "ev-17"
+              },
+              {
+                "type": "event",
+                "event": "ev-18"
+              },
+              {
+                "type": "event",
+                "event": "ev-19"
+              },
+              {
+                "type": "event",
+                "event": "ev-20"
+              },
+              {
+                "type": "event",
+                "event": "ev-21"
+              },
+              {
+                "type": "event",
+                "event": "ev-22"
+              },
+              {
+                "type": "event",
+                "event": "ev-23"
+              },
+              {
+                "type": "event",
+                "event": "ev-24"
+              },
+              {
+                "type": "event",
+                "event": "ev-25"
+              },
+              {
+                "type": "event",
+                "event": "ev-26"
+              },
+              {
+                "type": "event",
+                "event": "ev-27"
+              },
+              {
+                "type": "event",
+                "event": "ev-28"
+              }
+            ],
+            "branches": [],
+            "utility": false,
+            "tool_invoked": false,
+            "outline": {
+              "nodes": [
+                {
+                  "event": "ev-05",
+                  "children": [
+                    {
+                      "event": "ev-07",
+                      "children": []
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "model_usage": {
+        "gpt": {
+          "input_tokens": 10,
+          "output_tokens": 5,
+          "total_tokens": 15,
+          "input_tokens_cache_read": 2
+        }
+      },
+      "role_usage": {},
+      "started_at": "2026-09-04T10:30:00+00:00",
+      "completed_at": "2026-09-04T10:30:02+00:00",
+      "total_time": 2.0,
+      "working_time": 1.5,
+      "uuid": "uuid-1",
+      "attachments": {
+        "abc123": "attachment text"
+      }
+    },
+    {
+      "id": "s2",
+      "epoch": 2,
+      "input": [
+        {
+          "id": "m6",
+          "content": "sys",
+          "source": "input",
+          "role": "system"
+        },
+        {
+          "id": "m7",
+          "content": [
+            {
+              "type": "text",
+              "text": "look"
+            },
+            {
+              "type": "image",
+              "image": "data:image/png;base64,AAAA",
+              "detail": "high"
+            }
+          ],
+          "source": "input",
+          "role": "user"
+        }
+      ],
+      "choices": [
+        "a",
+        "b"
+      ],
+      "target": [
+        "a",
+        "b"
+      ],
+      "messages": [
+        {
+          "id": "m8",
+          "content": "look",
+          "role": "user"
+        }
+      ],
+      "output": {
+        "model": "",
+        "choices": [],
+        "completion": ""
+      },
+      "metadata": {},
+      "store": {},
+      "events": [],
+      "model_usage": {},
+      "role_usage": {},
+      "uuid": "uuid-2",
+      "error": {
+        "message": "sandbox exploded",
+        "traceback": "trace",
+        "traceback_ansi": "trace"
+      },
+      "attachments": {},
+      "limit": {
+        "type": "message",
+        "limit": 10.0,
+        "reason": "Message limit reached"
+      }
+    }
+  ],
+  "reductions": [
+    {
+      "scorer": "match",
+      "reducer": "mean",
+      "samples": [
+        {
+          "value": "C",
+          "answer": "4",
+          "history": [],
+          "sample_id": 1
+        },
+        {
+          "value": NaN,
+          "history": [],
+          "sample_id": "s2"
+        }
+      ]
+    }
+  ]
+}

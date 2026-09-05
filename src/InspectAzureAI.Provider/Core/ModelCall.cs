@@ -36,6 +36,15 @@ public sealed class ModelCall
     /// <summary>Time spent on the request, if recorded.</summary>
     public double? Time { get; private set; }
 
+    /// <summary>
+    /// Port of <c>ModelCall.call_refs</c>: ranges into the call pool of a condensed log that stand in for the
+    /// request's messages (kept verbatim by the log reader; not resolved by the provider).
+    /// </summary>
+    public IReadOnlyList<CallRef>? CallRefs { get; set; }
+
+    /// <summary>Port of <c>ModelCall.call_key</c>: the request key under which the messages were pooled.</summary>
+    public string? CallKey { get; set; }
+
     /// <summary>Port of <c>ModelCall.create</c> (with a null response).</summary>
     public static ModelCall Create(JsonObject request, ModelCallFilter? filter = null)
     {
@@ -78,3 +87,6 @@ public sealed class ModelCall
         }
     }
 }
+
+/// <summary>Port of a <c>ModelCall.call_refs</c> entry: a <c>(start, end_exclusive)</c> range into the call pool.</summary>
+public readonly record struct CallRef(int Start, int End);

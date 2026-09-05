@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using InspectAzureAI.Provider.Util;
@@ -17,6 +18,8 @@ public sealed class Transcript
 
     private readonly AsyncLocal<string?> _currentSpanId = new();
 
+    private readonly Stopwatch _working = Stopwatch.StartNew();
+
     /// <summary>Snapshot of the events recorded so far.</summary>
     public IReadOnlyList<TranscriptEvent> Events
     {
@@ -32,12 +35,23 @@ public sealed class Transcript
     /// <summary>Id of the innermost open span in the current async flow.</summary>
     public string? CurrentSpanId => _currentSpanId.Value;
 
+    /// <summary>
+    /// Port of <c>sample_working_time()</c> as this port measures it: seconds since the transcript was created
+    /// (waiting time is not subtracted).
+    /// </summary>
+    public double WorkingTime => _working.Elapsed.TotalSeconds;
+
     public void Add(TranscriptEvent e)
     {
         ArgumentNullException.ThrowIfNull(e);
         if (e.SpanId is null && _currentSpanId.Value is { } spanId)
         {
             e = e with { SpanId = spanId };
+        }
+
+        if (e.WorkingStart == 0)
+        {
+            e = e with { WorkingStart = WorkingTime };
         }
 
         lock (_sync)
