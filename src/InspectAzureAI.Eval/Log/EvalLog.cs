@@ -313,6 +313,7 @@ public sealed record EvalStats
 
     public IReadOnlyDictionary<string, ModelUsage> RoleUsage { get; init; } = new Dictionary<string, ModelUsage>(StringComparer.Ordinal);
 
+    /// <summary>Port of <c>connection_limit_history</c>: adaptive-connections scale changes (empty unless adaptive connections were active).</summary>
     public IReadOnlyList<ConnectionLimitChange> ConnectionLimitHistory { get; init; } = [];
 }
 

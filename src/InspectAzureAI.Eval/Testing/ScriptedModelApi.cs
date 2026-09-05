@@ -64,6 +64,10 @@ public sealed class ScriptedModelApi : IModelApi
 
     private readonly List<ScriptedRequest> _requests = [];
 
+    private int _active;
+
+    private int _peak;
+
     public ScriptedModelApi(IEnumerable<ScriptedTurn> turns, string modelName = DefaultModelName)
     {
         ArgumentNullException.ThrowIfNull(turns);
@@ -84,6 +88,21 @@ public sealed class ScriptedModelApi : IModelApi
 
     /// <summary>Overrides the retry decision for thrown turns (default: retry on 408/429/5xx of a RequestFailedException).</summary>
     public Func<Exception, RetryDecision>? ShouldRetry { get; init; }
+
+    /// <summary>Port of <c>max_connections()</c> for the scripted api (Python default 10).</summary>
+    public int ConnectionLimit { get; init; } = 10;
+
+    /// <summary>Port of <c>connection_key()</c>: scripted apis sharing a scope share one connection pool.</summary>
+    public string ConnectionScope { get; init; } = "default";
+
+    /// <summary>Awaited at the start of every call, so a test can hold calls open and observe how many run at once.</summary>
+    public Func<CancellationToken, Task>? Gate { get; init; }
+
+    /// <summary>Calls currently in flight.</summary>
+    public int ActiveCalls => Volatile.Read(ref _active);
+
+    /// <summary>The most calls ever in flight at once.</summary>
+    public int PeakConcurrentCalls => Volatile.Read(ref _peak);
 
     public IReadOnlyList<ScriptedRequest> Requests
     {
@@ -109,6 +128,10 @@ public sealed class ScriptedModelApi : IModelApi
 
     public int? MaxTokens() => 2048;
 
+    public int MaxConnections() => ConnectionLimit;
+
+    public string ConnectionKey() => ConnectionScope;
+
     public Task<GenerateResult> GenerateAsync(
         IReadOnlyList<ChatMessage> input,
         IReadOnlyList<ToolInfo> tools,
@@ -126,6 +149,12 @@ public sealed class ScriptedModelApi : IModelApi
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        using var tracked = TrackCall();
+        if (Gate is { } gate)
+        {
+            await gate(cancellationToken).ConfigureAwait(false);
+        }
+
         ScriptedTurn? turn;
         lock (_sync)
         {
@@ -164,6 +193,22 @@ public sealed class ScriptedModelApi : IModelApi
         }
 
         return new GenerateResult(output, null, call);
+    }
+
+    private CallTracker TrackCall()
+    {
+        var active = Interlocked.Increment(ref _active);
+        int peak;
+        while ((peak = Volatile.Read(ref _peak)) < active && Interlocked.CompareExchange(ref _peak, active, peak) != peak)
+        {
+        }
+
+        return new CallTracker(this);
+    }
+
+    private readonly struct CallTracker(ScriptedModelApi api) : IDisposable
+    {
+        public void Dispose() => Interlocked.Decrement(ref api._active);
     }
 
     private JsonObject Snapshot(IReadOnlyList<ChatMessage> input, IReadOnlyList<ToolInfo> tools, ToolChoice toolChoice) => new()

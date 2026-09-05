@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Security.Cryptography;
+using InspectAzureAI.Eval.Concurrency;
 using InspectAzureAI.Eval.Dataset;
 using InspectAzureAI.Eval.Log;
 using InspectAzureAI.Eval.Model;
@@ -10,6 +11,7 @@ using InspectAzureAI.Provider.Util;
 
 namespace InspectAzureAI.Eval.Runner;
 
+using Concurrency = InspectAzureAI.Eval.Concurrency.Concurrency;
 using Model = InspectAzureAI.Eval.Model.Model;
 
 /// <summary>
@@ -29,7 +31,11 @@ public static class Eval
     {
         ArgumentNullException.ThrowIfNull(task);
         ArgumentNullException.ThrowIfNull(options);
-        ArgumentOutOfRangeException.ThrowIfLessThan(options.MaxSamples, 1);
+        if (options.MaxSamples is < 1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), "MaxSamples must be at least 1.");
+        }
+
         if (options.Epochs is < 1)
         {
             throw new ArgumentOutOfRangeException(nameof(options), "Epochs must be at least 1.");
@@ -86,7 +92,7 @@ public static class Eval
 
         // one linked source: the caller's cancellation and a fail-on-error abort both stop the samples in flight
         using var abort = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        using var semaphore = new SemaphoreSlim(options.MaxSamples);
+        var semaphore = SampleScheduler.CreateSampleSemaphore(options.MaxSamples, model.Config, model.AdaptiveConnections, model.Api);
         try
         {
             foreach (var providerSpec in providerSpecs)
@@ -159,6 +165,7 @@ public static class Eval
                 StartedAt = startedAt,
                 CompletedAt = DateTimeOffset.UtcNow,
                 ModelUsage = AggregateUsage(evalSamples),
+                ConnectionLimitHistory = Concurrency.AdaptiveControllers().SelectMany(controller => controller.History).ToArray(),
             },
             Error = error,
             Samples = evalSamples,
@@ -176,9 +183,10 @@ public static class Eval
 
         async Task RunSampleAsync(int index, Sample sample, SandboxSpec? sandbox, int epoch)
         {
+            ConcurrencyLease lease;
             try
             {
-                await semaphore.WaitAsync(abort.Token).ConfigureAwait(false);
+                lease = await semaphore.AcquireAsync(abort.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
@@ -194,9 +202,11 @@ public static class Eval
                 }
 
                 reporter?.SampleStarted(sample.Id!, epoch);
+                reporter?.Stats(EvalRunStats.Capture(semaphore));
                 var result = await runner.RunAsync(sample, sandbox, epoch, abort.Token).ConfigureAwait(false);
                 results[index] = result;
                 reporter?.SampleCompleted(result.Sample);
+                reporter?.Stats(EvalRunStats.Capture(semaphore));
                 if (result.Exception is { } ex && !result.Cancelled && failOnError)
                 {
                     lock (failureSync)
@@ -209,7 +219,7 @@ public static class Eval
             }
             finally
             {
-                semaphore.Release();
+                lease.Release();
             }
         }
     }
@@ -218,7 +228,7 @@ public static class Eval
     private static Model EvalModel(EvalTask task, EvalOptions options)
     {
         var source = options.Model;
-        var merged = new Model(source.Api, task.Config.Merge(source.Config), source.Retry);
+        var merged = new Model(source.Api, task.Config.Merge(source.Config), source.Retry) { AdaptiveConnections = options.AdaptiveConnections ?? source.AdaptiveConnections };
         return source.EventSink is { } sink ? merged.WithEventSink(sink) : merged;
     }
 

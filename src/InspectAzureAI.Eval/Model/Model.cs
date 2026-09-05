@@ -1,10 +1,13 @@
 using System.Diagnostics;
 using System.Runtime.ExceptionServices;
+using InspectAzureAI.Eval.Concurrency;
 using InspectAzureAI.Eval.Context;
 using InspectAzureAI.Eval.Tools;
 using InspectAzureAI.Provider.Core;
 
 namespace InspectAzureAI.Eval.Model;
+
+using Concurrency = InspectAzureAI.Eval.Concurrency.Concurrency;
 
 /// <summary>
 /// Port of <c>model/_model.py</c> <c>Model.generate</c>: config merging and <c>max_tokens</c> defaulting,
@@ -34,8 +37,18 @@ public sealed class Model
     /// <summary>A sink bound to this instance (in addition to the ambient <see cref="ModelEventSinks"/>).</summary>
     public IModelEventSink? EventSink { get; init; }
 
+    /// <summary>
+    /// Port of <c>GenerateConfig.adaptive_connections</c>: null (the default) and <see cref="AdaptiveConnections.Default"/>
+    /// gate generates with an adaptive controller; <see cref="AdaptiveConnections.Disabled"/> is the opt-out. An
+    /// explicit <c>MaxConnections</c> in the config silently wins either way.
+    /// </summary>
+    public AdaptiveConnections? AdaptiveConnections { get; init; }
+
+    /// <summary>Port of <c>model_concurrency_key</c>: the registry key of this model's connection pool.</summary>
+    public string ConcurrencyKey => ModelConcurrency.Key(Api);
+
     /// <summary>A copy of this model that also delivers events to <paramref name="sink"/>.</summary>
-    public Model WithEventSink(IModelEventSink sink) => new(Api, Config, Retry) { EventSink = sink };
+    public Model WithEventSink(IModelEventSink sink) => new(Api, Config, Retry) { EventSink = sink, AdaptiveConnections = AdaptiveConnections };
 
     public Task<ModelOutput> GenerateAsync(
         string input,
@@ -98,6 +111,9 @@ public sealed class Model
             messages = CollapseUserMessages(messages);
         }
 
+        await using var connection = await ConnectionSlot.HoldAsync(ConnectionSemaphore(resolvedConfig), cancellationToken).ConfigureAwait(false);
+        using var request = Concurrency.BeginRequest(connection.Controller);
+        using var retryWait = new RetryWaitScope(Name, context);
         var started = DateTimeOffset.UtcNow;
         var retries = 0;
         while (true)
@@ -127,9 +143,11 @@ public sealed class Model
                 Record(messages, resolvedTools, resolvedChoice, resolvedConfig, output, result.Call, retries, null, attemptStarted, elapsed);
                 if (output.Usage is { } usage)
                 {
+                    Throughput.RecordGenerate(Name, usage);
                     context?.Limits.AddUsage(usage, Name);
                 }
 
+                NotifyCleanSuccess(request.Request);
                 return output;
             }
 
@@ -143,6 +161,11 @@ public sealed class Model
             Record(messages, resolvedTools, resolvedChoice, resolvedConfig, null, null, retries, failure.Message, attemptStarted, elapsed);
 
             var decision = thrown is null ? RetryDecision.No() : ModelApiHooks.ShouldRetry(Api, thrown);
+            if (decision.Retry)
+            {
+                Concurrency.ReportHttpRetry(decision.Kind, decision.RetryAfter, Name);
+            }
+
             var budgetExhausted = Retry.Timeout is { } budget && DateTimeOffset.UtcNow - started >= budget;
             if (!decision.Retry || retries >= Retry.MaxRetries || budgetExhausted)
             {
@@ -152,6 +175,7 @@ public sealed class Model
             var wait = decision.RetryAfter is { } retryAfter ? TimeSpan.FromSeconds(Math.Max(0, retryAfter)) : Backoff(retries);
             retries++;
             await NotifyRetryAsync(onStream, retries).ConfigureAwait(false);
+            Throughput.RecordRetryWait(Name, wait.TotalSeconds, waiter: context);
             await (Retry.Delay ?? SleepDelay)(wait, cancellationToken).ConfigureAwait(false);
         }
     }
@@ -224,6 +248,45 @@ public sealed class Model
     {
         var cap = Math.Min(Retry.MaxBackoffSeconds, Retry.InitialBackoffSeconds * Math.Pow(2, retries));
         return TimeSpan.FromSeconds(Random.Shared.NextDouble() * Math.Max(0, cap));
+    }
+
+    /// <summary>
+    /// Port of <c>Model._connection_concurrency</c>: this model's connection pool, keyed by <see cref="ConcurrencyKey"/>.
+    /// Adaptive (the default) creates a controller starting at the config's <c>Start</c>; an explicit
+    /// <c>MaxConnections</c> wins silently with a static limit; otherwise the api's <c>MaxConnections()</c> applies.
+    /// The slot is held across retries and their backoff, exactly as Python holds it.
+    /// </summary>
+    private IConcurrencySemaphore ConnectionSemaphore(GenerateConfig config)
+    {
+        var key = ConcurrencyKey;
+        if (Concurrency.AdaptiveActive(AdaptiveConnections, config.MaxConnections))
+        {
+            var adaptive = (AdaptiveConnections ?? AdaptiveConnections.Default).Resolve();
+            return Concurrency.GetOrCreateSemaphore(Name, adaptive.Start, key, visible: true, adaptive: adaptive);
+        }
+
+        return Concurrency.GetOrCreateSemaphore(Name, config.MaxConnections ?? Api.MaxConnections(), key, visible: true);
+    }
+
+    /// <summary>A clean success (no retries, not a cache hit) counts toward the controller's round; anything else is neutral.</summary>
+    private static void NotifyCleanSuccess(ConnectionRequest request)
+    {
+        if (request.Controller is { } controller && !request.HadRetry && !request.WasCacheHit)
+        {
+            controller.NotifySuccess();
+        }
+    }
+
+    /// <summary>Port of <c>cleared_retry_wait()</c>: clears the sample's retry-wait mark once the whole retried call resolves.</summary>
+    private readonly struct RetryWaitScope(string model, object? waiter) : IDisposable
+    {
+        public void Dispose()
+        {
+            if (waiter is not null)
+            {
+                Throughput.ClearRetryWait(model, waiter);
+            }
+        }
     }
 
     private static async Task NotifyRetryAsync(StreamHandler? onStream, int attempt)

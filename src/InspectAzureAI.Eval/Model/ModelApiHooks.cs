@@ -29,6 +29,18 @@ internal static class ModelApiHooks
         _ => false,
     };
 
+    /// <summary>
+    /// Port of the providers' <c>connection_key()</c> overrides (azureai: <c>f"{api_key}:{model_name}"</c>): the
+    /// Foundry routes authenticate with Entra rather than an api key, so the endpoint stands in for the account;
+    /// any other api uses its own <see cref="IModelApi.ConnectionKey"/>.
+    /// </summary>
+    public static string ConnectionKey(IModelApi api) => api switch
+    {
+        AzureAIModelApi azure => $"{azure.EndpointUrl}:{azure.ModelName}",
+        AnthropicFoundryModelApi anthropic => $"{anthropic.BaseUrl}:{anthropic.ModelName}",
+        _ => api.ConnectionKey(),
+    };
+
     private static RetryDecision DefaultShouldRetry(Exception ex)
     {
         var status = HttpRetryUtil.StatusCodeOf(ex) ?? 0;

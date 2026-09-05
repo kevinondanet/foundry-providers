@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using InspectAzureAI.Eval.Concurrency;
 using InspectAzureAI.Eval.Context;
 using InspectAzureAI.Eval.Dataset;
 using InspectAzureAI.Eval.Log;
@@ -299,7 +300,7 @@ public class LogSchemaTests
                 StartedAt = T0,
                 CompletedAt = At(5),
                 ModelUsage = new Dictionary<string, ModelUsage> { ["gpt"] = new(10, 5, 15) },
-                ConnectionLimitHistory = [new ConnectionLimitChange(1757000000.5, "gpt", 10, 20, "rate_limit")],
+                ConnectionLimitHistory = [new ConnectionLimitChange(1757000000.5, "gpt", 10, 20, LimitChangeReason.RateLimit)],
             },
             LogUpdates =
             [
@@ -464,7 +465,7 @@ public class LogSchemaTests
             Assert.Equal("g", read.Results!.Scores[0].Metrics["inf"].Group);
             Assert.True(double.IsPositiveInfinity(read.Results.Scores[0].Metrics["inf"].Value));
             Assert.True(double.IsNaN(read.Results.Scores[0].Metrics["stderr"].Value));
-            Assert.Equal("rate_limit", Assert.Single(read.Stats.ConnectionLimitHistory).Reason);
+            Assert.Equal(LimitChangeReason.RateLimit, Assert.Single(read.Stats.ConnectionLimitHistory).Reason);
             Assert.Equal(["demo", "qa_passed"], read.Tags);
             Assert.Equal(new Dictionary<string, object?> { ["reviewer"] = "alice" }, read.Metadata);
             Assert.Equal(8, (int?)Assert.Single(read.ConfigUpdates!).Changes[0].Value);

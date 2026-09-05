@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
+using InspectAzureAI.Eval.Concurrency;
 using InspectAzureAI.Eval.Context;
 using InspectAzureAI.Eval.Scorers;
 using InspectAzureAI.Provider.Core;
@@ -105,8 +106,13 @@ public sealed record EvalScorer(string Name)
     public IReadOnlyDictionary<string, object?>? Metadata { get; init; }
 }
 
-/// <summary>Port of <c>log/_log.py</c> <c>ConnectionLimitChange</c>: one adaptive-connections scale change; <see cref="Reason"/> is "slow_start", "steady_state_up", "rate_limit" or "manual".</summary>
-public sealed record ConnectionLimitChange(double Timestamp, string Model, int OldLimit, int NewLimit, string Reason);
+/// <summary>
+/// Port of <c>log/_log.py</c> <c>ConnectionLimitChange</c> (and the controller's <c>LimitChangeRecord</c> tuple): one
+/// adaptive-connections scale change. <see cref="Model"/> is the controller's display name, never the (possibly
+/// secret-bearing) connection key; <see cref="Timestamp"/> is Unix seconds, as <c>time.time()</c> reports;
+/// <see cref="Reason"/> serializes as "slow_start", "steady_state_up", "rate_limit" or "manual".
+/// </summary>
+public sealed record ConnectionLimitChange(double Timestamp, string Model, int OldLimit, int NewLimit, LimitChangeReason Reason);
 
 /// <summary>Port of <c>util/_early_stopping.py</c> <c>EarlyStop</c>: a sample stopped early.</summary>
 public sealed record EarlyStop(object Id, int Epoch)
