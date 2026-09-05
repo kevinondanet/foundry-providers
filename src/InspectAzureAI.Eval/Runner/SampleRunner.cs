@@ -170,6 +170,12 @@ internal sealed class SampleRunner(
                 {
                     limit = SampleLimit(ex);
                 }
+                catch (Approval.TerminateSampleException ex)
+                {
+                    // Python's `except TerminateSampleError`: an approver ended the sample; it is still scored
+                    transcript.Add(new SampleLimitEvent("operator", ex.Reason, 1));
+                    limit = new EvalSampleLimit("operator", 1, ex.Reason);
+                }
                 catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && timeNode.Exceeded)
                 {
                     limit = TimeLimitExceeded(timeNode, transcript);

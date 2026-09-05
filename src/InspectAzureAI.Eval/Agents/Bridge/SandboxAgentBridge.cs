@@ -36,6 +36,8 @@ public sealed class SandboxAgentBridge : IAsyncDisposable
 
     private readonly CancellationTokenSource _limitReached = new();
 
+    private readonly CancellationTokenSource _terminateRequested = new();
+
     private readonly ConcurrentDictionary<Task, byte> _inFlight = new();
 
     private readonly object _errorsSync = new();
@@ -45,6 +47,8 @@ public sealed class SandboxAgentBridge : IAsyncDisposable
     private readonly byte[] _authTokenBytes;
 
     private LimitExceededException? _limitError;
+
+    private Approval.TerminateSampleException? _terminateError;
 
     private Task? _acceptLoop;
 
@@ -147,6 +151,26 @@ public sealed class SandboxAgentBridge : IAsyncDisposable
     /// <summary>Cancelled when <see cref="LimitError"/> is set.</summary>
     public CancellationToken LimitReached => _limitReached.Token;
 
+    /// <summary>
+    /// Port of <c>SandboxAgentBridge.request_terminate</c>'s signal: the termination a tool call approver requested
+    /// from a bridged generation. Handlers turn exceptions into HTTP error responses, so the exception never
+    /// reaches the sample runner on its own; the agent watches <see cref="TerminateRequested"/>, tears down its
+    /// exec and rethrows this (as Python's <c>_monitor_terminate</c> task does).
+    /// </summary>
+    public Approval.TerminateSampleException? TerminateError
+    {
+        get
+        {
+            lock (_errorsSync)
+            {
+                return _terminateError;
+            }
+        }
+    }
+
+    /// <summary>Cancelled when <see cref="TerminateError"/> is set.</summary>
+    public CancellationToken TerminateRequested => _terminateRequested.Token;
+
     /// <summary>The most recent exceptions raised while serving requests (each was also answered with an error response).</summary>
     public IReadOnlyList<Exception> Errors
     {
@@ -221,6 +245,7 @@ public sealed class SandboxAgentBridge : IAsyncDisposable
 
         _shutdown.Dispose();
         _limitReached.Dispose();
+        _terminateRequested.Dispose();
     }
 
     private static bool IsLoopback(string hostAddress) =>
@@ -380,6 +405,19 @@ public sealed class SandboxAgentBridge : IAsyncDisposable
             }
 
             await _limitReached.CancelAsync().ConfigureAwait(false);
+            await AnswerErrorAsync(response, openAiDialect, responseStarted, 500, ex.Message).ConfigureAwait(false);
+        }
+        catch (Approval.TerminateSampleException ex)
+        {
+            // an approver ended the sample from inside a bridged generation: keep the reason for the agent to
+            // rethrow, signal it, and still answer so the scaffold gets an error rather than a hung request
+            RecordError(ex);
+            lock (_errorsSync)
+            {
+                _terminateError ??= ex;
+            }
+
+            await _terminateRequested.CancelAsync().ConfigureAwait(false);
             await AnswerErrorAsync(response, openAiDialect, responseStarted, 500, ex.Message).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (_shutdown.IsCancellationRequested)

@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using InspectAzureAI.Eval.Approval;
 using InspectAzureAI.Eval.Model;
 using InspectAzureAI.Provider.Core;
 using InspectAzureAI.Provider.Util;
@@ -43,7 +44,8 @@ public sealed class AgentBridge
         IReadOnlyDictionary<string, Model>? modelAliases = null,
         int? retryRefusals = null,
         bool forwardGenerationConfig = false,
-        IModelEventSink? modelEventSink = null)
+        IModelEventSink? modelEventSink = null,
+        IReadOnlyList<ApprovalPolicy>? approval = null)
     {
         ArgumentNullException.ThrowIfNull(state);
         ArgumentNullException.ThrowIfNull(model);
@@ -53,6 +55,7 @@ public sealed class AgentBridge
         RetryRefusals = retryRefusals;
         ForwardGenerationConfig = forwardGenerationConfig;
         ModelEventSink = modelEventSink;
+        Approval = approval;
 
         var initialMessages = state.Messages.Where(m => m.Role != "system").ToList();
         _initialFps = initialMessages.Select(MessageFingerprint.Of).ToList();
@@ -81,6 +84,27 @@ public sealed class AgentBridge
 
     /// <summary>Port of <c>model_event_sink</c>: installed around every bridged generation.</summary>
     public IModelEventSink? ModelEventSink { get; }
+
+    /// <summary>
+    /// Port of <c>approval</c>: approval policies for tool calls made by the bridged agent, applied to the tool
+    /// calls in each bridged model response and replacing any ambient policies for the duration of the approval.
+    /// Ambient (eval- and task-level) policies already apply without this; it exists because a sandbox bridge's
+    /// request handlers hold a copy of the async context taken when the bridge was started, so a
+    /// <see cref="ToolApproval.Begin"/> scope entered later inside the agent body is invisible to them.
+    /// </summary>
+    public IReadOnlyList<ApprovalPolicy>? Approval { get; }
+
+    /// <summary>
+    /// Port of <c>request_terminate</c>: terminates the sample from a bridged generation by throwing
+    /// <see cref="TerminateSampleException"/>, which propagates out through the agent to the sample runner.
+    /// A <see cref="SandboxAgentBridge"/> additionally signals its <c>TerminateRequested</c> token, since its
+    /// handlers turn exceptions into HTTP error responses instead of letting them propagate.
+    /// </summary>
+    public void RequestTerminate(string reason)
+    {
+        ArgumentNullException.ThrowIfNull(reason);
+        throw new TerminateSampleException(reason);
+    }
 
     /// <summary>
     /// Port of <c>resolve_inspect_model</c>, simplified to what this port can express: an alias resolves to its
@@ -122,7 +146,13 @@ public sealed class AgentBridge
         };
     }
 
-    /// <summary>Resolve the requested model name (alias → Model; "inspect" or "inspect/&lt;x&gt;" or unknown → the default model), apply config precedence, generate (retrying refusals up to retryRefusals), then track state.</summary>
+    /// <summary>
+    /// Resolve the requested model name (alias → Model; "inspect" or "inspect/&lt;x&gt;" or unknown → the default
+    /// model), apply config precedence, generate (retrying refusals up to retryRefusals), approve the tool calls
+    /// the scaffold is about to run (a rejection is replayed to the model and generation retried, so the scaffold
+    /// never sees the rejected response; <see cref="BridgeApproval.MaxConsecutiveRejections"/> rejections in a
+    /// row terminate the sample), then track state against the original input.
+    /// </summary>
     public async Task<ModelOutput> GenerateAsync(
         string requestedModel,
         IReadOnlyList<ChatMessage> input,
@@ -140,20 +170,39 @@ public sealed class AgentBridge
         var model = ResolveModel(requestedModel);
         var config = ResolveGenerateConfig(model, ForwardGenerationConfig ? requestConfig : ClearGenerationParams(requestConfig));
         var messages = ApplyMessageIds(input);
+        // rejections accumulate onto the model's input; the scaffold's conversation (and state tracking) keep the original
+        var generateInput = messages;
 
         var refusals = 0;
+        var rejections = 0;
         ModelOutput output;
         while (true)
         {
-            using var sinkScope = ModelEventSink is null ? null : ModelEventSinks.Install(ModelEventSink);
-            output = await model.GenerateAsync(messages, tools, toolChoice, config, cancellationToken: cancellationToken).ConfigureAwait(false);
+            using (ModelEventSink is null ? null : ModelEventSinks.Install(ModelEventSink))
+            {
+                output = await model.GenerateAsync(generateInput, tools, toolChoice, config, cancellationToken: cancellationToken).ConfigureAwait(false);
+            }
+
             if (!output.Empty && output.StopReason == StopReason.ContentFilter && RetryRefusals is { } limit && refusals < limit)
             {
                 refusals++;
                 continue;
             }
 
-            break;
+            var reviewed = await BridgeApproval.ApplyAsync(this, output, generateInput, cancellationToken).ConfigureAwait(false);
+            if (reviewed.Rejection is null)
+            {
+                output = reviewed.Output;
+                break;
+            }
+
+            rejections++;
+            if (rejections >= BridgeApproval.MaxConsecutiveRejections)
+            {
+                BridgeApproval.TerminateForRepeatedRejections(this, rejections);
+            }
+
+            generateInput = [.. generateInput, .. reviewed.Rejection];
         }
 
         TrackState(messages, output);

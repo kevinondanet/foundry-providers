@@ -59,6 +59,12 @@ internal interface IClaudeCodeBridge : IAsyncDisposable
 
     /// <summary>Cancelled once <see cref="LimitError"/> is set, so the running CLI can be torn down.</summary>
     CancellationToken LimitReached { get; }
+
+    /// <summary>The termination a tool call approver requested from a bridged generation, if any (see <see cref="SandboxAgentBridge.TerminateError"/>).</summary>
+    InspectAzureAI.Eval.Approval.TerminateSampleException? TerminateError => null;
+
+    /// <summary>Cancelled once <see cref="TerminateError"/> is set, so the running CLI can be torn down.</summary>
+    CancellationToken TerminateRequested => CancellationToken.None;
 }
 
 internal delegate Task<IClaudeCodeBridge> ClaudeCodeBridgeFactory(AgentBridge bridge, ISandboxEnvironment sandbox, int port, CancellationToken cancellationToken);
@@ -183,6 +189,12 @@ public sealed class ClaudeCodeAgent
                     ExceptionDispatchInfo.Capture(limit).Throw();
                 }
 
+                // Likewise when an approver terminated the sample from inside a bridged generation.
+                if (sandboxBridge.TerminateError is { } terminated)
+                {
+                    ExceptionDispatchInfo.Capture(terminated).Throw();
+                }
+
                 var kind = ClaudeCodeExit.Classify(exitCode, stderrData, tracker.LastStopReason, Options.RetryUncaughtErrors, uncaughtErrorCount);
                 if (kind == ClaudeCodeExitKind.RetryUncaughtError)
                 {
@@ -236,7 +248,7 @@ public sealed class ClaudeCodeAgent
         IReadOnlyDictionary<string, string> agentEnv,
         CancellationToken cancellationToken)
     {
-        using var execCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, sandboxBridge.LimitReached);
+        using var execCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, sandboxBridge.LimitReached, sandboxBridge.TerminateRequested);
         try
         {
             return await sandbox.ExecAsync(
@@ -251,6 +263,11 @@ public sealed class ClaudeCodeAgent
         catch (OperationCanceledException) when (sandboxBridge.LimitError is { } limit)
         {
             ExceptionDispatchInfo.Capture(limit).Throw();
+            throw;
+        }
+        catch (OperationCanceledException) when (sandboxBridge.TerminateError is { } terminated)
+        {
+            ExceptionDispatchInfo.Capture(terminated).Throw();
             throw;
         }
     }
@@ -303,6 +320,10 @@ public sealed class ClaudeCodeAgent
         public LimitExceededException? LimitError => server.LimitError;
 
         public CancellationToken LimitReached => server.LimitReached;
+
+        public InspectAzureAI.Eval.Approval.TerminateSampleException? TerminateError => server.TerminateError;
+
+        public CancellationToken TerminateRequested => server.TerminateRequested;
 
         public ValueTask DisposeAsync() => server.DisposeAsync();
     }
