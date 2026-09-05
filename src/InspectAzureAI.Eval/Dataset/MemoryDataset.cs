@@ -1,4 +1,6 @@
 using System.Collections;
+using InspectAzureAI.Eval.Scorers;
+using InspectAzureAI.Eval.Solvers;
 
 namespace InspectAzureAI.Eval.Dataset;
 
@@ -46,6 +48,34 @@ public sealed class MemoryDataset : IDataset
 
         Shuffled = true;
     }
+
+    public void ShuffleChoices(int? seed = null)
+    {
+        var random = seed is null ? Random.Shared : new Random(seed.Value);
+        for (var index = 0; index < _samples.Count; index++)
+        {
+            var sample = _samples[index];
+            if (sample.Choices is not { Count: > 0 } choices)
+            {
+                continue;
+            }
+
+            var positions = Enumerable.Range(0, choices.Count).ToList();
+            AnswerLabels.ShuffleInPlace(positions, random);
+            var shuffled = positions.Select(p => choices[p]).ToList();
+
+            // original position -> the letter it now answers to
+            var positionMap = positions.Select((original, current) => (original, letter: AnswerLabels.Character(current))).ToDictionary(pair => pair.original, pair => pair.letter);
+            var target = new Target(sample.Target.Values.Select(value => RemapTarget(value, positionMap, choices.Count)).ToList());
+            _samples[index] = sample with { Choices = shuffled, Target = target };
+        }
+    }
+
+    /// <summary>Port of <c>_remap_target</c> for one target value: Python's <c>KeyError</c> on an unknown position is an <see cref="ArgumentException"/>.</summary>
+    private static string RemapTarget(string value, IReadOnlyDictionary<int, string> positionMap, int choiceCount) =>
+        positionMap.TryGetValue(AnswerLabels.Index(value), out var letter)
+            ? letter
+            : throw new ArgumentException($"Sample target '{value}' does not reference one of the sample's {choiceCount} choices.");
 
     public void Sort(bool reverse = false, Func<Sample, IComparable>? key = null)
     {

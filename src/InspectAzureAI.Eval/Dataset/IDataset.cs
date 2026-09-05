@@ -20,6 +20,13 @@ public interface IDataset : IReadOnlyList<Sample>
     /// <summary>Port of <c>Dataset.shuffle</c>: in-place Fisher–Yates; a seed gives a reproducible order.</summary>
     void Shuffle(int? seed = null);
 
+    /// <summary>
+    /// Port of <c>Dataset.shuffle_choices</c>: shuffles each sample's choices in place (Python's shuffle algorithm over
+    /// a seeded <see cref="Random"/>, so orders are stable only within .NET) and remaps its target letters to the new
+    /// positions. A target that is not an answer label of the sample's choices is an <see cref="ArgumentException"/>.
+    /// </summary>
+    void ShuffleChoices(int? seed = null);
+
     /// <summary>Port of <c>Dataset.sort</c>: stable in-place sort by <paramref name="key"/> (default <see cref="Sample.InputLength"/>).</summary>
     void Sort(bool reverse = false, Func<Sample, IComparable>? key = null);
 
