@@ -1,5 +1,6 @@
 using System.Text.Json.Serialization;
 using InspectAzureAI.Eval.Context;
+using InspectAzureAI.Eval.Runner;
 using InspectAzureAI.Eval.Sandbox;
 using InspectAzureAI.Eval.Scorers;
 using InspectAzureAI.Eval.Solvers;
@@ -88,13 +89,26 @@ public sealed record EvalConfig
 
     public int? Epochs { get; init; }
 
-    public bool? FailOnError { get; init; }
+    /// <summary>Port of <c>fail_on_error</c>: <c>True</c> fails on the first sample error, <c>False</c> never, a number is a fraction (below 1) or count of failed samples.</summary>
+    public FailOnError? FailOnError { get; init; }
+
+    /// <summary>Port of <c>continue_on_fail</c>: keep running when the <c>fail_on_error</c> condition is met and only mark the log as failed at the end.</summary>
+    public bool? ContinueOnFail { get; init; }
+
+    /// <summary>Port of <c>retry_on_error</c>: number of times a sample that errors is retried.</summary>
+    public int? RetryOnError { get; init; }
 
     public int? MessageLimit { get; init; }
 
     public int? TokenLimit { get; init; }
 
+    /// <summary>Port of <c>turn_limit</c>: maximum turns (model generations) per sample.</summary>
+    public int? TurnLimit { get; init; }
+
     public int? TimeLimit { get; init; }
+
+    /// <summary>Port of <c>working_limit</c>: maximum working time per sample, in seconds.</summary>
+    public int? WorkingLimit { get; init; }
 
     public int? MaxSamples { get; init; }
 
@@ -107,6 +121,9 @@ public sealed record EvalResults
     public int TotalSamples { get; init; }
 
     public int CompletedSamples { get; init; }
+
+    /// <summary>Port of <c>early_stopping</c>: the summary of an early stopping manager, when the task had one.</summary>
+    public EarlyStoppingSummary? EarlyStopping { get; init; }
 
     public IReadOnlyList<EvalScore> Scores { get; init; } = [];
 }
@@ -198,5 +215,14 @@ public sealed record EvalSample
 
     public EvalError? Error { get; init; }
 
+    /// <summary>Port of <c>error_retries</c>: the errors of the attempts retried before this one (empty when none).</summary>
+    public IReadOnlyList<EvalRetryError>? ErrorRetries { get; init; }
+
     public EvalSampleLimit? Limit { get; init; }
 }
+
+/// <summary>
+/// Port of <c>log/_log.py</c> <c>EvalRetryError</c>: the error of a retried sample attempt with the events from
+/// that attempt's last <c>ModelEvent</c> onward (all of them when it never generated).
+/// </summary>
+public sealed record EvalRetryError(string Message, string Traceback = "", string TracebackAnsi = "", IReadOnlyList<TranscriptEvent>? Events = null);

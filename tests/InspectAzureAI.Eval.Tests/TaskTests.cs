@@ -1,4 +1,5 @@
 using InspectAzureAI.Eval.Dataset;
+using InspectAzureAI.Eval.Runner;
 using InspectAzureAI.Eval.Sandbox;
 using InspectAzureAI.Eval.Scorers;
 using InspectAzureAI.Eval.Tasks;
@@ -25,7 +26,7 @@ public class TaskTests
         Assert.Equal(new GenerateConfig(), task.Config);
         Assert.Null(task.Sandbox);
         Assert.Null(task.Epochs);
-        Assert.True(task.FailOnError);
+        Assert.Equal(FailOnError.Always, task.FailOnError);
         Assert.Null(task.MessageLimit);
         Assert.Null(task.TokenLimit);
         Assert.Null(task.TimeLimit);
@@ -54,9 +55,9 @@ public class TaskTests
         Assert.Equal(new SandboxSpec("docker", "Dockerfile"), configured.Sandbox);
         Assert.Equal(10, configured.MessageLimit);
         Assert.Equal(TimeSpan.FromMinutes(5), configured.TimeLimit);
-        Assert.False(configured.FailOnError);
+        Assert.Equal(FailOnError.Never, configured.FailOnError);
         Assert.Equal("2", configured.Version);
-        Assert.True(task.FailOnError);
+        Assert.Equal(FailOnError.Always, task.FailOnError);
     }
 
     [Fact]

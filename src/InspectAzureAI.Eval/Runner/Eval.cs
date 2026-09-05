@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Security.Cryptography;
+using InspectAzureAI.Eval.Context;
 using InspectAzureAI.Eval.Dataset;
 using InspectAzureAI.Eval.Log;
 using InspectAzureAI.Eval.Model;
@@ -37,12 +38,20 @@ public static class Eval
 
         var reporter = options.Reporter;
         var model = EvalModel(task, options);
-        var samples = ResolveSamples(task.Dataset, options);
+        var samples = ResolveSamples(task, options, reporter);
         var epochs = options.Epochs ?? task.Epochs?.Count ?? 1;
         var failOnError = options.FailOnError ?? task.FailOnError;
+        var continueOnFail = options.ContinueOnFail ?? task.ContinueOnFail;
+        var retryOnError = options.RetryOnError ?? task.RetryOnError;
         var messageLimit = options.MessageLimit ?? task.MessageLimit;
         var tokenLimit = options.TokenLimit ?? task.TokenLimit;
         var timeLimit = options.TimeLimit ?? task.TimeLimit;
+        var turnLimit = options.TurnLimit ?? task.TurnLimit;
+        var workingLimit = options.WorkingLimit ?? task.WorkingLimit;
+        if (retryOnError is < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), "RetryOnError must not be negative.");
+        }
         var scorerNames = EvalResultsBuilder.UniqueScorerNames(task.Scorers);
         var startedAt = DateTimeOffset.UtcNow;
 
@@ -69,9 +78,13 @@ public static class Eval
                 SampleId = options.SampleIds,
                 Epochs = epochs,
                 FailOnError = failOnError,
+                ContinueOnFail = continueOnFail,
+                RetryOnError = retryOnError,
                 MessageLimit = messageLimit,
                 TokenLimit = tokenLimit,
+                TurnLimit = turnLimit,
                 TimeLimit = (int?)timeLimit?.TotalSeconds,
+                WorkingLimit = (int?)workingLimit?.TotalSeconds,
                 MaxSamples = options.MaxSamples,
                 SandboxCleanup = options.Cleanup,
             },
@@ -79,8 +92,14 @@ public static class Eval
 
         var sandboxSpecs = samples.Select(sample => SandboxSetup.ResolveSpec(task.Sandbox, sample)).ToList();
         var providerSpecs = sandboxSpecs.OfType<SandboxSpec>().Distinct().ToList();
-        var runner = new SampleRunner(task, model, scorerNames, messageLimit, tokenLimit, timeLimit, options.Cleanup);
-        var results = new SampleResult?[samples.Count * epochs];
+        var runner = new SampleRunner(task, model, scorerNames, messageLimit, tokenLimit, timeLimit, options.Cleanup, turnLimit: turnLimit, workingLimit: workingLimit);
+        var totalSamples = samples.Count * epochs;
+        var results = new SampleResult?[totalSamples];
+        var earlyStops = new EarlyStop?[totalSamples];
+        // Python: continue_on_fail never aborts mid-run; the fail_on_error policy is applied again at the end
+        var errorHandler = new SampleErrorHandler(continueOnFail == true ? FailOnError.Never : failOnError, totalSamples);
+        var earlyStopping = task.EarlyStopping;
+        var stoppingManager = "";
         Exception? failure = null;
         var failureSync = new object();
 
@@ -89,6 +108,11 @@ public static class Eval
         using var semaphore = new SemaphoreSlim(options.MaxSamples);
         try
         {
+            if (earlyStopping is not null)
+            {
+                stoppingManager = await earlyStopping.StartTaskAsync(spec, samples, epochs, cancellationToken).ConfigureAwait(false);
+            }
+
             foreach (var providerSpec in providerSpecs)
             {
                 await SandboxRegistry.Get(providerSpec.Type).TaskInitAsync(task.Name, providerSpec.Config, cancellationToken).ConfigureAwait(false);
@@ -143,6 +167,27 @@ public static class Eval
             status = EvalStatus.Error;
             error = EvalError.FromException(failure);
         }
+        else if (SampleErrorHandler.ShouldEvalFail(errorHandler.ErrorCount, totalSamples, failOnError))
+        {
+            // Python's end-of-run check (continue_on_fail, or a threshold reached by the last samples): the log is
+            // marked failed with no eval-level error
+            status = EvalStatus.Error;
+        }
+
+        EarlyStoppingSummary? stoppingSummary = null;
+        if (earlyStopping is not null && status != EvalStatus.Cancelled && failure is null)
+        {
+            try
+            {
+                var stoppingMetadata = await earlyStopping.CompleteTaskAsync(cancellationToken).ConfigureAwait(false);
+                stoppingSummary = new EarlyStoppingSummary(stoppingManager, earlyStops.OfType<EarlyStop>().ToArray(), stoppingMetadata);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                status = EvalStatus.Error;
+                error = EvalError.FromException(ex);
+            }
+        }
 
         var log = new EvalLog
         {
@@ -150,8 +195,9 @@ public static class Eval
             Eval = spec,
             Results = new EvalResults
             {
-                TotalSamples = samples.Count * epochs,
+                TotalSamples = totalSamples,
                 CompletedSamples = evalSamples.Count(sample => sample.Error is null),
+                EarlyStopping = stoppingSummary,
                 Scores = EvalResultsBuilder.BuildScores(task.Scorers, scorerNames, completed.Select(result => result.Scores).ToList(), task.Epochs?.Reducers, task.Metrics),
             },
             Stats = new EvalStats
@@ -174,42 +220,77 @@ public static class Eval
 
         return log;
 
+        // Port of task_run_sample: one run as a loop of error-retry attempts (design/sample-lifecycle.md)
         async Task RunSampleAsync(int index, Sample sample, SandboxSpec? sandbox, int epoch)
         {
-            try
+            var attempt = SampleAttempt.First(retryOnError ?? 0);
+            while (true)
             {
-                await semaphore.WaitAsync(abort.Token).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-                // never started: Python logs nothing for samples still queued when the run stops
-                return;
-            }
-
-            try
-            {
-                if (abort.IsCancellationRequested)
+                try
                 {
+                    await semaphore.WaitAsync(abort.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    // never started (or a retry abandoned while queued): Python logs nothing for it
                     return;
                 }
 
-                reporter?.SampleStarted(sample.Id!, epoch);
-                var result = await runner.RunAsync(sample, sandbox, epoch, abort.Token).ConfigureAwait(false);
-                results[index] = result;
-                reporter?.SampleCompleted(result.Sample);
-                if (result.Exception is { } ex && !result.Cancelled && failOnError)
+                try
                 {
-                    lock (failureSync)
+                    if (abort.IsCancellationRequested)
                     {
-                        failure ??= ex;
+                        return;
                     }
 
-                    await abort.CancelAsync().ConfigureAwait(false);
+                    // the early stopping check is the first thing of every attempt: a halted run is completed without being logged
+                    if (earlyStopping is not null && await earlyStopping.ScheduleSampleAsync(sample.Id!, epoch, abort.Token).ConfigureAwait(false) is { } stop)
+                    {
+                        earlyStops[index] = stop;
+                        return;
+                    }
+
+                    if (attempt.IsFirst)
+                    {
+                        reporter?.SampleStarted(sample.Id!, epoch);
+                    }
+
+                    var result = await runner.RunAsync(sample, sandbox, epoch, attempt, abort.Token).ConfigureAwait(false);
+                    if (result.Retry is { } retry)
+                    {
+                        // re-enter with the error recorded and the uuid carried; releasing the semaphore first sends
+                        // the retry to the back of the queue
+                        attempt = attempt.Advance(retry, result.Sample.Uuid!);
+                        continue;
+                    }
+
+                    results[index] = result;
+                    reporter?.SampleCompleted(result.Sample);
+                    var raised = false;
+                    if (result.Exception is { } ex && !result.Cancelled && errorHandler.RecordError())
+                    {
+                        lock (failureSync)
+                        {
+                            failure ??= ex;
+                        }
+
+                        raised = true;
+                        await abort.CancelAsync().ConfigureAwait(false);
+                    }
+
+                    // Python reports scores to the early stopping hook for completed samples and errored ones that
+                    // still scored, never for a sample whose error fails the eval
+                    if (earlyStopping is not null && !raised && !result.Cancelled && (result.Exception is null || result.Scores.Count > 0))
+                    {
+                        await earlyStopping.CompleteSampleAsync(sample.Id!, epoch, result.Scores, abort.Token).ConfigureAwait(false);
+                    }
+
+                    return;
                 }
-            }
-            finally
-            {
-                semaphore.Release();
+                finally
+                {
+                    semaphore.Release();
+                }
             }
         }
     }
@@ -224,10 +305,13 @@ public static class Eval
 
     /// <summary>
     /// Port of the id assignment in <c>_eval/run.py</c> (1-based when missing, then unique) and
-    /// <c>slice_dataset</c> (<c>sample_id</c> filter, else the <c>limit</c> prefix; a zero limit selects everything).
+    /// <c>slice_dataset</c> (the <c>sample_id</c> filter of <see cref="SampleIdFilter"/> — glob patterns, task-scoped
+    /// ids, a warning per unmatched pattern and an error when nothing matches — else the <c>limit</c> prefix; a zero
+    /// limit selects everything).
     /// </summary>
-    private static List<Sample> ResolveSamples(IDataset dataset, EvalOptions options)
+    private static List<Sample> ResolveSamples(EvalTask task, EvalOptions options, IEvalReporter? reporter)
     {
+        var dataset = task.Dataset;
         var samples = new List<Sample>(dataset.Count);
         for (var i = 0; i < dataset.Count; i++)
         {
@@ -243,10 +327,10 @@ public static class Eval
             throw new InvalidOperationException($"The dataset contains duplicate sample ids: {string.Join(", ", duplicates)}.");
         }
 
-        if (options.SampleIds is { Count: > 0 } ids)
+        if (options.SampleIds is { } ids)
         {
-            var wanted = ids.Select(IdText).ToHashSet(StringComparer.Ordinal);
-            return samples.Where(sample => wanted.Contains(IdText(sample.Id))).ToList();
+            var scoped = SampleIdFilter.ResolveForTask(task.Name, ids);
+            return SampleIdFilter.Filter(samples, dataset.Name, scoped, reporter is null ? null : reporter.Message);
         }
 
         if (options.Limit is > 0 and var limit)

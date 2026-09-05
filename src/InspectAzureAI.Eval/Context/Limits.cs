@@ -78,6 +78,7 @@ public sealed class Limits
             var reachedOrExceeded = count == limit ? "reached" : "exceeded";
             var limitStr = LimitExceededException.FormatLimit(limit);
             var message = $"Message limit {reachedOrExceeded}. count: {LimitExceededException.FormatLimit(count)}; limit: {limitStr}";
+            EmitLimitEvent("message", limit, message);
             throw new LimitExceededException("message", limitStr, count, message);
         }
     }
@@ -100,6 +101,7 @@ public sealed class Limits
         {
             var limitStr = LimitExceededException.FormatLimit(limit);
             var message = $"Token limit exceeded. value: {LimitExceededException.FormatLimit(total)}; limit: {limitStr}";
+            EmitLimitEvent("token", limit, message);
             throw new LimitExceededException("token", limitStr, total, message);
         }
     }
@@ -116,7 +118,40 @@ public sealed class Limits
         if (elapsed > limit)
         {
             var limitStr = LimitExceededException.FormatLimit(limit.TotalSeconds);
-            throw new LimitExceededException("time", limitStr, elapsed.TotalSeconds, $"Time limit exceeded. limit: {limitStr} seconds");
+            var message = $"Time limit exceeded. limit: {limitStr} seconds";
+            EmitLimitEvent("time", limit.TotalSeconds, message);
+            throw new LimitExceededException("time", limitStr, elapsed.TotalSeconds, message);
         }
     }
+
+    private TimeSpan _waitingTime;
+
+    /// <summary>
+    /// Port of <c>sample_waiting_time()</c>: time the sample spent waiting (model retry back-off, shared resources),
+    /// reported through <see cref="WorkingLimit.ReportSampleWaitingTime"/>; the log's <c>working_time</c> is
+    /// <c>total_time</c> minus this.
+    /// </summary>
+    public TimeSpan WaitingTime
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _waitingTime;
+            }
+        }
+    }
+
+    /// <summary>Adds to <see cref="WaitingTime"/> (the sample-level half of <c>report_sample_waiting_time</c>).</summary>
+    public void RecordWaitingTime(TimeSpan waiting)
+    {
+        lock (_sync)
+        {
+            _waitingTime += waiting;
+        }
+    }
+
+    /// <summary>The <see cref="SampleLimitEvent"/> Python records at the point a limit trips (a no-op outside a sample).</summary>
+    private static void EmitLimitEvent(string type, double limit, string message) =>
+        SampleContext.Current?.Transcript.Add(new SampleLimitEvent(type, message, limit));
 }

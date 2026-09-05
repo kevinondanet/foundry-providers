@@ -71,6 +71,10 @@ internal sealed class TranscriptEventConverterFactory : JsonConverterFactory
                     Get<string>(e, "name", options) ?? "",
                     Get<string>(e, "type", options) ?? "",
                     Get<string>(e, "action", options) ?? ""),
+                "sample_limit" => new SampleLimitEvent(
+                    Get<string>(e, "type", options) ?? "",
+                    Get<string>(e, "message", options) ?? "",
+                    GetDouble(e, "limit")),
                 _ => throw new JsonException($"Unknown transcript event '{kind}'."),
             };
 
@@ -180,6 +184,15 @@ internal sealed class TranscriptEventConverterFactory : JsonConverterFactory
                     else
                     {
                         writer.WriteNullValue();
+                    }
+
+                    break;
+                case SampleLimitEvent sampleLimit:
+                    writer.WriteString("type", sampleLimit.Type);
+                    writer.WriteString("message", sampleLimit.Message);
+                    if (sampleLimit.Limit is { } limitValue)
+                    {
+                        writer.WriteNumber("limit", limitValue);
                     }
 
                     break;

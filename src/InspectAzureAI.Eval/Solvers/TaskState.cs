@@ -89,9 +89,50 @@ public sealed class TaskState
 
     public ToolChoice? ToolChoice { get; set; }
 
-    public int? MessageLimit { get; set; }
+    private int? _messageLimit;
 
-    public int? TokenLimit { get; set; }
+    private int? _tokenLimit;
+
+    /// <summary>Port of <c>message_limit</c>: reads and writes the sample's scoped <see cref="Context.MessageLimit"/> once the runner has attached it.</summary>
+    public int? MessageLimit
+    {
+        get => MessageLimitNode is { } node ? node.Limit : _messageLimit;
+        set
+        {
+            _messageLimit = value;
+            if (MessageLimitNode is { } node)
+            {
+                node.Limit = value;
+            }
+        }
+    }
+
+    /// <summary>Port of <c>token_limit</c>: reads and writes the sample's scoped <see cref="Context.TokenLimit"/> once the runner has attached it.</summary>
+    public int? TokenLimit
+    {
+        get => TokenLimitNode is { } node ? node.Limit : _tokenLimit;
+        set
+        {
+            _tokenLimit = value;
+            if (TokenLimitNode is { } node)
+            {
+                node.Limit = value;
+            }
+        }
+    }
+
+    /// <summary>The sample-level message limit scope (Python's <c>_message_limit</c>), attached by the runner.</summary>
+    internal MessageLimit? MessageLimitNode { get; private set; }
+
+    /// <summary>The sample-level token limit scope (Python's <c>_token_limit</c>), attached by the runner.</summary>
+    internal TokenLimit? TokenLimitNode { get; private set; }
+
+    /// <summary>Binds the sample-level scopes the runner enters around the solvers so the limit properties read and write them.</summary>
+    internal void AttachLimits(MessageLimit messageLimit, TokenLimit tokenLimit)
+    {
+        MessageLimitNode = messageLimit;
+        TokenLimitNode = tokenLimit;
+    }
 
     /// <summary>Port of <c>token_usage</c>: total tokens recorded against the current sample.</summary>
     public int TokenUsage => SampleContext.Current?.Limits.TotalUsage.TotalTokens ?? 0;

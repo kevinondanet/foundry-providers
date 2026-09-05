@@ -29,6 +29,12 @@ public static class GenerateLoop
     /// </summary>
     internal static void CheckMessageLimit(TaskState state)
     {
+        if (state.MessageLimitNode is not null)
+        {
+            // the scoped MessageLimit is checked (with its SampleLimitEvent) by Model.GenerateAsync
+            return;
+        }
+
         if (state.MessageLimit is { } limit)
         {
             new Limits { MessageLimit = limit }.CheckMessageLimit(state.Messages.Count);
@@ -38,6 +44,12 @@ public static class GenerateLoop
     /// <summary>Port of the <c>TaskState.token_limit</c> check: raised after a generate once the sample's usage exceeds the state's own limit.</summary>
     internal static void CheckTokenLimit(TaskState state)
     {
+        if (state.TokenLimitNode is not null)
+        {
+            // the scoped TokenLimit is checked (with its SampleLimitEvent) by Model.GenerateAsync
+            return;
+        }
+
         if (state.TokenLimit is not { } limit)
         {
             return;

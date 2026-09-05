@@ -73,6 +73,7 @@ public sealed class Model
 
         // Python counts the caller's conversation, before its own config.system_message is inserted.
         context?.Limits.CheckMessageLimit(input.Count);
+        MessageLimit.CheckMessageLimit(input.Count, raiseForEqual: true);
 
         var messages = input;
         if (resolvedConfig.SystemMessage is { } systemMessage)
@@ -128,8 +129,11 @@ public sealed class Model
                 if (output.Usage is { } usage)
                 {
                     context?.Limits.AddUsage(usage, Name);
+                    TokenLimit.RecordModelUsage(usage);
+                    TokenLimit.CheckTokenLimit();
                 }
 
+                TurnLimit.RecordTurn();
                 return output;
             }
 
@@ -152,7 +156,9 @@ public sealed class Model
             var wait = decision.RetryAfter is { } retryAfter ? TimeSpan.FromSeconds(Math.Max(0, retryAfter)) : Backoff(retries);
             retries++;
             await NotifyRetryAsync(onStream, retries).ConfigureAwait(false);
+            var waitStarted = Stopwatch.GetTimestamp();
             await (Retry.Delay ?? SleepDelay)(wait, cancellationToken).ConfigureAwait(false);
+            WorkingLimit.ReportSampleWaitingTime(Stopwatch.GetElapsedTime(waitStarted));
         }
     }
 
