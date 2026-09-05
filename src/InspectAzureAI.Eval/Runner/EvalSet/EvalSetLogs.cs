@@ -24,12 +24,12 @@ public static partial class EvalSetLogs
     [GeneratedRegex(@"^\d{4}-\d{2}-\d{2}T\d{2}[:-]\d{2}[:-]\d{2}.*$")]
     private static partial Regex LogFilePattern();
 
-    /// <summary>Port of <c>is_log_file</c> for the JSON format: a timestamp-prefixed <c>.json</c> file (the binary <c>.eval</c> format is not readable by this port).</summary>
+    /// <summary>Port of <c>is_log_file</c>: a timestamp-prefixed <c>.eval</c> or <c>.json</c> file (both formats are read through the format-aware <see cref="EvalLogWriter"/>).</summary>
     public static bool IsLogFile(string path)
     {
         ArgumentException.ThrowIfNullOrEmpty(path);
         var name = System.IO.Path.GetFileName(path);
-        return name.EndsWith(".json", StringComparison.Ordinal) && LogFilePattern().IsMatch(name);
+        return (name.EndsWith(".eval", StringComparison.Ordinal) || name.EndsWith(".json", StringComparison.Ordinal)) && LogFilePattern().IsMatch(name);
     }
 
     /// <summary>Port of <c>list_all_eval_logs</c>: every log under <paramref name="logDir"/> (newest name first) with its header and task identifier; an unreadable log propagates its error, as in Python.</summary>
@@ -41,7 +41,7 @@ public static partial class EvalSetLogs
             return [];
         }
 
-        var files = Directory.EnumerateFiles(logDir, "*.json", recursive ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly)
+        var files = Directory.EnumerateFiles(logDir, "*", recursive ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly)
             .Where(IsLogFile)
             .OrderByDescending(path => path, StringComparer.Ordinal)
             .ToList();

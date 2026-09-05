@@ -863,7 +863,7 @@ public sealed class EvalFormatTests : IDisposable
         Assert.Contains("samples/1_epoch_1.json", names);
         Assert.Contains("samples/2_epoch_1.json", names);
         Assert.Contains("_journal/summaries/1.json", names);
-        Assert.Equal(["summaries.json", "header.json"], names[^2..]);
+        Assert.Equal(["summaries.json", "reductions.json", "header.json"], names[^3..]);
 
         var read = EvalLogWriter.Read(file);
         Assert.Equal(EvalStatus.Success, read.Status);

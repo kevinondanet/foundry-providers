@@ -62,7 +62,7 @@ public sealed record EvalSetArgsInTaskIdentifier
 /// The same value is computed from a task before it runs (<see cref="Compute(EvalTask, Model, ModelRoles?, EvalSetArgsInTaskIdentifier)"/>)
 /// and from the log it produced (<see cref="Compute(EvalLog)"/>). The JSON canonicalisation reproduces
 /// <c>pydantic_core.to_json</c> (Python field order, <c>exclude_none</c> for models, 2-space indent), so identifiers
-/// agree with Python's for the inputs both sides can express (an empty solver plan, no model args, no task file).
+/// agree with Python's for the inputs both sides can express (the runner's plan, no model args, no task file).
 /// </summary>
 public static class TaskIdentifier
 {
@@ -89,7 +89,7 @@ public static class TaskIdentifier
         ArgumentNullException.ThrowIfNull(task);
         ArgumentNullException.ThrowIfNull(model);
         ArgumentNullException.ThrowIfNull(args);
-        var plan = new EvalPlan { Config = task.Config.Merge(args.Config) };
+        var plan = Eval.ResolvePlan(task, task.Config.Merge(args.Config));
         var fields = new AdditionalHashFields(
             ModelArgs: new Dictionary<string, object?>(StringComparer.Ordinal),
             Version: task.Version,

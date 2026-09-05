@@ -58,7 +58,7 @@ finds the written span) and `eval_results` over the same sample scores gives the
   `metadata` are written as `{}` and `EvalScore.params` stays empty.
 - **Scorers span type.** Python's `span()` defaults the type to the name, so its scorers span has type `scorers`;
   the port writes that too, and its finder also accepts the runner's `span` type so the port's own logs merge.
-- **JSON only.** The `.eval` zip format is not part of the port; the path overload refuses it. There is no
+- **JSON only.** The path overload refuses the `.eval` zip format (the eval-format port's `EvalLogWriter` can now read and write it, so lifting the guard is a follow-up). There is no
   streaming mode, no interactive prompts (`ResolveAction` uses the prompt defaults), and no `-scored` file naming.
 - **Headline fallback is silent** (Python warns once); an unnamed reducer passed explicitly is an `ArgumentException`
   (Python raises from the registry). The runner leaves `epochs_reducer` unset when a custom (unnamed) reducer is used.

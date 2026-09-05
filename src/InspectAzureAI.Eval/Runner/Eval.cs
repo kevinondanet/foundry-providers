@@ -148,13 +148,8 @@ public static class Eval
             },
         };
 
-        // one plan instance for the task-start hook and the log, as Python's TaskLogger holds it (the port names its
-        // solver steps as the transcript spans do, since Solver delegates carry no registry name)
-        var plan = new EvalPlan
-        {
-            Steps = task.Setup is null ? [new EvalPlanStep("solver")] : [new EvalPlanStep("setup"), new EvalPlanStep("solver")],
-            Config = model.Config,
-        };
+        // one plan instance for the task-start hook and the log, as Python's TaskLogger holds it
+        var plan = ResolvePlan(task, model.Config);
         await hooks.StartAsync(spec, plan, cancellationToken).ConfigureAwait(false);
         var sandboxSpecs = samples.Select(sample => SandboxSetup.ResolveSpec(task.Sandbox, sample)).ToList();
         var providerSpecs = sandboxSpecs.OfType<SandboxSpec>().Distinct().ToList();
@@ -419,6 +414,18 @@ public static class Eval
     }
 
     /// <summary>Port of <c>task.config.merge(eval config)</c>: the model's own (eval-level) config layers over the task's.</summary>
+    /// <summary>
+    /// Port of <c>resolve_plan</c> + <c>plan_to_eval_plan</c>: the plan the log records for <paramref name="task"/> under
+    /// <paramref name="config"/> (the task's generate config merged with the eval's). Solver delegates carry no registry
+    /// name, so the steps are named as the transcript spans are (<c>setup</c> when the task has one, then <c>solver</c>).
+    /// The eval-set task identifier hashes this same plan, so a task and the log it produced agree.
+    /// </summary>
+    internal static EvalPlan ResolvePlan(EvalTask task, GenerateConfig config) => new()
+    {
+        Steps = task.Setup is null ? [new EvalPlanStep("solver")] : [new EvalPlanStep("setup"), new EvalPlanStep("solver")],
+        Config = config,
+    };
+
     private static Model EvalModel(EvalTask task, EvalOptions options)
     {
         var source = options.Model;

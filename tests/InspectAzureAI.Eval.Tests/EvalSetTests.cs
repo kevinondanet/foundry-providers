@@ -49,7 +49,7 @@ public sealed class EvalSetTests : IDisposable
 
     private static Exception Boom(string what) => new InvalidOperationException($"provider exploded on {what}");
 
-    private IReadOnlyList<string> LogFiles() => Directory.GetFiles(_logDir, "*.json").Where(EvalSetLogs.IsLogFile).Select(Path.GetFileName).Select(name => name!).ToList();
+    private IReadOnlyList<string> LogFiles() => Directory.GetFiles(_logDir).Where(EvalSetLogs.IsLogFile).Select(Path.GetFileName).Select(name => name!).ToList();
 
     // ---- task identifier ------------------------------------------------------------------------------------
 
@@ -448,9 +448,10 @@ public sealed class EvalSetTests : IDisposable
         Assert.True(File.Exists(b1));
 
         Assert.True(EvalSetLogs.IsLogFile("2024-01-01T10-00-00_quiz_aaaaaa.json"));
+        Assert.False(EvalSetLogs.IsLogFile("2024-01-01T10-00-00_quiz_aaaaaa.txt"));
         Assert.True(EvalSetLogs.IsLogFile("2024-01-01T10:00:00+00:00_quiz.json"));
         Assert.False(EvalSetLogs.IsLogFile("eval-set.json"));
-        Assert.False(EvalSetLogs.IsLogFile("2024-01-01T10-00-00_quiz.eval"));
+        Assert.True(EvalSetLogs.IsLogFile("2024-01-01T10-00-00_quiz.eval"));
     }
 
     private string WriteLog(string name, string taskId, EvalStatus status, DateTime modified)
