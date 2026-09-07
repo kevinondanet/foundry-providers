@@ -6,7 +6,7 @@
 //  log. Step by step:
 //
 //    1. resolve the task name through the registry (no import of the author's file);
-//    2. resolve the model through get_model() (layer 5);
+//    2. resolve the model through get_model() (layer 5) and make it the active model;
 //    3. for each sample, under a concurrency limit:
 //         a. open a transcript and make it ambient;
 //         b. create the sandbox and copy the sample's files in (layer 7);
@@ -58,8 +58,10 @@ internal static class EvalRunner
         // 1. Task by name. The registry hands back a fully built EvalTask.
         var task = Registry.Create<EvalTask>(RegistryType.Task, options.Task);
 
-        // 2. Model by name. Layer 5 resolves the provider; the engine holds only a Model.
+        // 2. Model by name. Layer 5 resolves the provider; the engine holds only a
+        //    Model, and makes it ambient so model-graded scorers can find it.
         var model = Models.get_model(options.Model);
+        using var activeModel = Models.BeginActive(model);
 
         // 3. Samples, at most MaxSamples at once — all on the one event loop.
         var generate = TaskGenerate.create(model, cancel);

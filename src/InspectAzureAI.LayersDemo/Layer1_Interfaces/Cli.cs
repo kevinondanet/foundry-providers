@@ -39,7 +39,7 @@ namespace inspect_ai._cli
             if (rest.Length == 0 || rest[0].StartsWith("--")) { Console.WriteLine("eval needs a task name"); return 1; }
             var options = new EvalOptions(
                 Task: rest[0],
-                Model: Option(rest, "--model") ?? "mock/gpt-demo",
+                Model: Option(rest, "--model") ?? Environment.GetEnvironmentVariable("INSPECT_EVAL_MODEL") ?? "mock/gpt-demo",
                 LogDir: Option(rest, "--log-dir") ?? "memory://logs",
                 MaxSamples: int.Parse(Option(rest, "--max-samples") ?? "1"));
             var cancelAfter = Option(rest, "--cancel-after") is { } ms ? TimeSpan.FromMilliseconds(int.Parse(ms)) : (TimeSpan?)null;
@@ -97,6 +97,9 @@ namespace inspect_ai._cli
                   inspect-layers                       full narrated walk-through (eval, view, layer check)
                   inspect-layers eval <task> [--model mock/gpt-demo] [--log-dir memory://logs]
                                              [--max-samples 1] [--cancel-after <ms>]
+                    tasks: arithmetic (offline), expenses (multi-step, model-graded)
+                    models: mock/<any>, azureai/<deployment>  (or set INSPECT_EVAL_MODEL)
+                    azureai needs AZUREAI_BASE_URL and an `az login` session
                   inspect-layers list                  everything the registry knows
                   inspect-layers view [--log-dir ...]  read logs back through the filesystem abstraction
                   inspect-layers check-layers          verify no layer references a layer above it

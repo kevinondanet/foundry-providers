@@ -19,6 +19,7 @@
 // ============================================================================
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 
 namespace inspect_sandbox_tools;
 
@@ -51,22 +52,63 @@ public sealed class SandboxToolsServer
         return new JsonObject { ["jsonrpc"] = "2.0", ["id"] = id, ["result"] = result }.ToJsonString();
     }
 
-    /// <summary>A toy shell: enough commands to make the demo task solvable.</summary>
+    /// <summary>A toy shell: enough commands, plus `&&` / `||` / `;` chaining, to
+    /// make the demo tasks solvable by a real model that spells things its own way.</summary>
     private JsonNode Bash(string commandLine)
     {
-        var parts = commandLine.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        var (stdout, stderr, code) = parts switch
+        string stdout = "", stderr = "";
+        var code = 0;
+        var op = ";";
+        foreach (var token in Regex.Split(commandLine, @"(&&|\|\||;)").Select(t => t.Trim()))
         {
-            ["cat", var file] => _files.TryGetValue(file, out var text)
-                ? (text, "", 0)
-                : ("", $"cat: {file}: No such file or directory\n", 1),
-            ["echo", .. var rest] => (string.Join(' ', rest) + "\n", "", 0),
-            ["ls"] => (string.Join('\n', _files.Keys.OrderBy(k => k)) + "\n", "", 0),
-            ["pwd"] => ("/workspace\n", "", 0),
-            [var other, ..] => ("", $"bash: {other}: command not found\n", 127),
-            _ => ("", "", 0),
-        };
+            if (token is "&&" or "||" or ";") { op = token; continue; }
+            if (token.Length == 0) continue;
+            if (op == "&&" && code != 0) continue;   // run only if the previous command succeeded
+            if (op == "||" && code == 0) continue;   // run only if it failed
+
+            var words = token.Split(' ', StringSplitOptions.RemoveEmptyEntries)
+                .Where(w => !w.StartsWith("2>") && !w.StartsWith(">"))   // redirections: ignored, the demo has no /dev/null
+                .ToArray();
+            var (o, e, c) = Run(words);
+            stdout += o;
+            stderr += e;
+            code = c;
+        }
         return new JsonObject { ["stdout"] = stdout, ["stderr"] = stderr, ["returncode"] = code };
+    }
+
+    private (string Stdout, string Stderr, int Code) Run(string[] parts) => parts switch
+    {
+        ["cat", .. var files] when files.Length > 0 => Cat(files),
+        ["ls", ..] => (string.Join('\n', _files.Keys.OrderBy(k => k)) + "\n", "", 0),   // flags ignored
+        ["pwd"] => ("/workspace\n", "", 0),
+        ["echo", .. var rest] => (string.Join(' ', rest).Trim('"', '\'') + "\n", "", 0),
+        ["wc", "-l", var file] => _files.TryGetValue(Normalize(file), out var text)
+            ? ($"{text.Count(ch => ch == '\n')} {file}\n", "", 0)
+            : ("", $"wc: {file}: No such file or directory\n", 1),
+        [var other, ..] => ("", $"bash: {other}: command not found\n", 127),
+        _ => ("", "", 0),
+    };
+
+    private (string, string, int) Cat(string[] files)
+    {
+        string stdout = "", stderr = "";
+        var code = 0;
+        foreach (var file in files)
+        {
+            if (_files.TryGetValue(Normalize(file), out var text)) stdout += text;
+            else { stderr += $"cat: {file}: No such file or directory\n"; code = 1; }
+        }
+        return (stdout, stderr, code);
+    }
+
+    /// <summary>The working directory is /workspace; accept the ways a model may spell a path in it.</summary>
+    private static string Normalize(string path)
+    {
+        path = path.Trim('"', '\'');
+        if (path.StartsWith("/workspace/")) path = path["/workspace/".Length..];
+        if (path.StartsWith("./")) path = path[2..];
+        return path;
     }
 
     /// <summary>The `text_editor` tool's `create` and `view` commands.</summary>
