@@ -117,9 +117,28 @@ public sealed class Model(ModelAPI api, GenerateConfig config)
     }
 }
 
-/// <summary>Python: `get_model("openai/gpt-4o")`.</summary>
+/// <summary>Python: `get_model("openai/gpt-4o")`, and `get_model()` for the eval's own model.</summary>
 public static class Models
 {
+    // The model the current eval is running with (Python: the active-model
+    // contextvar). Set by the engine, read by anything that needs "the model"
+    // without being told which one — model-graded scorers, mostly.
+    private static readonly AsyncLocal<Model?> Active = new();
+
+    /// <summary>Python: `get_model()` with no arguments: the eval's active model.</summary>
+    public static Model get_model()
+        => Active.Value ?? throw new InvalidOperationException("get_model() with no name called outside a running eval.");
+
+    /// <summary>Engine-only: make the eval's model ambient for everything it runs.</summary>
+    internal static IDisposable BeginActive(Model model)
+    {
+        var previous = Active.Value;
+        Active.Value = model;
+        return new Restore(() => Active.Value = previous);
+    }
+
+    private sealed class Restore(Action undo) : IDisposable { public void Dispose() => undo(); }
+
     public static Model get_model(string name, GenerateConfig? config = null)
     {
         // "provider/model": the part before the slash is a registry name,

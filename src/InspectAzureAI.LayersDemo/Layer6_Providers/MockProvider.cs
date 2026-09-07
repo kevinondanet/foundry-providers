@@ -15,8 +15,10 @@
 //
 //  The demo provider is scripted so the app runs offline: it asks for the
 //  calculator when it sees arithmetic, asks for bash when it sees a file
-//  name, and answers from the tool result otherwise. Its first call ever
-//  fails with a rate-limit error so you can watch layer 5 retry.
+//  name, answers from the tool result otherwise, and says "GRADE: C" to any
+//  grading prompt from model_graded_fact(). Its first call ever fails with a
+//  rate-limit error so you can watch layer 5 retry. The real provider is in
+//  AzureAIProvider.cs next door.
 // ============================================================================
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -101,6 +103,10 @@ internal sealed partial class MockModelAPI(string modelName) : ModelAPI(modelNam
     {
         var last = input[^1];
         var question = input.LastOrDefault(m => m.Role == "user")?.Content ?? "";
+
+        // model_graded_fact() is asking for a verdict: the mock cannot judge, so it always agrees.
+        if (question.Contains("[Submission]:"))
+            return ("The mock grader always agrees. GRADE: C", null, "stop");
 
         // A tool just answered: turn its result into a final answer.
         if (last.Role == "tool")
