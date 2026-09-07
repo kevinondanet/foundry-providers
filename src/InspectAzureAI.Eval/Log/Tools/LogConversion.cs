@@ -79,7 +79,18 @@ public static class LogConversion
 
             if (stream)
             {
-                await StreamConvertFileAsync(inputFile, outputFile, outputDir, resolveAttachments, streamConcurrency, cancellationToken).ConfigureAwait(false);
+                // Flushes must not replace the source while deferred sample reads still need it.
+                var temporaryFile = Path.Combine(targetDir, $".{Guid.NewGuid():N}{to.Extension()}");
+                try
+                {
+                    await StreamConvertFileAsync(inputFile, temporaryFile, outputDir, resolveAttachments, streamConcurrency, cancellationToken).ConfigureAwait(false);
+                    cancellationToken.ThrowIfCancellationRequested();
+                    File.Move(temporaryFile, outputFile, overwrite);
+                }
+                finally
+                {
+                    File.Delete(temporaryFile);
+                }
             }
             else
             {

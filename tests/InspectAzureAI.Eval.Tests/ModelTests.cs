@@ -44,6 +44,63 @@ public class ModelTests
         return (model, api, delay);
     }
 
+    [Theory]
+    [InlineData(null, null, 0, 1)]
+    [InlineData(0, null, 5, 1)]
+    [InlineData(2, 0, 5, 1)]
+    [InlineData(0, 2, 0, 3)]
+    public async Task effective_config_controls_retry_count(int? modelRetries, int? callRetries, int defaultRetries, int expectedAttempts)
+    {
+        var api = new ScriptedModelApi(Enumerable.Range(0, 6).Select(_ => ScriptedTurn.Throw(Http(503))));
+        var delay = new CountingDelay();
+        var model = new Model(api, new GenerateConfig { MaxRetries = modelRetries }, new ModelRetryOptions(MaxRetries: defaultRetries, Delay: delay.Delay));
+
+        await Assert.ThrowsAsync<RequestFailedException>(() => model.GenerateAsync("hi", config: new GenerateConfig { MaxRetries = callRetries }));
+
+        Assert.Equal(expectedAttempts, api.Requests.Count);
+        Assert.Equal(expectedAttempts - 1, delay.Delays.Count);
+    }
+
+    [Theory]
+    [InlineData(null, null, 0, 1)]
+    [InlineData(0, null, 60, 1)]
+    [InlineData(60, 0, 60, 1)]
+    [InlineData(0, 60, 0, 2)]
+    public async Task effective_config_controls_retry_timeout(int? modelTimeout, int? callTimeout, int defaultTimeout, int expectedAttempts)
+    {
+        var api = new ScriptedModelApi(ScriptedTurn.Throw(Http(503)), ScriptedTurn.Throw(Http(503)));
+        var delay = new CountingDelay();
+        var model = new Model(api, new GenerateConfig { Timeout = modelTimeout },
+            new ModelRetryOptions(MaxRetries: 1, Timeout: TimeSpan.FromSeconds(defaultTimeout), Delay: delay.Delay));
+
+        await Assert.ThrowsAsync<RequestFailedException>(() => model.GenerateAsync("hi", config: new GenerateConfig { Timeout = callTimeout }));
+
+        Assert.Equal(expectedAttempts, api.Requests.Count);
+        Assert.Equal(expectedAttempts - 1, delay.Delays.Count);
+    }
+
+    [Fact]
+    public async Task cancelled_retry_wait_records_only_elapsed_waiting_time()
+    {
+        using var context = new SampleContextScope();
+        var working = new WorkingLimit(TimeSpan.FromSeconds(100));
+        using var limit = working.Enter();
+        using var cancellation = new CancellationTokenSource();
+        var api = new ScriptedModelApi(ScriptedTurn.Throw(Http(503))) { ShouldRetry = _ => RetryDecision.Transient(60) };
+        var model = new Model(api, retry: new ModelRetryOptions(Delay: (_, ct) =>
+        {
+            cancellation.Cancel();
+            ct.ThrowIfCancellationRequested();
+            return Task.CompletedTask;
+        }));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => model.GenerateAsync("hi", cancellationToken: cancellation.Token));
+
+        Assert.InRange(working.WaitingTime.TotalSeconds, 0, 1);
+        Assert.Equal(working.WaitingTime, context.Context.Limits.WaitingTime);
+        Assert.Single(api.Requests);
+    }
+
     [Fact]
     public async Task max_tokens_defaults_from_the_api_unless_configured()
     {

@@ -27,6 +27,38 @@ public class GenerateLoopTests
         return state;
     }
 
+    [Theory]
+    [InlineData(10, null, null, null, 10)]
+    [InlineData(10, 5, null, null, 5)]
+    [InlineData(10, 0, null, null, 0)]
+    [InlineData(10, 5, 3, null, 3)]
+    [InlineData(10, 5, 3, 0, 0)]
+    [InlineData(10, 5, 3, 2, 2)]
+    [InlineData(null, null, null, null, 16384)]
+    public async Task tool_output_limits_follow_config_and_explicit_overrides(int? modelLimit, int? callLimit, int? loopLimit, int? toolLimit, int expectedLimit)
+    {
+        var original = new string('x', 20000) + "0123456789";
+        var tool = new ToolDef("large", "Returns text.", new ToolParams(), (_, _) => Task.FromResult<ToolResult>(original)) { MaxOutput = toolLimit };
+        var api = new ScriptedModelApi(ScriptedTurn.ToolCall("large", new {}), ScriptedTurn.Text("done"));
+        var model = new InspectAzureAI.Eval.Model.Model(api, new GenerateConfig { MaxToolOutput = modelLimit });
+        var state = State(tool);
+
+        await GenerateLoop.Create(model, loopLimit)(state, config: new GenerateConfig { MaxToolOutput = callLimit });
+
+        var text = Assert.Single(state.Messages.OfType<ChatMessageTool>()).Text;
+        if (expectedLimit == 0)
+        {
+            Assert.Equal(original, text);
+        }
+        else
+        {
+            Assert.DoesNotContain(original, text);
+            Assert.Contains("<START_TOOL_OUTPUT>\n" + original[^expectedLimit..] + "\n<END_TOOL_OUTPUT>", text);
+        }
+
+        Assert.Equal(text, Assert.Single(api.Requests[1].Input.OfType<ChatMessageTool>()).Text);
+    }
+
     [Fact]
     public async Task loop_executes_tool_calls_and_stops_when_the_model_stops_calling_tools()
     {

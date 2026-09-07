@@ -1168,6 +1168,50 @@ public class LogSchemaTests
         Assert.False(LogAttachments.IsDataUri("data:text/plain,hello"));
     }
 
+    [Theory]
+    [InlineData(ResolveAttachments.Core)]
+    [InlineData(ResolveAttachments.Full)]
+    public void document_and_server_tool_attachments_resolve_and_round_trip(ResolveAttachments mode)
+    {
+        var attachments = new Dictionary<string, string>();
+        string Reference(string value)
+        {
+            var hash = MurmurHash3.Hash(value);
+            attachments[hash] = value;
+            return "attachment://" + hash;
+        }
+
+        var document = new ContentDocument("data:application/pdf;base64," + new string('A', 200), "report.pdf", "application/pdf") { Citations = true };
+        var tool = new ContentToolUse("web_search", "srv1", "web_search", Json(new { query = new string('q', 150) }), Json(new[] { new { title = new string('r', 150) } }))
+        { Context = "search", Error = new string('e', 150) };
+        var referencedTool = tool with { Arguments = Reference(tool.Arguments), Result = Reference(tool.Result), Error = Reference(tool.Error) };
+        var messages = new ChatMessage[] { new ChatMessageAssistant(new Content[] { referencedTool }) };
+        var sample = new EvalSample
+        {
+            Id = 1, Epoch = 1,
+            Input = new ChatMessage[] { new ChatMessageUser(new Content[] { document with { Document = Reference(document.Document) } }) },
+            Messages = messages,
+            Events = [new ModelEvent { Model = "m", Input = messages, ToolChoice = ToolChoice.Auto, Config = new GenerateConfig(), Output = new ModelOutput { Choices = [new ChatCompletionChoice((ChatMessageAssistant)messages[0], StopReason.Stop)] } }],
+            Attachments = attachments,
+        };
+
+        var resolved = LogAttachments.ResolveSampleAttachments(sample, mode);
+
+        Assert.Equal(document, Assert.IsType<ContentDocument>(resolved.Input.Messages![0].ContentList[0]));
+        Assert.Equal(tool, Assert.IsType<ContentToolUse>(resolved.Messages[0].ContentList[0]));
+        var modelEvent = Assert.IsType<ModelEvent>(resolved.Events[0]);
+        Assert.Equal(tool, Assert.IsType<ContentToolUse>(modelEvent.Input[0].ContentList[0]));
+        Assert.Equal(tool, Assert.IsType<ContentToolUse>(modelEvent.Output.Message.ContentList[0]));
+        Assert.Empty(resolved.Attachments);
+        Assert.Empty(LogAttachments.AttachmentRefs(Json(resolved)));
+
+        var condensed = LogAttachments.CondenseSample(resolved);
+        Assert.Equal(4, condensed.Attachments.Count);
+        Assert.Equal(Json(resolved), Json(LogAttachments.ResolveSampleAttachments(condensed, mode)));
+        var stripped = LogAttachments.CondenseSample(resolved, logImages: false);
+        Assert.Equal(LogAttachments.Base64DataRemoved, Assert.IsType<ContentDocument>(stripped.Input.Messages![0].ContentList[0]).Document);
+    }
+
     [Fact]
     public void python_image_log_attachments_resolve_and_hash_like_python()
     {

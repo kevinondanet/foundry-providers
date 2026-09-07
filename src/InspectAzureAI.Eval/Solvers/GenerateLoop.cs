@@ -15,7 +15,8 @@ public static class GenerateLoop
 {
     /// <summary>
     /// Builds the <see cref="Generate"/> delegate for <paramref name="model"/>. <paramref name="maxToolOutput"/>
-    /// stands in for Python's <c>config.max_tool_output</c>, which this port's <see cref="GenerateConfig"/> lacks.
+    /// overrides the per-call or model <see cref="GenerateConfig.MaxToolOutput"/> when supplied.
+    /// Individual tools can override this limit through <see cref="ToolDef.MaxOutput"/>.
     /// </summary>
     public static Generate Create(Model model, int? maxToolOutput = null)
     {
@@ -73,6 +74,7 @@ public static class GenerateLoop
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(state);
+        var resolvedMaxToolOutput = maxToolOutput ?? config?.MaxToolOutput ?? model.Config.MaxToolOutput;
 
         // A forced tool choice applies to the first call only, otherwise the model would be forced over and over.
         var toolChoice = state.ToolChoice;
@@ -97,7 +99,7 @@ public static class GenerateLoop
                 return state;
             }
 
-            var result = await ToolExecutor.ExecuteToolsAsync(state.Messages, state.Tools, maxToolOutput, cancellationToken).ConfigureAwait(false);
+            var result = await ToolExecutor.ExecuteToolsAsync(state.Messages, state.Tools, resolvedMaxToolOutput, cancellationToken).ConfigureAwait(false);
             state.Messages.AddRange(result.Messages);
             if (result.Output is { } toolOutput)
             {

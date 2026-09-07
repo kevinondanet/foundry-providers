@@ -401,7 +401,9 @@ public sealed class AnthropicFoundryModelApi : IModelApi, IDisposable
                 {
                     ["type"] = "tool_result",
                     ["tool_use_id"] = tool.ToolCallId ?? "",
-                    ["content"] = tool.Error is not null ? $"Error: {tool.Error.Message}" : tool.Text,
+                    ["content"] = tool.Error is not null
+                        ? JsonValue.Create($"Error: {tool.Error.Message}")
+                        : tool.Content.IsString ? JsonValue.Create(tool.Text) : ContentBlocks(tool.ContentList, includeCitations: false),
                     ["is_error"] = tool.Error is not null,
                 })),
                 _ => ("", new JsonArray()),
@@ -462,7 +464,7 @@ public sealed class AnthropicFoundryModelApi : IModelApi, IDisposable
         return blocks;
     }
 
-    private static JsonArray ContentBlocks(IReadOnlyList<Content> items)
+    private static JsonArray ContentBlocks(IReadOnlyList<Content> items, bool includeCitations = true)
     {
         var blocks = new JsonArray();
         foreach (var item in items)
@@ -471,7 +473,12 @@ public sealed class AnthropicFoundryModelApi : IModelApi, IDisposable
             {
                 case ContentText text when text.Text.Length > 0:
                     var textBlock = new JsonObject { ["type"] = "text", ["text"] = text.Text };
-                    AnthropicWebSearch.AddCitations(textBlock, text.Citations);
+                    // The Messages API accepts citations on conversation text, but not inside tool results.
+                    if (includeCitations)
+                    {
+                        AnthropicWebSearch.AddCitations(textBlock, text.Citations);
+                    }
+
                     blocks.Add(textBlock);
                     break;
                 case ContentToolUse toolUse:

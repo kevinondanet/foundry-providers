@@ -15,6 +15,7 @@ public sealed record ExecuteToolsResult(IReadOnlyList<ChatMessage> Messages, Mod
 /// <summary>
 /// Port of <c>model/_call_tools.py</c> <c>execute_tools</c>: runs the tool calls of the last assistant
 /// message in ordered stages (consecutive parallel-safe calls concurrently, a serial call as a barrier),
+/// cancelling in-flight siblings when a call fails with an unhandled exception,
 /// validates each call's arguments against the tool's schema (<c>validate_tool_input</c>, jsonschema messages),
 /// maps tool failures to <see cref="ToolCallError"/>s, truncates text output and records a
 /// <see cref="ToolEvent"/> per call on the current transcript.
@@ -48,22 +49,24 @@ public static class ToolExecutor
         ModelOutput? resultOutput = null;
         foreach (var stage in Stages(toolCalls, tools))
         {
-            var tasks = stage.Select(index => RunOneAsync(toolCalls[index], tools, messages, maxOutput, cancellationToken)).ToArray();
-            var outcomes = await Task.WhenAll(tasks).ConfigureAwait(false);
+            var tasks = stage.Select(index => (Func<CancellationToken, Task<Outcome>>)(async ct =>
+            {
+                var outcome = await RunOneAsync(toolCalls[index], tools, messages, maxOutput, ct).ConfigureAwait(false);
+                // Record the failing tool's event before propagating the error to cancel its siblings.
+                if (outcome.Fatal is { } fatal)
+                {
+                    System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(fatal).Throw();
+                }
+
+                return outcome;
+            })).ToArray();
+            var outcomes = await AsyncUtil.TgCollect(tasks, cancellationToken).ConfigureAwait(false);
             for (var i = 0; i < stage.Count; i++)
             {
                 results[stage[i]] = outcomes[i].Message;
                 extras[stage[i]] = outcomes[i].Extra;
                 // Like Python, the last handoff output in declared order wins.
                 resultOutput = outcomes[i].Output ?? resultOutput;
-            }
-
-            // Anything that is not a ToolError (or one of the mapped system errors) is fatal to the sample,
-            // as in Python; the first failure in declared order wins once the stage has settled.
-            var fatal = outcomes.Select(o => o.Fatal).FirstOrDefault(e => e is not null);
-            if (fatal is not null)
-            {
-                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(fatal).Throw();
             }
         }
 

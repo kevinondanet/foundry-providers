@@ -172,6 +172,48 @@ public class AnthropicFoundryTests
         Assert.True(limited.IsAuthFailure(new RequestFailedException(401, "nope")));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task tool_result_images_reach_claude_and_are_redacted_in_the_call(bool withCaption)
+    {
+        using var env = EnvScope.Clean().Set(AzureAIModelApi.AzureAIBaseUrlVar, Inference);
+        var (api, handler, _) = Build(MessageJson());
+        var pixels = Convert.ToBase64String(new byte[200]);
+        var content = new List<Content>();
+        if (withCaption)
+        {
+            content.Add(new ContentText("Screenshot") { Citations = [AnthropicWebSearch.ToInspectCitation(JsonNode.Parse("""{"type":"web_search_result_location","url":"https://example.com","encrypted_index":"IDX"}""")!.AsObject())] });
+        }
+
+        content.Add(new ContentImage($"data:image/png;base64,{pixels}"));
+        content.Add(new ContentImage("https://example.com/image.png"));
+        var result = await api.GenerateAsync([
+            new ChatMessageUser("Take a screenshot"),
+            new ChatMessageAssistant("", [new ToolCall("tool1", "screenshot", new JsonObject())]),
+            new ChatMessageTool(MessageContent.FromItems(content), "tool1", "screenshot"),
+        ], [], ToolChoice.Auto, new GenerateConfig());
+
+        var toolResult = JsonNode.Parse(handler.Bodies.Single()!)!["messages"]![2]!["content"]![0]!;
+        Assert.Equal("tool1", toolResult["tool_use_id"]!.ToString());
+        Assert.False(toolResult["is_error"]!.GetValue<bool>());
+        var blocks = toolResult["content"]!.AsArray();
+        Assert.Equal(withCaption ? 3 : 2, blocks.Count);
+        if (withCaption)
+        {
+            Assert.Equal("Screenshot", blocks[0]!["text"]!.ToString());
+            Assert.Null(blocks[0]!["citations"]);
+        }
+
+        var imageIndex = withCaption ? 1 : 0;
+        Assert.Equal("image", blocks[imageIndex]!["type"]!.ToString());
+        Assert.Equal("base64", blocks[imageIndex]!["source"]!["type"]!.ToString());
+        Assert.Equal("image/png", blocks[imageIndex]!["source"]!["media_type"]!.ToString());
+        Assert.Equal(pixels, blocks[imageIndex]!["source"]!["data"]!.ToString());
+        Assert.Equal("https://example.com/image.png", blocks[imageIndex + 1]!["source"]!["url"]!.ToString());
+        Assert.Equal(OpenAIUtil.Base64DataRemoved, result.Call.Request["messages"]![2]!["content"]![0]!["content"]![imageIndex]!["source"]!["data"]!.ToString());
+    }
+
     [Fact]
     public async Task images_become_base64_sources_and_are_redacted_in_the_model_call()
     {

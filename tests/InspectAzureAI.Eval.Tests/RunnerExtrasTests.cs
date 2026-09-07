@@ -1271,7 +1271,81 @@ public sealed class RunnerExtrasTests : IDisposable
         Assert.Equal(10, sample.ModelUsage["scripted"].TotalTokens);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task evaluation_usage_counts_all_retry_attempts_and_initial_usage(bool finalFailure)
+    {
+        var modelName = "retry-accounting-" + Guid.NewGuid().ToString("N");
+        var usage = new ModelUsage(20, 30, 50) { TotalCost = 0.25 };
+        var api = new ScriptedModelApi(Enumerable.Range(0, 8).Select(_ => ScriptedTurn.Text("answer", usage)), modelName);
+        var attempts = new System.Collections.Concurrent.ConcurrentDictionary<object, int>();
+        var task = new EvalTask
+        {
+            Name = "retry-accounting",
+            Dataset = new MemoryDataset(Enumerable.Range(0, 4).Select(_ => new Sample("q"))),
+            RetryOnError = 1,
+            FailOnError = FailOnError.Never,
+            Solver = async (state, generate, ct) =>
+            {
+                await Task.Yield();
+                state = await generate(state, cancellationToken: ct);
+                if (attempts.AddOrUpdate(state.SampleId, 1, (_, count) => count + 1) == 1 || finalFailure)
+                {
+                    throw new InvalidOperationException("retry this sample");
+                }
+
+                return state;
+            },
+        };
+        var options = Options(api) with
+        {
+            MaxSamples = 4,
+            InitialModelUsage = new Dictionary<string, ModelUsage> { [modelName] = new ModelUsage(10, 10, 20) { TotalCost = 0.1 } },
+        };
+
+        var log = await Eval.RunAsync(task, options);
+
+        Assert.Equal(8, api.Requests.Count);
+        Assert.Equal(420, log.Stats.ModelUsage[modelName].TotalTokens);
+        Assert.Equal(2.1, log.Stats.ModelUsage[modelName].TotalCost!.Value, 8);
+        Assert.Equal(4, log.Samples!.Count);
+        Assert.All(log.Samples, sample =>
+        {
+            Assert.Equal(50, sample.ModelUsage[modelName].TotalTokens);
+            Assert.Equal(0.25, sample.ModelUsage[modelName].TotalCost);
+            Assert.Single(sample.ErrorRetries!);
+            Assert.Equal(finalFailure, sample.Error is not null);
+        });
+    }
+
     // ---------------------------------------------------------------- working time
+
+    [Fact]
+    public async Task retry_backoff_longer_than_the_working_limit_does_not_end_the_sample()
+    {
+        var api = new ScriptedModelApi(ScriptedTurn.Throw(new InvalidOperationException("busy")), ScriptedTurn.Text("4"))
+        {
+            ShouldRetry = _ => RetryDecision.Transient(2),
+        };
+        var task = new EvalTask
+        {
+            Name = "waiting-with-limit",
+            Dataset = new MemoryDataset([new Sample("2+2") { Target = "4" }]),
+            Scorers = [Scorers.Includes()],
+            WorkingLimit = TimeSpan.FromSeconds(1),
+        };
+
+        var log = await Eval.RunAsync(task, Options(api));
+
+        var sample = Assert.Single(log.Samples!);
+        Assert.Null(sample.Error);
+        Assert.Null(sample.Limit);
+        Assert.Equal("4", sample.Output.Completion);
+        Assert.Equal("C", sample.Scores!["includes"].Text);
+        Assert.Equal(2, api.Requests.Count);
+        Assert.True(sample.WorkingTime < sample.TotalTime - 1.9);
+    }
 
     [Fact]
     public async Task working_time_excludes_model_retry_waits()

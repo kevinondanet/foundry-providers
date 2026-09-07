@@ -496,6 +496,41 @@ public sealed class LogToolsTests : IDisposable
         Assert.Equal(Canonical(original), Canonical(EvalLogFiles.ReadEvalLog(evalFile)));
     }
 
+    [Theory]
+    [InlineData(LogFormat.Eval, 1)]
+    [InlineData(LogFormat.Eval, 2)]
+    [InlineData(LogFormat.Eval, null)]
+    [InlineData(LogFormat.Json, 1)]
+    public async Task stream_conversion_in_place_preserves_every_sample(LogFormat format, int? concurrency)
+    {
+        var path = Path.Combine(_tempDir, "original" + format.Extension());
+        await EvalLogFiles.WriteEvalLogAsync(MakeLog(Sample(1, 1), Sample(2, 1), Sample(3, 1)), path);
+        var before = Canonical(EvalLogFiles.ReadEvalLog(path));
+
+        await LogConversion.ConvertEvalLogsAsync(path, format, _tempDir, overwrite: true, stream: true, streamConcurrency: concurrency);
+
+        Assert.Equal(before, Canonical(EvalLogFiles.ReadEvalLog(path)));
+        Assert.Equal(path, Assert.Single(Directory.GetFiles(_tempDir)));
+    }
+
+    [Fact]
+    public async Task stream_conversion_failure_preserves_the_original_after_a_flush()
+    {
+        var path = Path.Combine(_tempDir, "original.eval");
+        await EvalLogFiles.WriteEvalLogAsync(MakeLog(Sample(1, 1), Sample(2, 1), Sample(3, 1)), path);
+        using (var zip = ZipFile.Open(path, ZipArchiveMode.Update))
+        {
+            zip.GetEntry("samples/2_epoch_1.json")!.Delete();
+        }
+
+        var before = File.ReadAllBytes(path);
+        await Assert.ThrowsAsync<KeyNotFoundException>(() => LogConversion.ConvertEvalLogsAsync(
+            path, LogFormat.Eval, _tempDir, overwrite: true, stream: true, streamConcurrency: 1));
+
+        Assert.Equal(before, File.ReadAllBytes(path));
+        Assert.Equal(path, Assert.Single(Directory.GetFiles(_tempDir)));
+    }
+
     [Fact]
     public async Task convert_directory_preserves_relative_paths_and_enforces_overwrite()
     {

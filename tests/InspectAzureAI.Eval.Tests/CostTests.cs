@@ -91,6 +91,60 @@ public sealed class CostTests : IDisposable
         Assert.Equal(expected, ModelCosts.ComputeModelCost(cost, usage, cacheTtl));
     }
 
+    [Theory]
+    [InlineData(5, true, false)]
+    [InlineData(15, false, false)]
+    [InlineData(5, true, true)]
+    [InlineData(15, false, true)]
+    public async Task fallback_pricing_controls_recorded_cost_and_sample_limits(double limit, bool exceeded, bool nested)
+    {
+        const string primaryName = "pricing-primary";
+        const string fallbackName = "pricing-fallback";
+        ModelInfoLookup.SetModelInfo(primaryName, new ModelInfo { Cost = new ModelCost(1, 1, 0, 0) });
+        ModelInfoLookup.SetModelInfo(fallbackName, new ModelInfo { Cost = new ModelCost(10, 10, 0, 0) });
+        var primary = new ScriptedModelApi([ScriptedTurn.Throw(new InvalidOperationException("down"))], primaryName);
+        var fallback = new ScriptedModelApi([ScriptedTurn.Text("done", new ModelUsage(1_000_000, 0, 1_000_000))], fallbackName);
+        ModelInfoLookup.SetModelInfo("pricing-intermediate", new ModelInfo { Cost = new ModelCost(2, 2, 0, 0) });
+        var intermediate = new ScriptedModelApi([ScriptedTurn.Throw(new InvalidOperationException("also down"))], "pricing-intermediate");
+        IModelApi serving = nested ? new FallbackModelApi(intermediate, [fallback]) : fallback;
+        var model = new Model(new FallbackModelApi(primary, [serving]));
+        var task = new EvalTask { Name = "fallback-cost", Dataset = new MemoryDataset([new Sample("q")]), CostLimit = limit };
+
+        var log = await Eval.RunAsync(task, new EvalOptions { Model = model, LogDir = Path.Combine(_tempDir, "logs") });
+
+        var sample = Assert.Single(log.Samples!);
+        Assert.Null(sample.Error);
+        Assert.Equal(10, sample.ModelUsage[primaryName].TotalCost);
+        Assert.Equal(10, log.Stats.ModelUsage[primaryName].TotalCost);
+        var modelEvent = Assert.Single(sample.Events.OfType<ModelEvent>());
+        Assert.Equal(10, modelEvent.Output.Usage!.TotalCost);
+        Assert.Equal(fallbackName, modelEvent.Output.Fallback!.FallbackModel);
+        Assert.Equal(exceeded ? "cost" : null, sample.Limit?.Type);
+        if (!exceeded)
+        {
+            Assert.Equal("done", sample.Output.Completion);
+        }
+    }
+
+    [Fact]
+    public async Task cost_limit_rejects_unpriced_nested_fallbacks_before_generating()
+    {
+        ModelInfoLookup.SetModelInfo("priced-primary", new ModelInfo { Cost = new ModelCost(1, 1, 0, 0) });
+        ModelInfoLookup.SetModelInfo("priced-fallback", new ModelInfo { Cost = new ModelCost(10, 10, 0, 0) });
+        var primary = new ScriptedModelApi([], "priced-primary");
+        var pricedFallback = new ScriptedModelApi([], "priced-fallback");
+        var unpriced = new ScriptedModelApi([], "unpriced-fallback");
+        var model = new Model(new FallbackModelApi(primary, [new FallbackModelApi(pricedFallback, [unpriced])]));
+        var task = new EvalTask { Name = "unpriced", Dataset = new MemoryDataset([new Sample("q")]), CostLimit = 5 };
+
+        var error = await Assert.ThrowsAsync<PrerequisiteError>(() => Eval.RunAsync(task, new EvalOptions { Model = model, LogDir = _tempDir }));
+
+        Assert.Contains("unpriced-fallback", error.Message);
+        Assert.Empty(primary.Requests);
+        Assert.Empty(pricedFallback.Requests);
+        Assert.Empty(unpriced.Requests);
+    }
+
     [Fact]
     public void cost_for_a_model_is_null_when_unknown_or_unpriced_and_a_value_when_priced()
     {

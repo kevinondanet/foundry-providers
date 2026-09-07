@@ -125,7 +125,7 @@ public sealed class FallbackModelApi : IModelApi
 
             if (result.Output is { } output && !ReferenceEquals(api, Primary))
             {
-                var fallback = new ModelFallback(Primary.ModelName, api.ModelName, Metadata: new Dictionary<string, object?>(StringComparer.Ordinal)
+                var fallback = new ModelFallback(Primary.ModelName, output.Fallback?.FallbackModel ?? api.ModelName, Metadata: new Dictionary<string, object?>(StringComparer.Ordinal)
                 {
                     ["reason"] = reason,
                 });

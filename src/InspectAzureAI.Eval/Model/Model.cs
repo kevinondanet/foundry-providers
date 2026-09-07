@@ -131,6 +131,8 @@ public sealed class Model
         ArgumentNullException.ThrowIfNull(input);
         var context = SampleContext.Current;
         var resolvedConfig = Config.Merge(config);
+        var maxRetries = resolvedConfig.MaxRetries ?? Retry.MaxRetries;
+        var retryTimeout = resolvedConfig.Timeout is { } timeout ? TimeSpan.FromSeconds(timeout) : Retry.Timeout;
         // Python: a call that passes no cache argument falls back to config.cache (bool | CachePolicy).
         cache ??= resolvedConfig.Cache switch { CachePolicy policy => policy, true => CachePolicy.Default, _ => null };
         if (resolvedConfig.MaxTokens is null)
@@ -226,7 +228,7 @@ public sealed class Model
 
             if (result?.Output is { } output)
             {
-                output = ModelCosts.PriceOutput(Name, WithGenerateSource(output));
+                output = ModelCosts.PriceOutput(output.Fallback?.FallbackModel ?? Name, WithGenerateSource(output));
                 Record(messages, resolvedTools, resolvedChoice, resolvedConfig, output, result.Call, retries, null, attemptStarted, elapsed, cacheMode);
                 if (output.Usage is { } usage)
                 {
@@ -286,8 +288,8 @@ public sealed class Model
                 Concurrency.ReportHttpRetry(decision.Kind, decision.RetryAfter, Name);
             }
 
-            var budgetExhausted = Retry.Timeout is { } budget && DateTimeOffset.UtcNow - started >= budget;
-            if (!decision.Retry || retries >= Retry.MaxRetries || budgetExhausted)
+            var budgetExhausted = retryTimeout is { } budget && DateTimeOffset.UtcNow - started >= budget;
+            if (!decision.Retry || retries >= maxRetries || budgetExhausted)
             {
                 ExceptionDispatchInfo.Capture(failure).Throw();
             }
@@ -297,9 +299,18 @@ public sealed class Model
             await NotifyRetryAsync(onStream, retries).ConfigureAwait(false);
             await HookEmitter.EmitModelRetryAsync(Name, retries, wait.TotalSeconds, RetryErrorInfo.Of(thrown), cancellationToken).ConfigureAwait(false);
             Throughput.RecordRetryWait(Name, wait.TotalSeconds, waiter: context);
+            // Credit the scheduled wait before sleeping so the working-limit monitor cannot count it as work.
+            // Reconcile to elapsed time even on cancellation (or an injected delay that returns early).
+            WorkingLimit.ReportSampleWaitingTime(wait);
             var waitStarted = Stopwatch.GetTimestamp();
-            await (Retry.Delay ?? SleepDelay)(wait, cancellationToken).ConfigureAwait(false);
-            WorkingLimit.ReportSampleWaitingTime(Stopwatch.GetElapsedTime(waitStarted));
+            try
+            {
+                await (Retry.Delay ?? SleepDelay)(wait, cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                WorkingLimit.ReportSampleWaitingTime(Stopwatch.GetElapsedTime(waitStarted) - wait);
+            }
         }
     }
 

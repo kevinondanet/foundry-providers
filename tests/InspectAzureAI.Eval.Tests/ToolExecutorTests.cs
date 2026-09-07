@@ -32,6 +32,63 @@ public class ToolExecutorTests
     }
 
     [Fact]
+    public async Task fatal_failure_cancels_siblings_and_preserves_the_original_exception()
+    {
+        using var context = new SampleContextScope();
+        using var stop = new CancellationTokenSource();
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cleanedUp = false;
+        var nextStageRan = false;
+        var failure = new InvalidOperationException("fatal sibling");
+        var slow = Tool("slow", async (_, ct) =>
+        {
+            started.SetResult();
+            try
+            {
+                await Task.Delay(Timeout.Infinite, ct);
+                return "never";
+            }
+            finally
+            {
+                cleanedUp = true;
+            }
+        });
+        var bad = Tool("bad", async (_, _) => { await started.Task; throw failure; });
+        var next = Tool("next", (_, _) => { nextStageRan = true; return Task.FromResult<ToolResult>("never"); }, parallel: false);
+        var run = ToolExecutor.ExecuteToolsAsync([Calls(Call("slow", "1"), Call("bad", "2"), Call("next", "3"))], [slow, bad, next], cancellationToken: stop.Token);
+        try
+        {
+            var error = await Assert.ThrowsAsync<InvalidOperationException>(() => run.WaitAsync(TimeSpan.FromSeconds(3)));
+            Assert.Same(failure, error);
+            Assert.True(cleanedUp);
+            Assert.False(nextStageRan);
+            Assert.True(Assert.Single(context.Transcript.Events.OfType<ToolEvent>(), e => e.Function == "bad").Failed);
+        }
+        finally
+        {
+            await stop.CancelAsync();
+            try { await run; } catch (Exception) { }
+        }
+    }
+
+    [Fact]
+    public async Task mapped_tool_error_does_not_cancel_parallel_siblings()
+    {
+        var recoverable = Tool("recoverable", (_, _) => throw new ToolError("try again"));
+        var sibling = Tool("sibling", async (_, ct) =>
+        {
+            await Task.Yield();
+            ct.ThrowIfCancellationRequested();
+            return "finished";
+        });
+
+        var result = await ToolExecutor.ExecuteToolsAsync([Calls(Call("recoverable", "1"), Call("sibling", "2"))], [recoverable, sibling]);
+
+        Assert.Equal("unknown", Assert.IsType<ChatMessageTool>(result.Messages[0]).Error!.Type);
+        Assert.Equal("finished", Assert.IsType<ChatMessageTool>(result.Messages[1]).Text);
+    }
+
+    [Fact]
     public async Task nothing_happens_unless_the_last_message_is_an_assistant_with_tool_calls()
     {
         var noCalls = await ToolExecutor.ExecuteToolsAsync([new ChatMessageAssistant("plain")], [Echo()]);

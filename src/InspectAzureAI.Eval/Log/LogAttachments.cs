@@ -300,6 +300,13 @@ public static partial class LogAttachments
         ContentAudio audio => audio with { Audio = fn(audio.Audio) },
         ContentVideo video => video with { Video = fn(video.Video) },
         ContentReasoning reasoning => reasoning with { Reasoning = fn(reasoning.Reasoning) },
+        ContentDocument document => document with { Document = fn(document.Document) },
+        ContentToolUse toolUse => toolUse with
+        {
+            Arguments = fn(toolUse.Arguments),
+            Result = fn(toolUse.Result),
+            Error = toolUse.Error is null ? null : fn(toolUse.Error),
+        },
         _ => content,
     };
 

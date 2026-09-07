@@ -185,7 +185,8 @@ public static class Eval
         var flushBuffer = recorder.DefaultLogBuffer(totalSamples, highThroughput: false);
         var pendingFlush = 0;
         var results = new SampleResult?[totalSamples];
-        var reused = new bool[totalSamples];
+        // Evaluation totals include discarded retry attempts; sample records retain only their own usage.
+        var executedUsage = new Limits();
         var earlyStops = new EarlyStop?[totalSamples];
         // Python: continue_on_fail never aborts mid-run; the fail_on_error policy is applied again at the end
         var errorHandler = new SampleErrorHandler(continueOnFail == true ? FailOnError.Never : failOnError, totalSamples);
@@ -250,7 +251,7 @@ public static class Eval
         if (options.SampleSource is { } sampleSource
             && (cancellationToken.IsCancellationRequested || failure is not null || SampleErrorHandler.ShouldEvalFail(errorHandler.ErrorCount, totalSamples, failOnError)))
         {
-            foreach (var index in CarryForwardUnloggedSamples(sampleSource, samples, epochs, results, reused))
+            foreach (var index in CarryForwardUnloggedSamples(sampleSource, samples, epochs, results))
             {
                 // Python's carry-forward completes the sample on the logger too, so the file carries the error history
                 await LogSampleAsync(results[index]!.Sample).ConfigureAwait(false);
@@ -312,7 +313,7 @@ public static class Eval
             {
                 StartedAt = startedAt,
                 CompletedAt = DateTimeOffset.UtcNow,
-                ModelUsage = CumulativeUsage(options.InitialModelUsage, results.Where((result, index) => result is not null && !reused[index]).Select(result => result!.Sample)),
+                ModelUsage = CumulativeUsage(options.InitialModelUsage, executedUsage.UsageByModel),
                 ConnectionLimitHistory = Concurrency.AdaptiveControllers().SelectMany(controller => controller.History).ToArray(),
             },
             Error = error,
@@ -354,7 +355,6 @@ public static class Eval
                 case PreviousSample.Reusable reusable:
                     var reusedResult = ReusedSampleResult(reusable.Sample);
                     results[index] = reusedResult;
-                    reused[index] = true;
                     // Python re-logs a reused sample into this attempt's log (the reuse sweep), so the file is complete on its own
                     await LogSampleAsync(reusable.Sample).ConfigureAwait(false);
                     reporter?.SampleCompleted(reusable.Sample);
@@ -403,6 +403,11 @@ public static class Eval
 
                     reporter?.Stats(EvalRunStats.Capture(semaphore));
                     var result = await runner.RunAsync(sample, sandbox, epoch, attempt, abort.Token).ConfigureAwait(false);
+                    foreach (var (name, usage) in result.Sample.ModelUsage)
+                    {
+                        executedUsage.RecordUsage(usage, name);
+                    }
+
                     if (result.Retry is { } retry)
                     {
                         // re-enter with the error recorded and the uuid carried; releasing the semaphore first sends
@@ -507,35 +512,32 @@ public static class Eval
     /// <summary>A grouping key that tells a string id from a numeric one with the same text.</summary>
     internal static string SampleIdKey(object? id) => (id is string ? "s:" : "n:") + IdText(id);
 
-    /// <summary>Port of <c>resolve_model_costs</c>: a cost limit requires cost data for the eval model, otherwise a <see cref="PrerequisiteError"/> before any sample runs.</summary>
+    /// <summary>Port of <c>resolve_model_costs</c>: a cost limit requires cost data for the eval model and its configured fallbacks, otherwise a <see cref="PrerequisiteError"/> before any sample runs.</summary>
     private static void ResolveModelCosts(Model model, double? costLimit)
     {
-        if (costLimit is null || ModelInfoLookup.GetModelInfo(model)?.Cost is not null)
+        if (costLimit is null)
+        {
+            return;
+        }
+
+        var missing = ServingModels(model.Api).Distinct(StringComparer.Ordinal)
+            .Where(name => ModelInfoLookup.GetModelInfo(name)?.Cost is null).ToArray();
+        if (missing.Length == 0)
         {
             return;
         }
 
         throw new PrerequisiteError(
-            $"cost_limit requires cost data for all models. Missing cost data for: {model.Name}. "
+            $"cost_limit requires cost data for all models. Missing cost data for: {string.Join(", ", missing)}. "
             + $"Use ModelInfoLookup.SetModelCost() or {ModelCostConfig.EnvironmentVariable} to configure pricing.");
-    }
 
-    private static Dictionary<string, ModelUsage> AggregateUsage(IEnumerable<EvalSample> samples)
-    {
-        var usage = new Dictionary<string, ModelUsage>(StringComparer.Ordinal);
-        foreach (var sample in samples)
-        {
-            foreach (var (name, sampleUsage) in sample.ModelUsage)
-            {
-                usage[name] = usage.TryGetValue(name, out var existing) ? existing + sampleUsage : sampleUsage;
-            }
-        }
-
-        return usage;
+        static IEnumerable<string> ServingModels(IModelApi api) => api is FallbackModelApi fallback
+            ? ServingModels(fallback.Primary).Concat(fallback.Fallbacks.SelectMany(ServingModels))
+            : [api.ModelName];
     }
 
     /// <summary>Port of <c>init_model_usage(initial_model_usage)</c>: the previous attempt's totals (which already cover the samples reused from it) plus the usage of this attempt's own runs.</summary>
-    private static Dictionary<string, ModelUsage> CumulativeUsage(IReadOnlyDictionary<string, ModelUsage>? initial, IEnumerable<EvalSample> samples)
+    private static Dictionary<string, ModelUsage> CumulativeUsage(IReadOnlyDictionary<string, ModelUsage>? initial, IReadOnlyDictionary<string, ModelUsage> executed)
     {
         var usage = new Dictionary<string, ModelUsage>(StringComparer.Ordinal);
         foreach (var (name, prior) in initial ?? new Dictionary<string, ModelUsage>(StringComparer.Ordinal))
@@ -543,7 +545,7 @@ public static class Eval
             usage[name] = prior;
         }
 
-        foreach (var (name, added) in AggregateUsage(samples))
+        foreach (var (name, added) in executed)
         {
             usage[name] = usage.TryGetValue(name, out var existing) ? existing + added : added;
         }
@@ -572,7 +574,7 @@ public static class Eval
     /// previous record, so the next attempt's sample source still sees its error history. Returns the result
     /// indices it filled, for the caller to re-log.
     /// </summary>
-    private static List<int> CarryForwardUnloggedSamples(EvalSampleSource source, IReadOnlyList<Sample> samples, int epochs, SampleResult?[] results, bool[] reused)
+    private static List<int> CarryForwardUnloggedSamples(EvalSampleSource source, IReadOnlyList<Sample> samples, int epochs, SampleResult?[] results)
     {
         var carried = new List<int>();
         var positions = new Dictionary<string, int>(StringComparer.Ordinal);
@@ -592,7 +594,6 @@ public static class Eval
             if (results[index] is null && source.Lookup(id, epoch) is PreviousSample.Errored previous)
             {
                 results[index] = ReusedSampleResult(previous.Sample);
-                reused[index] = true;
                 carried.Add(index);
             }
         }
