@@ -1,0 +1,720 @@
+<title>Foundry Wire</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+<style>
+  :root {
+    --ground: #F4F6F8;
+    --surface: #FFFFFF;
+    --surface-2: #EDF0F4;
+    --ink: #151C24;
+    --muted: #5F6F80;
+    --line: #D7DEE6;
+    --line-strong: #B9C4D0;
+    --accent: #0B7A75;
+    --accent-ink: #FFFFFF;
+    --accent-soft: #DDF0EE;
+    --route2: #B0680F;
+    --route2-soft: #F7EAD6;
+    --ok: #1F7A3A;
+    --ok-soft: #DDF2E3;
+    --fail: #B42323;
+    --fail-soft: #F8E0E0;
+    --warn: #8A5A00;
+    --warn-soft: #FBEFD2;
+    --req: #EEF6F5;
+    --res: #F2F4F7;
+    --key: #0B5A8A;
+    --str: #7A2E0E;
+    --num: #1F5FBF;
+    --lit: #6B2FA0;
+    --shadow: 0 1px 2px rgba(21, 28, 36, .06), 0 8px 24px -16px rgba(21, 28, 36, .25);
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #0E1319; --surface: #151C24; --surface-2: #1B242E; --ink: #E4EAF0; --muted: #8FA0B1;
+      --line: #26313D; --line-strong: #3A4756; --accent: #3DBDB5; --accent-ink: #06201F; --accent-soft: #143633;
+      --route2: #E0A64A; --route2-soft: #3A2A12; --ok: #4CC26E; --ok-soft: #12301C; --fail: #F07070; --fail-soft: #3A1717;
+      --warn: #E8B85C; --warn-soft: #33260C; --req: #12211F; --res: #171D25;
+      --key: #7CC4F5; --str: #F0A98A; --num: #8FB8FF; --lit: #C9A2F0;
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px -16px rgba(0,0,0,.6);
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground: #0E1319; --surface: #151C24; --surface-2: #1B242E; --ink: #E4EAF0; --muted: #8FA0B1;
+    --line: #26313D; --line-strong: #3A4756; --accent: #3DBDB5; --accent-ink: #06201F; --accent-soft: #143633;
+    --route2: #E0A64A; --route2-soft: #3A2A12; --ok: #4CC26E; --ok-soft: #12301C; --fail: #F07070; --fail-soft: #3A1717;
+    --warn: #E8B85C; --warn-soft: #33260C; --req: #12211F; --res: #171D25;
+    --key: #7CC4F5; --str: #F0A98A; --num: #8FB8FF; --lit: #C9A2F0;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px -16px rgba(0,0,0,.6);
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--ground); color: var(--ink);
+    font: 14px/1.5 "IBM Plex Sans", "Segoe UI", Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  code, pre, .mono { font-family: "IBM Plex Mono", "SFMono-Regular", Menlo, Consolas, monospace; }
+  a { color: var(--accent); }
+  button { font: inherit; color: inherit; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .app { display: grid; grid-template-rows: auto auto 1fr; min-height: 100vh; }
+
+  /* ---------- top bar ---------- */
+  .top {
+    display: flex; align-items: baseline; gap: 18px; flex-wrap: wrap;
+    padding: 14px 22px 10px; border-bottom: 1px solid var(--line); background: var(--surface);
+  }
+  .top h1 { margin: 0; font-size: 19px; font-weight: 700; letter-spacing: -.01em; }
+  .top h1 small { font-weight: 500; color: var(--muted); font-size: 13px; margin-left: 10px; }
+  .top .facts { display: flex; gap: 18px; flex-wrap: wrap; color: var(--muted); font-size: 12.5px; margin-left: auto; }
+  .top .facts b { color: var(--ink); font-weight: 500; }
+
+  /* ---------- anatomy strip ---------- */
+  .anatomy {
+    display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; align-items: stretch;
+    padding: 14px 22px; background: var(--surface); border-bottom: 1px solid var(--line); overflow-x: auto;
+  }
+  .step { position: relative; padding: 10px 12px 10px 14px; border-left: 3px solid var(--line-strong); background: var(--surface-2); border-radius: 0 6px 6px 0; min-width: 0; }
+  .step.accent { border-left-color: var(--accent); }
+  .step.route2 { border-left-color: var(--route2); }
+  .step .eyebrow { font-size: 10.5px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 600; }
+  .step .what { font-weight: 600; margin: 2px 0 3px; font-size: 13px; }
+  .step .how { font-size: 12px; color: var(--muted); }
+  .step code { font-size: 11.5px; color: var(--ink); word-break: break-all; }
+  .step + .step::before {
+    content: "→"; position: absolute; left: -12px; top: 50%; transform: translateY(-50%);
+    color: var(--muted); font-size: 14px; pointer-events: none;
+  }
+
+  /* ---------- body ---------- */
+  .body { display: grid; grid-template-columns: 290px minmax(0, 1fr); min-height: 0; }
+  .rail { border-right: 1px solid var(--line); background: var(--surface); padding: 12px 10px 24px; overflow-y: auto; position: sticky; top: 0; max-height: 100vh; }
+  .rail .group { margin: 8px 0 14px; }
+  .rail .group h3 { margin: 0 8px 6px; font-size: 10.5px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 600; display: flex; gap: 8px; align-items: center; }
+  .rail .group h3 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); display: inline-block; }
+  .rail .group h3 .dot.route2 { background: var(--route2); }
+  .rail .group h3 .dot.off { background: var(--line-strong); }
+  .rail button.item {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px;
+    width: 100%; text-align: left; padding: 7px 8px; border: 0; border-radius: 6px; background: transparent; cursor: pointer;
+  }
+  .rail button.item:hover { background: var(--surface-2); }
+  .rail button.item[aria-current="true"] { background: var(--accent-soft); }
+  .rail .name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rail .sub { display: block; font-size: 11.5px; color: var(--muted); }
+  .rail .chips { display: flex; gap: 3px; }
+  .chip { display: inline-block; width: 9px; height: 9px; border-radius: 2px; background: var(--line-strong); }
+  .chip.ok { background: var(--ok); }
+  .chip.fail { background: var(--fail); }
+  .chip.warn { background: var(--warn); }
+  .rail button.overview { font-weight: 600; margin-bottom: 4px; }
+
+  .main { padding: 18px 22px 40px; min-width: 0; }
+  .main h2 { margin: 0 0 4px; font-size: 20px; font-weight: 700; letter-spacing: -.01em; text-wrap: balance; }
+  .meta { display: flex; flex-wrap: wrap; gap: 6px 14px; color: var(--muted); font-size: 12.5px; margin-bottom: 14px; }
+  .meta b { color: var(--ink); font-weight: 500; }
+
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11.5px; font-weight: 600; line-height: 18px; white-space: nowrap; }
+  .pill.route { background: var(--accent-soft); color: var(--accent); }
+  .pill.route2 { background: var(--route2-soft); color: var(--route2); }
+  .pill.ok { background: var(--ok-soft); color: var(--ok); }
+  .pill.fail { background: var(--fail-soft); color: var(--fail); }
+  .pill.warn { background: var(--warn-soft); color: var(--warn); }
+  .pill.neutral { background: var(--surface-2); color: var(--muted); }
+  .pill.outline { background: transparent; border: 1px solid currentColor; line-height: 16px; }
+
+  /* ---------- overview table ---------- */
+  .tablewrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; }
+  table.overview { border-collapse: collapse; width: 100%; font-size: 13px; }
+  table.overview th { text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 600; padding: 10px 12px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  table.overview td { padding: 8px 12px; border-bottom: 1px solid var(--line); vertical-align: middle; white-space: nowrap; }
+  table.overview tr:last-child td { border-bottom: 0; }
+  table.overview tbody tr { cursor: pointer; }
+  table.overview tbody tr:hover td { background: var(--surface-2); }
+  table.overview td.num { font-variant-numeric: tabular-nums; text-align: right; }
+  table.overview td.note { white-space: normal; min-width: 260px; max-width: 420px; color: var(--muted); font-size: 12.5px; }
+  table.overview td .mono { font-size: 12px; }
+  .lead { max-width: 68ch; color: var(--muted); margin: 0 0 16px; }
+
+  /* ---------- tabs ---------- */
+  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 14px; flex-wrap: wrap; }
+  .tabs button { border: 0; background: transparent; padding: 8px 12px; border-bottom: 2px solid transparent; margin-bottom: -1px; cursor: pointer; color: var(--muted); font-weight: 500; display: flex; gap: 8px; align-items: center; }
+  .tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); }
+  .tabs button .pill { font-size: 10.5px; }
+
+  .prompt { display: flex; gap: 10px; align-items: baseline; color: var(--muted); font-size: 12.5px; margin: 0 0 12px; }
+  .prompt code { color: var(--ink); background: var(--surface-2); padding: 1px 6px; border-radius: 4px; }
+  .note { border-left: 3px solid var(--warn); background: var(--warn-soft); color: var(--ink); padding: 8px 12px; border-radius: 0 6px 6px 0; margin: 0 0 12px; font-size: 13px; }
+  .note.err { border-left-color: var(--fail); background: var(--fail-soft); }
+
+  /* ---------- exchange ---------- */
+  .exchange { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-bottom: 14px; }
+  @media (max-width: 1100px) { .exchange { grid-template-columns: minmax(0, 1fr); } }
+  .pane { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow); min-width: 0; display: flex; flex-direction: column; }
+  .pane > header { padding: 10px 14px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 10px; }
+  .pane.req > header { background: var(--req); }
+  .pane.res > header { background: var(--res); }
+  .pane > header .dir { font-size: 10.5px; text-transform: uppercase; letter-spacing: .08em; font-weight: 700; color: var(--muted); }
+  .pane > header .line { font-size: 12.5px; word-break: break-all; }
+  .pane > header .line b { font-weight: 600; }
+  .status { font-weight: 600; }
+  .status.s2 { color: var(--ok); } .status.s4, .status.s5 { color: var(--fail); }
+  .pane section { padding: 10px 14px; border-bottom: 1px solid var(--line); }
+  .pane section:last-child { border-bottom: 0; }
+  .pane h4 { margin: 0 0 6px; font-size: 10.5px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 600; display: flex; justify-content: space-between; align-items: baseline; }
+  .pane h4 span { font-weight: 500; text-transform: none; letter-spacing: 0; }
+  .headers { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .headers td { padding: 3px 0; vertical-align: top; border-bottom: 1px dashed var(--line); }
+  .headers tr:last-child td { border-bottom: 0; }
+  .headers td.h { width: 38%; padding-right: 10px; color: var(--key); font-weight: 500; }
+  .headers td.v { color: var(--ink); word-break: break-all; }
+  .headers tr.dim td { color: var(--muted); }
+  .headers tr.dim td.h { color: var(--muted); font-weight: 400; }
+  .headers tr.hot td.h { color: var(--accent); font-weight: 600; }
+  .tip { position: relative; cursor: help; border-bottom: 1px dotted currentColor; }
+  .tip::after {
+    content: attr(data-tip); position: absolute; left: 0; top: calc(100% + 6px); z-index: 20; width: max-content; max-width: 340px;
+    padding: 8px 10px; border-radius: 6px; background: var(--ink); color: var(--ground); font: 12px/1.45 "IBM Plex Sans", sans-serif;
+    white-space: normal; word-break: normal; box-shadow: var(--shadow); opacity: 0; pointer-events: none; transition: opacity .12s;
+  }
+  .tip:hover::after, .tip:focus::after { opacity: 1; }
+  .headers .toggle { border: 0; background: transparent; color: var(--accent); cursor: pointer; padding: 0; font-size: 12px; }
+
+  pre.json { margin: 0; font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; max-height: 520px; overflow: auto; }
+  .j-k { color: var(--key); } .j-s { color: var(--str); } .j-n { color: var(--num); } .j-l { color: var(--lit); } .j-p { color: var(--muted); }
+  .j-k.hot { color: var(--accent); font-weight: 600; }
+  .sse { display: grid; gap: 6px; max-height: 520px; overflow: auto; }
+  .ev { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 8px; align-items: start; font-size: 12px; }
+  .ev .evn { color: var(--route2); font-weight: 600; font-size: 11px; padding-top: 2px; word-break: break-all; }
+  .ev .evn.d { color: var(--muted); font-weight: 500; }
+  .ev pre { margin: 0; white-space: pre-wrap; word-break: break-word; font-size: 12px; line-height: 1.45; }
+  .ev.done pre { color: var(--muted); font-weight: 600; }
+  .more { color: var(--muted); font-size: 12px; }
+
+  /* ---------- outcome ---------- */
+  .outcome { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px 24px; }
+  .outcome .kv .k { font-size: 10.5px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 600; }
+  .outcome .kv .v { font-size: 13px; margin-top: 2px; word-break: break-word; }
+  .outcome .kv .v.mono { font-size: 12px; }
+  .outcome .wide { grid-column: 1 / -1; }
+
+  /* ---------- parameter matrix + params tab ---------- */
+  .matrixwrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; }
+  table.matrix { border-collapse: separate; border-spacing: 0; font-size: 12.5px; }
+  table.matrix th, table.matrix td { padding: 6px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; text-align: left; vertical-align: middle; }
+  table.matrix thead th { font-size: 10.5px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 600; vertical-align: bottom; }
+  table.matrix thead th .mono { text-transform: none; letter-spacing: 0; font-size: 11px; color: var(--key); }
+  table.matrix tr:last-child th, table.matrix tr:last-child td { border-bottom: 0; }
+  table.matrix th:first-child, table.matrix td:first-child { position: sticky; left: 0; z-index: 1; background: var(--surface); border-right: 1px solid var(--line); }
+  table.matrix tbody th { font-weight: 500; }
+  table.matrix tbody th .sub { display: block; font-size: 11px; color: var(--muted); font-weight: 400; }
+  table.matrix tbody tr:hover th, table.matrix tbody tr:hover td { background: var(--surface-2); }
+  table.matrix td .pill { cursor: help; }
+  button.link { border: 0; background: transparent; padding: 0; color: var(--accent); cursor: pointer; font-weight: 600; text-align: left; }
+  button.link:hover { text-decoration: underline; }
+  .legend { display: flex; flex-wrap: wrap; gap: 8px 18px; align-items: center; color: var(--muted); font-size: 12.5px; margin: 12px 0 0; }
+  .legend .item { display: inline-flex; gap: 6px; align-items: center; }
+  .capsh { font-size: 10.5px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 600; margin: 0 0 6px; }
+  .caps { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 14px; }
+  .caps .cap { font-size: 11.5px; padding: 2px 8px; border-radius: 6px; background: var(--surface-2); border: 1px solid var(--line); font-family: "IBM Plex Mono", "SFMono-Regular", Menlo, Consolas, monospace; }
+  .caps .cap b { font-weight: 500; color: var(--key); }
+  table.params tbody tr { cursor: auto; }
+  table.params td.mono, table.params td .mono { font-size: 12px; }
+  table.params td.value { white-space: normal; max-width: 260px; word-break: break-word; }
+  table.params tr.xrow td, table.params tr.xrow:hover td { white-space: normal; background: var(--ground); padding: 14px 12px 4px; }
+  table.params .toggle { border: 0; background: transparent; color: var(--accent); cursor: pointer; padding: 0; font-size: 12px; white-space: nowrap; }
+  details.reasoning { grid-column: 1 / -1; }
+  details.reasoning summary { cursor: pointer; font-size: 10.5px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 600; }
+  details.reasoning pre { margin: 6px 0 0; font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; color: var(--muted); background: var(--surface-2); padding: 8px 10px; border-radius: 6px; max-height: 320px; overflow: auto; }
+
+  /* ---------- guide ---------- */
+  details.guide { margin-top: 22px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; }
+  details.guide summary { cursor: pointer; padding: 10px 14px; font-weight: 600; }
+  details.guide .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 0 28px; padding: 4px 14px 14px; }
+  details.guide dl { margin: 0; font-size: 12.5px; }
+  details.guide dt { font-family: "IBM Plex Mono", monospace; color: var(--key); font-weight: 500; margin-top: 8px; }
+  details.guide dd { margin: 0; color: var(--muted); }
+
+  @media (max-width: 860px) {
+    .body { grid-template-columns: minmax(0, 1fr); }
+    .rail { position: static; max-height: none; border-right: 0; border-bottom: 1px solid var(--line); }
+    .anatomy { grid-template-columns: minmax(0, 1fr); }
+    .step + .step::before { content: "↓"; left: 14px; top: -14px; transform: none; }
+  }
+  @media (prefers-reduced-motion: reduce) { .tip::after { transition: none; } }
+</style>
+
+<div class="app">
+  <header class="top">
+    <h1>Foundry Wire <small>one real call to every model on the resource, as it went over HTTP</small></h1>
+    <div class="facts" id="facts"></div>
+  </header>
+  <div class="anatomy" id="anatomy"></div>
+  <div class="body">
+    <nav class="rail" id="rail" aria-label="Deployments"></nav>
+    <main class="main" id="main"></main>
+  </div>
+</div>
+
+<script id="calls" type="application/json">__CALLS_JSON__</script>
+<script>
+(function () {
+  const DATA = JSON.parse(document.getElementById('calls').textContent);
+
+  // ---------- plain-language notes for what is on the wire ----------
+  const HEADER_NOTES = {
+    'authorization': 'The only credential on the call: an Entra ID access token that DefaultAzureCredential obtained from your az login session, for the scope https://cognitiveservices.azure.com/.default. No api-key header is sent.',
+    'extra-parameters': 'pass-through tells the model-inference gateway to forward body fields it does not itself define (such as max_completion_tokens, reasoning_effort or thinking) to the model instead of rejecting them.',
+    'anthropic-version': 'Version pin for the Anthropic Messages API. Required on the /anthropic route; the Foundry route does not use it.',
+    'x-ms-client-request-id': 'Correlation id generated by the Azure SDK for this attempt; the gateway echoes it back so client and server logs can be matched.',
+    'x-ms-return-client-request-id': 'Asks the gateway to echo x-ms-client-request-id in the response.',
+    'user-agent': 'The Azure.AI.Inference SDK version and the .NET runtime that made the call.',
+    'accept': 'The client will take a JSON body (or an SSE event stream when "stream": true is in the request).',
+    'content-type': 'Media type of the body: JSON on the way in; JSON or text/event-stream on the way back.',
+    'content-length': 'Size of the body in bytes. Absent on streamed responses, which are chunked.',
+    'apim-request-id': 'Request id assigned by Azure API Management in front of the resource. Quote it in a support ticket.',
+    'x-request-id': 'Request id assigned further in, by the model-serving layer.',
+    'request-id': 'Request id in the Anthropic Messages format.',
+    'x-ms-region': 'Azure region that actually served the call.',
+    'x-ms-served-model': 'The model that produced the answer. For model-router this names the model the router picked.',
+    'x-ms-is-spilled-over': 'Whether the request spilled over from the deployment’s own capacity to shared capacity.',
+    'x-ms-rai-invoked': 'Whether the Responsible AI content filter ran on this call (the body then carries content_filter_results).',
+    'x-ratelimit-limit-requests': 'Requests allowed per renewal period on this deployment.',
+    'x-ratelimit-limit-tokens': 'Tokens allowed per renewal period on this deployment.',
+    'x-ratelimit-remaining-requests': 'Requests left in the current period.',
+    'x-ratelimit-remaining-tokens': 'Tokens left in the current period.',
+    'x-ratelimit-reset-requests': 'Time until the request budget renews.',
+    'x-ratelimit-reset-tokens': 'Time until the token budget renews. On an HTTP 429 the provider parses this as the retry-after delay.',
+    'x-ratelimit-renewalperiod-requests': 'Length of the request-budget period, in seconds.',
+    'x-ratelimit-renewalperiod-tokens': 'Length of the token-budget period, in seconds.',
+    'x-ratelimit-key': 'Which quota bucket the limits above belong to.',
+    'x-ratelimit-abusepenalty-active': 'Whether an abuse penalty is currently throttling this key.',
+    'azureai-fe-is-streaming': 'The gateway’s own view of whether this response is streamed.',
+    'azureai-fe-offer-type': 'How the deployment is billed and hosted (for example the pay-as-you-go serverless offer).',
+    'azureai-requested-tier': 'Service tier the request asked for (Anthropic route).',
+    'azureai-processed-tier': 'Service tier the request was actually processed on (Anthropic route).',
+    'azureml-model-session': 'Identifies the model instance that handled the call.',
+    'azureml-served-by-cluster': 'Compute cluster that served the call.',
+    'skip-error-remapping': 'Internal gateway flag: the model’s own error body was passed through unchanged.',
+    'x-accel-buffering': '"no" instructs proxies not to buffer, so SSE chunks reach the client as they are produced.',
+    'strict-transport-security': 'Standard HSTS header: this host is HTTPS only.',
+    'x-content-type-options': 'Standard nosniff header.',
+    'x-robots-tag': 'Standard header telling crawlers not to index the endpoint.',
+    'date': 'Server time when the response was generated.',
+  };
+  const HOT_HEADERS = new Set(['authorization', 'extra-parameters', 'anthropic-version', 'x-ms-served-model', 'x-ms-region', 'content-type', 'apim-request-id', 'x-ratelimit-remaining-tokens', 'x-ratelimit-reset-tokens', 'x-ms-rai-invoked']);
+  const DIM_HEADERS = new Set(['strict-transport-security', 'x-content-type-options', 'x-robots-tag', 'date', 'skip-error-remapping', 'azureml-model-session', 'azureml-served-by-cluster', 'x-ratelimit-key', 'x-ratelimit-abusepenalty-active', 'azureai-fe-offer-type', 'x-ratelimit-renewalperiod-requests', 'x-ratelimit-renewalperiod-tokens', 'x-ms-return-client-request-id', 'user-agent', 'accept']);
+
+  const BODY_NOTES = {
+    'model': 'The deployment name. Foundry routes on it; it is the only place the model is named in the request.',
+    'messages': 'The conversation so far, one object per turn with a role and content.',
+    'max_tokens': 'Cap on generated tokens. The Python provider sends 2048 by default (none for Mistral names).',
+    'max_completion_tokens': 'The same cap under the name gpt-5 and o-series models require. Sent for gpt-5 names automatically, or for any model with -M max_completion_tokens=true (MAI-Thinking-1 needs it).',
+    'stream': 'true asks for a server-sent-event stream instead of one JSON document.',
+    'tools': 'The functions the model may call, as JSON Schema. Native tool calling: nothing is added to the prompt.',
+    'tool_choice': 'auto lets the model decide whether to call a tool.',
+    'tool_calls': 'The model’s answer when it decides to call a tool: a function name and a JSON string of arguments, which the provider parses into a ToolCall.',
+    'finish_reason': 'Why generation stopped: stop, length, content_filter or tool_calls. Mapped to Inspect’s StopReason.',
+    'usage': 'Token counts for the call. Not reported by gpt-5 deployments in stream mode.',
+    'content_filter_results': 'Per-category verdicts from the Responsible AI filter. Read from the raw JSON because the SDK’s typed models drop it.',
+    'prompt_filter_results': 'Content-filter verdicts for the prompt.',
+    'input_schema': 'Anthropic’s name for a tool’s parameter schema.',
+    'tool_use': 'Anthropic’s tool call block: id, name and already-parsed input.',
+    'stop_reason': 'Anthropic’s finish reason: end_turn, max_tokens, stop_sequence or tool_use.',
+    'system': 'Anthropic carries the system prompt as a top-level field rather than a message.',
+    'temperature': 'Sampling temperature. Left unset by default; gpt-5 deployments accept only 1.',
+    'top_p': 'Nucleus sampling: only the smallest set of next tokens whose probabilities add up to p is considered.',
+    'top_k': 'Restricts sampling to the k most likely next tokens; not in the OpenAI schema, so only some vendors take it.',
+    'seed': 'Asks for repeatable sampling; a best-effort hint, not a guarantee.',
+    'frequency_penalty': 'Discourages repeating tokens in proportion to how often they have already appeared.',
+    'presence_penalty': 'Discourages tokens that have appeared at all, nudging the answer toward new material.',
+    'stop': 'Strings that end generation as soon as they are produced; the completion excludes them.',
+    'stop_sequences': 'Anthropic’s name for stop.',
+    'n': 'How many alternative completions to generate for the one prompt.',
+    'logprobs': 'Asks for per-token log probabilities with the answer (top_logprobs adds the runners-up).',
+    'response_format': 'Asks for a JSON answer: {type: json_object} for any JSON object, or json_schema with a schema the answer must satisfy.',
+    'stream_options': '{include_usage: true} asks a streamed response to end with a usage chunk.',
+    'parallel_tool_calls': 'false forbids the model from returning more than one tool call in a single turn.',
+    'metadata': 'Caller-supplied tags for the request that the model never sees; Anthropic accepts a user_id here.',
+    'reasoning_effort': 'How hard the model should think (none, minimal, low, medium, high, xhigh); sent for OpenAI, Microsoft and xAI models when --reasoning-effort is set.',
+    'verbosity': 'OpenAI-only hint for how long the visible answer should be (low, medium, high).',
+    'thinking': 'The vendor’s reasoning switch: {type: enabled|disabled} on DeepSeek, Kimi and Cohere, {type: adaptive} or {type: enabled, budget_tokens} on Claude; in a Claude response it is a block of reasoning text with a signature.',
+    'budget_tokens': 'Claude’s cap on how many tokens the model may spend thinking; must stay below max_tokens.',
+    'token_budget': 'Cohere’s name for the thinking token cap, inside the thinking object.',
+    'output_config': 'Claude’s container for effort (low, medium, high, max), the newer replacement for a token budget.',
+    'signature': 'An opaque checksum Claude attaches to each thinking block; it must be echoed back unchanged when the block is replayed on a later turn.',
+    'reasoning_content': 'The model’s visible reasoning text, returned by DeepSeek, Kimi, Cohere and routed models beside the answer; the provider turns it into a leading ContentReasoning item.',
+    'completion_tokens_details': 'Breakdown of the output count; its reasoning_tokens is how many tokens went to reasoning.',
+    'reasoning_tokens': 'How many output tokens were spent on reasoning; reported inside completion_tokens_details or at the top of usage, depending on the vendor.',
+    'prompt_tokens_details': 'Breakdown of the input count; its cached_tokens says how many prompt tokens came from the prompt cache.',
+    'cached_tokens': 'Prompt tokens the service found in its cache and did not have to process again.',
+    'cache_read_input_tokens': 'Anthropic’s count of prompt tokens read from the prompt cache.',
+  };
+
+  // ---------- helpers ----------
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const el = (html) => { const t = document.createElement('template'); t.innerHTML = html.trim(); return t.content.firstElementChild; };
+  const fmtMs = (ms) => ms >= 1000 ? (ms / 1000).toFixed(1) + ' s' : ms + ' ms';
+  const isAnthropic = (d) => d.route === 'anthropic';
+
+  function renderJson(node, indent) {
+    indent = indent || 0;
+    const pad = '  '.repeat(indent);
+    if (node === null) return '<span class="j-l">null</span>';
+    if (typeof node === 'boolean') return '<span class="j-l">' + node + '</span>';
+    if (typeof node === 'number') return '<span class="j-n">' + node + '</span>';
+    if (typeof node === 'string') return '<span class="j-s">"' + esc(node.length > 2000 ? node.slice(0, 2000) + '…' : node) + '"</span>';
+    if (Array.isArray(node)) {
+      if (node.length === 0) return '<span class="j-p">[]</span>';
+      return '<span class="j-p">[</span>\n' + node.map((v) => pad + '  ' + renderJson(v, indent + 1)).join('<span class="j-p">,</span>\n') + '\n' + pad + '<span class="j-p">]</span>';
+    }
+    const keys = Object.keys(node);
+    if (keys.length === 0) return '<span class="j-p">{}</span>';
+    return '<span class="j-p">{</span>\n' + keys.map((k) => {
+      const note = BODY_NOTES[k];
+      const key = note
+        ? '<span class="j-k hot tip" tabindex="0" data-tip="' + esc(note) + '">"' + esc(k) + '"</span>'
+        : '<span class="j-k">"' + esc(k) + '"</span>';
+      return pad + '  ' + key + '<span class="j-p">: </span>' + renderJson(node[k], indent + 1);
+    }).join('<span class="j-p">,</span>\n') + '\n' + pad + '<span class="j-p">}</span>';
+  }
+
+  function renderHeaders(headers, opts) {
+    const rows = Object.entries(headers || {});
+    const hot = rows.filter(([k]) => !DIM_HEADERS.has(k.toLowerCase()));
+    const dim = rows.filter(([k]) => DIM_HEADERS.has(k.toLowerCase()));
+    const row = ([k, v], cls) => {
+      const note = HEADER_NOTES[k.toLowerCase()];
+      const name = note ? '<span class="tip" tabindex="0" data-tip="' + esc(note) + '">' + esc(k) + '</span>' : esc(k);
+      const isHot = HOT_HEADERS.has(k.toLowerCase());
+      return '<tr class="' + (isHot ? 'hot ' : '') + cls + '"><td class="h mono">' + name + '</td><td class="v mono">' + esc(v) + '</td></tr>';
+    };
+    const id = 'h' + Math.random().toString(36).slice(2, 8);
+    let html = '<table class="headers"><tbody>' + hot.map((r) => row(r, '')).join('');
+    if (dim.length) {
+      html += '<tr class="dim"><td colspan="2"><button class="toggle" data-toggle="' + id + '" aria-expanded="false">Show ' + dim.length + ' routine header' + (dim.length > 1 ? 's' : '') + '</button></td></tr>';
+      html += '<tbody id="' + id + '" hidden>' + dim.map((r) => row(r, 'dim')).join('') + '</tbody>';
+    }
+    return html + '</tbody></table>';
+  }
+
+  function renderBody(body, contentType) {
+    if (body === null || body === undefined) return '<p class="more">No body.</p>';
+    if (typeof body === 'string' && /text\/event-stream/i.test(contentType || '') || (typeof body === 'string' && /^(event:|data:)/m.test(body))) {
+      return renderSse(body);
+    }
+    if (typeof body === 'string') return '<pre class="json">' + esc(body) + '</pre>';
+    return '<pre class="json">' + renderJson(body) + '</pre>';
+  }
+
+  function renderSse(text) {
+    const events = text.split(/\r?\n\r?\n/).map((s) => s.trim()).filter(Boolean);
+    const LIMIT = 40;
+    const rows = events.slice(0, LIMIT).map((ev) => {
+      let name = null; const data = [];
+      ev.split(/\r?\n/).forEach((line) => {
+        if (line.startsWith('event:')) name = line.slice(6).trim();
+        else if (line.startsWith('data:')) data.push(line.slice(5).trim());
+        else data.push(line);
+      });
+      const payload = data.join('\n');
+      const done = payload === '[DONE]';
+      let inner;
+      try { inner = done ? '[DONE]' : renderJson(JSON.parse(payload)); } catch (e) { inner = esc(payload); }
+      const label = name ? '<span class="evn">event: ' + esc(name) + '</span>' : '<span class="evn d">data</span>';
+      return '<div class="ev' + (done ? ' done' : '') + '">' + label + '<pre>' + inner + '</pre></div>';
+    });
+    const more = events.length > LIMIT ? '<p class="more">… ' + (events.length - LIMIT) + ' more events not shown</p>' : '';
+    return '<div class="sse">' + rows.join('') + more + '</div><p class="more">' + events.length + ' server-sent events; the provider folds them into one completion as they arrive.</p>';
+  }
+
+  function tokenField(check) {
+    const ex = check.exchanges && check.exchanges[check.exchanges.length - 1];
+    const b = ex && ex.request && ex.request.body;
+    if (!b || typeof b !== 'object') return null;
+    if ('max_completion_tokens' in b) return 'max_completion_tokens';
+    if ('max_tokens' in b) return 'max_tokens';
+    return 'none';
+  }
+  const checksOf = (d) => d.checks || [];
+  function servedModel(d) {
+    for (const c of checksOf(d)) for (const e of c.exchanges || []) {
+      const h = e.response && e.response.headers; if (!h) continue;
+      const k = Object.keys(h).find((x) => x.toLowerCase() === 'x-ms-served-model'); if (k) return h[k];
+    }
+    return null;
+  }
+  const lastCheck = (d, name) => [...checksOf(d)].reverse().find((c) => c.check === name);
+  const statusOf = (c) => { const e = c && c.exchanges && c.exchanges[c.exchanges.length - 1]; return e && e.response ? e.response.status : null; };
+
+  // ---------- parameter probes (present only when the capture ran with --params) ----------
+  const hasParams = (d) => Array.isArray(d.params) && d.params.length > 0;
+  const paramsById = (d) => { const m = new Map(); (d.params || []).forEach((p) => m.set(p.id, p)); return m; };
+  const probeIds = () => { const ids = []; DATA.deployments.forEach((d) => (d.params || []).forEach((p) => { if (!ids.includes(p.id)) ids.push(p.id); })); return ids; };
+  function verdictOf(p) {
+    if (!p) return { cls: 'neutral', label: '—', title: 'not probed on this deployment' };
+    const title = [p.evidence, p.error].filter(Boolean).join('; ') || p.verdict || '';
+    switch (p.verdict) {
+      case 'accepted': return p.observable === false ? { cls: 'ok outline', label: 'ok*', title: title || 'accepted, no visible effect' } : { cls: 'ok', label: 'ok', title };
+      case 'ignored': return { cls: 'warn', label: 'ignored', title };
+      case 'rejected': return { cls: 'fail', label: 'rejected', title };
+      case 'error': return { cls: 'fail outline', label: 'error', title };
+      default: return { cls: 'neutral', label: p.verdict || '?', title };
+    }
+  }
+  const verdictPill = (p) => { const v = verdictOf(p); return '<span class="pill ' + v.cls + '" title="' + esc(v.title) + '">' + esc(v.label) + '</span>'; };
+  function reasoningOf(d) {
+    const c = lastCheck(d, 'reasoning');
+    if (!c) return null;
+    if (!c.ok) return { label: 'fail', cls: 'fail' };
+    const o = c.output || {}, vis = o.reasoningVisibility || 'n/a', tok = o.usage && o.usage.reasoningTokens;
+    return { label: vis + (tok > 0 ? ' · ' + tok + ' tok' : ''), cls: { text: 'ok', hidden: 'ok', none: 'warn' }[vis] || 'neutral' };
+  }
+  const reasoningPill = (d) => { const r = reasoningOf(d); return r ? '<span class="pill ' + r.cls + '">' + esc(r.label) + '</span>' : '<span class="pill neutral">—</span>'; };
+  function paramsSummary(d) {
+    if (!hasParams(d)) return null;
+    const n = { accepted: 0, rejected: 0, ignored: 0, error: 0 };
+    d.params.forEach((p) => { if (p.verdict in n) n[p.verdict]++; });
+    return [n.accepted + ' accepted'].concat(['rejected', 'ignored', 'error'].filter((k) => n[k]).map((k) => n[k] + ' ' + k)).join(' · ');
+  }
+  function renderLegend() {
+    const item = (pill, text) => '<span class="item">' + pill + '<span>' + text + '</span></span>';
+    return '<p class="legend">' +
+      item('<span class="pill ok">ok</span>', 'accepted, effect visible in the response') +
+      item('<span class="pill ok outline">ok*</span>', '* accepted, no visible effect: the service tolerated the field but the page cannot verify it acted on it') +
+      item('<span class="pill warn">ignored</span>', 'HTTP 200 but the expected effect is missing') +
+      item('<span class="pill fail">rejected</span>', 'the service refused the field (4xx)') +
+      item('<span class="pill fail outline">error</span>', 'the call failed for another reason (auth, quota, timeout)') +
+      item('<span class="pill neutral">—</span>', 'not probed') + '</p>';
+  }
+  function renderCapabilities(d) {
+    const caps = d.capabilities && typeof d.capabilities === 'object' ? Object.entries(d.capabilities) : [];
+    if (!caps.length) return '';
+    return '<div class="capsh">ARM capabilities <span style="text-transform:none;letter-spacing:0;font-weight:400">(the resource’s own claims, not probed)</span></div>' +
+      '<div class="caps">' + caps.map(([k, v]) => '<span class="cap"><b>' + esc(k) + '</b>: ' + esc(v) + '</span>').join('') + '</div>';
+  }
+
+  // ---------- top facts + anatomy ----------
+  document.getElementById('facts').innerHTML =
+    '<span>resource <b>' + esc(DATA.resource.name) + '</b> (' + esc(DATA.resource.kind) + ', ' + esc(DATA.resource.location) + ')</span>' +
+    '<span>deployments <b>' + DATA.deployments.length + '</b></span>' +
+    '<span>captured <b>' + esc(DATA.capturedAt) + '</b></span>';
+
+  document.getElementById('anatomy').innerHTML = [
+    ['accent', 'Identity', 'az login', 'DefaultAzureCredential finds the Azure CLI session; no API key anywhere.'],
+    ['accent', 'Token', 'Authorization: Bearer', 'One Entra ID access token for scope <code>https://cognitiveservices.azure.com/.default</code>, cached and refreshed by the SDK.'],
+    ['accent', 'Route', 'POST to the resource', 'Foundry route <code>' + esc(DATA.endpoint) + '/chat/completions?api-version=2024-05-01-preview</code><br>Anthropic route <code>' + esc(DATA.anthropicEndpoint) + '</code>'],
+    ['', 'Gateway', 'API Management in front of the resource', 'Validates the token, applies rate limits, runs the content filter, and stamps the response with region, request ids and quota headers.'],
+    ['route2', 'Model', 'JSON document or SSE stream', 'The deployment answers in OpenAI chat-completions shape, or in Anthropic Messages shape on the Anthropic route; the provider parses both into the same ModelOutput.'],
+  ].map(([cls, eyebrow, what, how]) => '<div class="step ' + cls + '"><div class="eyebrow">' + eyebrow + '</div><div class="what">' + what + '</div><div class="how">' + how + '</div></div>').join('');
+
+  // ---------- rail ----------
+  const groups = [
+    { key: 'models', title: 'Foundry model-inference route', dot: '', filter: (d) => !isAnthropic(d) && lastCheck(d, 'chat') && lastCheck(d, 'chat').ok },
+    { key: 'anthropic', title: 'Anthropic Messages route', dot: 'route2', filter: (d) => isAnthropic(d) },
+    { key: 'nochat', title: 'Not chat-completions models', dot: 'off', filter: (d) => !isAnthropic(d) && !(lastCheck(d, 'chat') && lastCheck(d, 'chat').ok) },
+  ];
+  const rail = document.getElementById('rail');
+  rail.innerHTML = '<button class="item overview" data-view="overview"><span class="name">All deployments</span></button>' +
+    '<button class="item overview" data-view="matrix"><span class="name">Parameter matrix</span></button>' +
+    groups.map((g) => {
+      const items = DATA.deployments.filter(g.filter);
+      if (!items.length) return '';
+      return '<div class="group"><h3><span class="dot ' + g.dot + '"></span>' + g.title + '</h3>' + items.map((d) =>
+        '<button class="item" data-view="' + esc(d.name) + '"><span><span class="name">' + esc(d.name) + '</span><span class="sub">' + esc(d.format) + (d.version ? ' · ' + esc(d.version) : '') + '</span></span>' +
+        '<span class="chips">' + ['chat', 'stream', 'tools', 'reasoning'].map((k) => { const c = lastCheck(d, k); if (!c && k === 'reasoning') return ''; return '<span class="chip ' + (c ? (c.ok ? 'ok' : 'fail') : '') + '" title="' + k + '"></span>'; }).join('') + '</span></button>').join('') + '</div>';
+    }).join('');
+
+  const main = document.getElementById('main');
+  let current = null;
+
+  function select(view, tab) {
+    current = view;
+    rail.querySelectorAll('button.item').forEach((b) => b.setAttribute('aria-current', b.dataset.view === view ? 'true' : 'false'));
+    if (view === 'overview') renderOverview();
+    else if (view === 'matrix') renderMatrix();
+    else {
+      const d = DATA.deployments.find((d) => d.name === view);
+      if (!d) { select('overview'); return; }
+      renderDeployment(d, tab);
+    }
+    try { localStorage.setItem('foundry-wire-view', view); } catch (e) {}
+    main.scrollIntoView({ block: 'start' });
+  }
+
+  function renderOverview() {
+    const rows = DATA.deployments.map((d) => {
+      const checks = checksOf(d);
+      const chat = lastCheck(d, 'chat'), stream = lastCheck(d, 'stream'), tools = lastCheck(d, 'tools');
+      const cell = (c) => c ? '<span class="pill ' + (c.ok ? 'ok' : 'fail') + '">' + (c.ok ? 'ok' : 'fail') + (statusOf(c) ? ' · ' + statusOf(c) : '') + '</span>' : '<span class="pill neutral">skipped</span>';
+      const ms = checks.reduce((a, c) => a + (c.ms || 0), 0);
+      const served = servedModel(d);
+      const tf = tokenField(chat || {});
+      const params = paramsSummary(d);
+      const note = d.skipped ? d.skipped : (chat && !chat.ok ? (chat.error || '') : (checks.some((c) => c.note && /retry with/.test(c.note)) ? 'retried with max_completion_tokens=true' : (served && !served.toLowerCase().startsWith((d.model || '').toLowerCase()) ? 'served by ' + served : '')));
+      return '<tr data-view="' + esc(d.name) + '"><td><b>' + esc(d.name) + '</b></td><td>' + esc(d.format) + '</td>' +
+        '<td><span class="pill ' + (isAnthropic(d) ? 'route2' : 'route') + '">' + (isAnthropic(d) ? '/anthropic/v1/messages' : '/models/chat/completions') + '</span></td>' +
+        '<td>' + cell(chat) + '</td><td>' + cell(stream) + '</td><td>' + cell(tools) + '</td><td>' + reasoningPill(d) + '</td>' +
+        '<td>' + (params ? esc(params) : '<span class="more">—</span>') + '</td>' +
+        '<td><span class="mono">' + esc(tf || '—') + '</span></td><td class="num">' + (ms ? fmtMs(ms) : '—') + '</td><td class="note">' + esc(note) + '</td></tr>';
+    });
+    main.innerHTML = '<h2>All deployments on ' + esc(DATA.resource.name) + '</h2>' +
+      '<p class="lead">Each row is one deployment on the resource and three or four live calls made to it with the signed-in identity: a plain chat completion, the same request streamed, a request that offers a <code>get_weather</code> tool and, where recorded, a reasoning prompt with the family’s thinking control turned on. The Params column counts the extra single-field probes behind the Parameter matrix view. Pick a row to read the exact bytes that went over the wire.</p>' +
+      '<div class="tablewrap"><table class="overview"><thead><tr><th>Deployment</th><th>Format</th><th>Route</th><th>Chat</th><th>Stream</th><th>Tools</th><th>Reasoning</th><th>Params</th><th>Token limit field</th><th>Check time</th><th>Note</th></tr></thead><tbody>' + rows.join('') + '</tbody></table></div>' +
+      renderGuide();
+    main.querySelectorAll('tr[data-view]').forEach((tr) => tr.addEventListener('click', () => select(tr.dataset.view)));
+  }
+
+  function renderMatrix() {
+    const rows = DATA.deployments.filter(hasParams), ids = probeIds();
+    let html = '<h2>Parameter matrix</h2>';
+    if (!rows.length) {
+      html += '<p class="lead">This capture carries no parameter probes, so there is nothing to tabulate yet.</p>' +
+        '<p class="note">Produce them with <code>capture --include-failed --params all --out docs/dashboard/calls.json</code>, then rebuild this page with <code>scripts/build-dashboard.py</code>.</p>';
+    } else {
+      html += '<p class="lead">Every deployment below was sent its baseline request plus one extra call per candidate field, each carrying a single parameter on top of the baseline. A cell is the service’s verdict on that one field. Hover a cell for the evidence; click a deployment to open its params tab with the recorded request and response.</p>' +
+        '<div class="matrixwrap"><table class="matrix"><thead><tr><th>Deployment</th>' + ids.map((id) => '<th><span class="mono">' + esc(id) + '</span></th>').join('') + '</tr></thead><tbody>' +
+        rows.map((d) => {
+          const m = paramsById(d);
+          return '<tr><th scope="row"><button class="link" data-view="' + esc(d.name) + '">' + esc(d.name) + '</button><span class="sub">' + esc(d.format) + '</span></th>' + ids.map((id) => '<td>' + verdictPill(m.get(id)) + '</td>').join('') + '</tr>';
+        }).join('') + '</tbody></table></div>' + renderLegend();
+    }
+    main.innerHTML = html + renderGuide();
+    main.querySelectorAll('button[data-view]').forEach((b) => b.addEventListener('click', () => select(b.dataset.view, 'params')));
+  }
+
+  function renderDeployment(d, tab) {
+    const checks = checksOf(d);
+    const tabs = checks.map((c, i) => {
+      const retry = c.note && /^retry with/.test(c.note);
+      const label = c.check + (retry ? ' (retry)' : '');
+      return '<button role="tab" data-i="' + i + '" aria-selected="false">' + esc(label) + '<span class="pill ' + (c.ok ? 'ok' : 'fail') + '">' + (c.ok ? 'ok' : 'fail') + (statusOf(c) ? ' · ' + statusOf(c) : '') + '</span></button>';
+    }).join('') + (hasParams(d) ? (() => {
+      const accepted = d.params.filter((p) => p.verdict === 'accepted').length;
+      return '<button role="tab" data-i="params" aria-selected="false">params<span class="pill ' + (accepted ? 'ok' : 'neutral') + '">' + accepted + ' accepted</span></button>';
+    })() : '');
+    main.innerHTML = '<h2>' + esc(d.name) + '</h2>' +
+      '<div class="meta"><span class="pill ' + (isAnthropic(d) ? 'route2' : 'route') + '">' + (isAnthropic(d) ? 'Anthropic Messages route' : 'Foundry model-inference route') + '</span>' +
+      '<span>format <b>' + esc(d.format) + '</b></span><span>model <b>' + esc(d.model) + '</b></span>' + (d.version ? '<span>version <b>' + esc(d.version) + '</b></span>' : '') +
+      (d.sku ? '<span>sku <b>' + esc(d.sku) + (d.capacity != null ? ' × ' + d.capacity : '') + '</b></span>' : '') + '<span>state <b>' + esc(d.state) + '</b></span>' +
+      '<span>ARM says chat <b>' + (d.chatCapable ? 'yes' : 'no') + '</b></span></div>' +
+      (hasParams(d) ? '' : renderCapabilities(d)) +
+      (checks.length || hasParams(d) ? '<div class="tabs" role="tablist">' + tabs + '</div><div id="check"></div>' : '<p class="note">' + esc(d.skipped || 'No calls were made to this deployment.') + '</p>') +
+      renderGuide();
+    const tabButtons = [...main.querySelectorAll('[role="tab"]')];
+    const activate = (b) => {
+      tabButtons.forEach((x) => x.setAttribute('aria-selected', x === b ? 'true' : 'false'));
+      if (b.dataset.i === 'params') renderParams(d); else renderCheck(d, checks[+b.dataset.i]);
+    };
+    tabButtons.forEach((b) => b.addEventListener('click', () => activate(b)));
+    const first = (tab === 'params' && tabButtons.find((b) => b.dataset.i === 'params')) || tabButtons[0];
+    if (first) activate(first);
+  }
+
+  function renderExchange(e, i, all) {
+    const attempt = all.length > 1 ? '<p class="more">Attempt ' + (i + 1) + ' of ' + all.length + ' (the SDK retried).</p>' : '';
+    const url = String(e.url || '').replace(/^https?:\/\/[^/]+/, (m) => '<b>' + esc(m) + '</b>');
+    const q = e.request || {}, r = e.response;
+    const ct = r && r.headers ? (Object.entries(r.headers).find(([k]) => k.toLowerCase() === 'content-type') || [null, ''])[1] : '';
+    return attempt + '<div class="exchange">' +
+      '<div class="pane req"><header><span class="dir">Request</span><span class="line mono"><b>' + esc(e.method || '') + '</b> ' + url + '</span></header>' +
+      '<section><h4>Headers <span>' + Object.keys(q.headers || {}).length + '</span></h4>' + renderHeaders(q.headers) + '</section>' +
+      '<section><h4>Body <span>JSON</span></h4>' + renderBody(q.body, 'application/json') + '</section></div>' +
+      '<div class="pane res"><header><span class="dir">Response</span><span class="line mono">' + (r ? '<span class="status s' + String(r.status)[0] + '">HTTP ' + r.status + (r.reason ? ' ' + esc(r.reason) : '') + '</span> · ' + fmtMs(e.ms || 0) + ' to headers' : '<span class="status s5">no response (transport failure)</span>') + '</span></header>' +
+      (r ? '<section><h4>Headers <span>' + Object.keys(r.headers || {}).length + '</span></h4>' + renderHeaders(r.headers) + '</section>' +
+      '<section><h4>Body <span>' + esc(ct.split(';')[0] || '') + '</span></h4>' + renderBody(r.body, ct) + '</section>' : '') + '</div></div>';
+  }
+
+  function wireToggles(host) {
+    host.querySelectorAll('[data-toggle]').forEach((b) => b.addEventListener('click', () => {
+      const t = document.getElementById(b.dataset.toggle); t.hidden = !t.hidden; b.setAttribute('aria-expanded', String(!t.hidden));
+      b.textContent = (t.hidden ? 'Show ' : 'Hide ') + t.querySelectorAll('tr').length + ' routine header' + (t.querySelectorAll('tr').length > 1 ? 's' : '');
+    }));
+  }
+
+  function renderCheck(d, c) {
+    const host = document.getElementById('check');
+    const what = {
+      chat: 'One non-streamed chat completion.',
+      stream: 'The same completion with "stream": true; the body comes back as server-sent events.',
+      tools: 'A chat completion that offers the get_weather tool; the model is expected to answer with a tool call rather than text.',
+      reasoning: 'The reasoning prompt with the family’s thinking control turned on; the verdict says whether reasoning text or a reasoning token count came back.',
+    }[c.check] || '';
+    let html = '<p class="prompt"><span>' + esc(what) + ' Prompt:</span><code>' + esc(c.prompt) + '</code></p>';
+    if (c.note) html += '<p class="note">' + esc(c.note) + '</p>';
+    if (c.error) html += '<p class="note err">Provider reported: ' + esc(c.error) + '</p>';
+    html += (c.exchanges || []).map(renderExchange).join('');
+    html += renderOutcome(c);
+    host.innerHTML = html;
+    wireToggles(host);
+  }
+
+  function renderParams(d) {
+    const host = document.getElementById('check');
+    const rows = d.params.map((p, i) => {
+      const value = p.value === undefined ? '—' : JSON.stringify(p.value);
+      return '<tr><td class="mono">' + esc(p.id) + '</td><td class="mono value">' + esc(value) + '</td><td>' + esc(p.via || '') + '</td><td>' + verdictPill(p) + '</td>' +
+        '<td class="note">' + esc(p.evidence || '') + (p.error ? (p.evidence ? ' · ' : '') + esc(p.error) : '') + '</td>' +
+        '<td class="num">' + (p.status != null ? esc(p.status) : '—') + '</td><td class="num">' + (p.ms != null ? fmtMs(p.ms) : '—') + '</td>' +
+        '<td><button class="toggle" data-x="' + i + '" aria-expanded="false" aria-controls="px' + i + '">show exchange</button></td></tr>' +
+        '<tr class="xrow" id="px' + i + '" hidden><td colspan="8"></td></tr>';
+    }).join('');
+    host.innerHTML = '<p class="prompt"><span>Each row is one extra call on top of the baseline request carrying a single candidate field; the verdict says whether the service accepted, ignored or rejected it, and the evidence says why.</span></p>' +
+      renderCapabilities(d) +
+      '<div class="tablewrap"><table class="overview params"><thead><tr><th>Probe</th><th>Value sent</th><th>Via</th><th>Verdict</th><th>Evidence</th><th>HTTP</th><th>Time</th><th></th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+      renderLegend();
+    host.querySelectorAll('[data-x]').forEach((b) => b.addEventListener('click', () => {
+      const p = d.params[+b.dataset.x], row = document.getElementById('px' + b.dataset.x), cell = row.firstElementChild;
+      if (!cell.childElementCount) {
+        cell.innerHTML = '<p class="prompt"><span>Prompt:</span><code>' + esc(p.prompt || '') + '</code><span>' + (p.stream ? 'streamed' : 'not streamed') +
+          (p.passThroughHeader != null ? ' · extra-parameters: pass-through ' + (p.passThroughHeader ? 'sent' : 'not sent') : '') + '</span></p>' +
+          ((p.exchanges || []).map(renderExchange).join('') || '<p class="more">No exchange was recorded for this probe.</p>') + renderOutcome(p);
+        wireToggles(cell);
+      }
+      row.hidden = !row.hidden; b.setAttribute('aria-expanded', String(!row.hidden)); b.textContent = (row.hidden ? 'show' : 'hide') + ' exchange';
+    }));
+  }
+
+  function renderOutcome(c) {
+    const o = c.output;
+    const kv = (k, v, cls) => '<div class="kv' + (cls === 'wide' ? ' wide' : '') + '"><div class="k">' + k + '</div><div class="v' + (cls === 'mono' ? ' mono' : '') + '">' + v + '</div></div>';
+    let html = '<div class="outcome">';
+    html += kv('Result', c.verdict ? verdictPill(c) : '<span class="pill ' + (c.ok ? 'ok' : 'fail') + '">' + (c.ok ? 'ok' : 'fail') + '</span>');
+    html += kv('Round trip', fmtMs(c.ms || 0));
+    if (o) {
+      const u = o.usage;
+      html += kv('Stop reason', '<code>' + esc(o.stopReason || '—') + '</code>');
+      html += kv('Usage', u ? esc(u.inputTokens + ' in / ' + u.outputTokens + ' out / ' + u.totalTokens + ' total') : '<span class="more">not reported</span>');
+      if (u && u.reasoningTokens != null) html += kv('Reasoning tokens', esc(u.reasoningTokens));
+      if (u && (u.cacheReadTokens != null || u.cacheWriteTokens != null)) html += kv('Cached tokens', esc([u.cacheReadTokens != null ? u.cacheReadTokens + ' read' : null, u.cacheWriteTokens != null ? u.cacheWriteTokens + ' written' : null].filter((x) => x !== null).join(' / ')));
+      if (o.toolCalls && o.toolCalls.length) html += kv('Parsed tool call', o.toolCalls.map((t) => '<code>' + esc(t.function) + '(' + esc(JSON.stringify(t.arguments)) + ')</code>' + (t.parseError ? ' <span class="pill fail">parse error</span>' : '')).join('<br>'), 'wide');
+      if (o.completion) html += kv('Completion', esc(o.completion), 'wide');
+      if (typeof o.reasoning === 'string' && o.reasoning.length) {
+        html += '<details class="reasoning wide"><summary>Reasoning (' + o.reasoning.length + ' chars' + (o.reasoningVisibility ? ', ' + esc(o.reasoningVisibility) : '') + ')</summary><pre>' + esc(o.reasoning) + '</pre></details>';
+      } else if (o.reasoningVisibility) {
+        html += kv('Reasoning', '<span class="pill ' + ({ hidden: 'ok', none: 'warn' }[o.reasoningVisibility] || 'neutral') + '">' + esc(o.reasoningVisibility) + '</span>' +
+          ({ hidden: ' <span class="more">the model reasoned, but the service returns no text</span>', none: ' <span class="more">a reasoning field was sent; nothing came back</span>', 'n/a': ' <span class="more">no reasoning key on the wire</span>' }[o.reasoningVisibility] || ''));
+      }
+    } else if (c.error) {
+      html += kv('Error returned to the caller', esc(c.error), 'wide');
+    }
+    return html + '</div>';
+  }
+
+  function renderGuide() {
+    const list = (obj) => '<dl>' + Object.entries(obj).map(([k, v]) => '<dt>' + esc(k) + '</dt><dd>' + esc(v) + '</dd>').join('') + '</dl>';
+    return '<details class="guide"><summary>Field guide: every header and body field you will meet above</summary><div class="cols">' +
+      '<div><h4 style="margin:10px 0 0;font-size:10.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)">HTTP headers</h4>' + list(HEADER_NOTES) + '</div>' +
+      '<div><h4 style="margin:10px 0 0;font-size:10.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)">Body fields</h4>' + list(BODY_NOTES) + '</div></div></details>';
+  }
+
+  rail.addEventListener('click', (ev) => { const b = ev.target.closest('button.item'); if (b) select(b.dataset.view); });
+  let initial = 'overview';
+  try { const saved = localStorage.getItem('foundry-wire-view'); if (saved && (saved === 'overview' || saved === 'matrix' || DATA.deployments.some((d) => d.name === saved))) initial = saved; } catch (e) {}
+  select(initial);
+})();
+</script>

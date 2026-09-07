@@ -1,0 +1,7 @@
+id,input,target,metadata
+1,"Say ""hi""",hi,"{""lang"": ""en""}"
+2,"multi
+line",x,"{}"
+3,plain,y,"{}"
+
+ , , ,

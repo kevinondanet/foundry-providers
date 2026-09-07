@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>InspectAzureAI.SweShowcase</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\InspectAzureAI.Provider\InspectAzureAI.Provider.csproj" />
+    <ProjectReference Include="..\InspectAzureAI.Eval\InspectAzureAI.Eval.csproj" />
+    <ProjectReference Include="..\InspectAzureAI.Swe\InspectAzureAI.Swe.csproj" />
+    <ProjectReference Include="..\InspectAzureAI.Maf\InspectAzureAI.Maf.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Update="tasks/**;sandbox/**" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="InspectAzureAI.Swe.Tests" />
+    <InternalsVisibleTo Include="InspectAzureAI.ModelMatrix" />
+    <InternalsVisibleTo Include="InspectAzureAI.ModelMatrix.Tests" />
+  </ItemGroup>
+</Project>

@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Azure;
 using Azure.AI.Inference;
+using Azure.Core;
 using InspectAzureAI.Provider.Core;
 using InspectAzureAI.Provider.Tools;
 using InspectAzureAI.Provider.Util;
@@ -11,27 +12,24 @@ using InspectAzureAI.Provider.Util;
 namespace InspectAzureAI.Provider;
 
 /// <summary>
-/// Port of <c>AzureAIAPI</c> (<c>src/inspect_ai/model/_providers/azureai.py</c>): the Inspect model
+/// Lite port of <c>AzureAIAPI</c> (<c>src/inspect_ai/model/_providers/azureai.py</c>): the Inspect model
 /// provider for Azure AI Foundry model-inference endpoints, built on the official
-/// <see cref="ChatCompletionsClient"/>. Construction resolves credentials and the endpoint exactly like
-/// the Python constructor; <c>GenerateAsync</c> reproduces <c>generate()</c> including tool
-/// emulation, streaming accumulation, <see cref="ModelCall"/> capture and Azure error handling. The
-/// <c>ModelAPI</c> hooks the Python class overrides (<see cref="MaxTokens"/>, <see cref="ShouldRetry"/>,
-/// <see cref="IsAuthFailure"/>, <see cref="CollapseUserMessages"/>, <see cref="ConnectionKey"/>,
-/// <see cref="CanonicalName"/>, <see cref="ServiceModelName"/>) are exposed as methods.
+/// <see cref="ChatCompletionsClient"/>. This variant authenticates with Entra ID only (the
+/// <c>DefaultAzureCredential</c> chain, i.e. <c>az login</c>) and uses native tool calling only; the
+/// Python provider's API-key path and its Llama <c>&lt;tool_call&gt;</c> prompt emulation are not
+/// included. <c>GenerateAsync</c> reproduces <c>generate()</c>: request assembly, streaming
+/// accumulation, <see cref="ModelCall"/> capture and Azure error handling. The <c>ModelAPI</c> hooks the
+/// Python class overrides (<see cref="MaxTokens"/>, <see cref="ShouldRetry"/>, <see cref="IsAuthFailure"/>,
+/// <see cref="CollapseUserMessages"/>, <see cref="ConnectionKey"/>, <see cref="CanonicalName"/>,
+/// <see cref="ServiceModelName"/>) are exposed as methods.
 /// </summary>
 public sealed class AzureAIModelApi : IModelApi
 {
-    public const string AzureAIApiKeyVar = "AZUREAI_API_KEY";
-
     public const string AzureAIBaseUrlVar = "AZUREAI_BASE_URL";
 
     public const string AzureAIEndpointUrlVar = "AZUREAI_ENDPOINT_URL";
 
     public const string AzureAIAudienceVar = AzureHosting.AzureAIAudience;
-
-    /// <summary>Legacy (preferred) api-key variable.</summary>
-    public const string AzureApiKeyVar = "AZURE_API_KEY";
 
     /// <summary>Legacy endpoint variable.</summary>
     public const string AzureEndpointUrlVar = "AZURE_ENDPOINT_URL";
@@ -42,20 +40,19 @@ public sealed class AzureAIModelApi : IModelApi
     /// <summary>Port of <c>DEFAULT_MAX_CONNECTIONS</c>.</summary>
     public const int DefaultMaxConnections = 10;
 
-    private static readonly string[] ApiKeyVars = [AzureApiKeyVar, AzureAIApiKeyVar];
-
     private readonly Dictionary<string, object?> _modelArgs;
 
     /// <summary>
-    /// Port of <c>AzureAIAPI.__init__</c>. <paramref name="streaming"/> accepts <c>true</c>/<c>false</c>
-    /// or the strings <c>"auto"</c>/<c>"true"</c>/<c>"false"</c> (as <c>-M streaming=...</c> arrives); null is the same as <c>"auto"</c>;
-    /// <paramref name="modelArgs"/> mirrors <c>**model_args</c>: <c>emulate_tools</c> is popped and the
-    /// remainder is forwarded to the request body as <c>model_extras</c>.
+    /// Port of <c>AzureAIAPI.__init__</c>, minus the API-key resolution. <paramref name="streaming"/>
+    /// accepts <c>true</c>/<c>false</c> or the strings <c>"auto"</c>/<c>"true"</c>/<c>"false"</c> (as
+    /// <c>-M streaming=...</c> arrives); null is the same as <c>"auto"</c>. <paramref name="modelArgs"/>
+    /// mirrors <c>**model_args</c>: a boolean <c>max_completion_tokens</c> is popped and the remainder is
+    /// forwarded to the request body as <c>model_extras</c>. The credential is resolved eagerly, as in
+    /// Python, so a broken sign-in fails at construction rather than on the first call.
     /// </summary>
     public AzureAIModelApi(
         string modelName,
         string? baseUrl = null,
-        string? apiKey = null,
         GenerateConfig? config = null,
         object? streaming = null,
         IReadOnlyDictionary<string, object?>? modelArgs = null,
@@ -72,13 +69,8 @@ public sealed class AzureAIModelApi : IModelApi
         BaseUrl = baseUrl;
         Config = config ?? new GenerateConfig();
         Settings = settings ?? new AzureAIClientSettings();
-        InitialApiKey = apiKey;
-        ApiKey = apiKey;
-        ApplyApiKeyOverrides();
 
         _modelArgs = modelArgs is null ? new Dictionary<string, object?>() : new Dictionary<string, object?>(modelArgs);
-        var emulateTools = CollectModelArg("emulate_tools");
-        EmulateTools = emulateTools is not null ? PythonSemantics.Truthy(emulateTools) : null;
 
         // Port-only model arg: -M max_completion_tokens=true sends config.MaxTokens as max_completion_tokens
         // for any model family (reasoning models such as MAI-Thinking-1 reject max_tokens). Python decides by
@@ -89,25 +81,15 @@ public sealed class AzureAIModelApi : IModelApi
             ForceMaxCompletionTokens = force;
         }
 
-        if (string.IsNullOrEmpty(ApiKey))
+        // Port-only model arg: -M model_format=<ARM Format> names the vendor when the deployment name does not
+        // (the sample passes the Foundry deployment's Format); it selects the reasoning parameter mapping.
+        if (_modelArgs.TryGetValue("model_format", out var modelFormat))
         {
-            // os.environ.get(AZURE_API_KEY, os.environ.get(AZUREAI_API_KEY)): a set-but-empty
-            // AZURE_API_KEY is taken as-is and falls through to managed identity below.
-            ApiKey = Environment.GetEnvironmentVariable(AzureApiKeyVar) ?? Environment.GetEnvironmentVariable(AzureAIApiKeyVar);
+            _modelArgs.Remove("model_format");
+            ModelFormat = modelFormat?.ToString();
         }
 
-        if (string.IsNullOrEmpty(ApiKey))
-        {
-            Credential = AzureHosting.ResolveAzureCredential("AzureAI", Settings.TokenCredential);
-            TokenProvider = AzureHosting.TokenProviderFor(Credential);
-        }
-
-        if (string.IsNullOrEmpty(ApiKey) && TokenProvider is null)
-        {
-            throw ProviderUtil.EnvironmentPrerequisiteError(
-                "AzureAI",
-                [AzureApiKeyVar, AzureAIApiKeyVar, "or managed identity (Entra ID)"]);
-        }
+        Credential = AzureHosting.ResolveAzureCredential("AzureAI", Settings.TokenCredential);
 
         var endpointUrl = ProviderUtil.ModelBaseUrl(baseUrl, [AzureEndpointUrlVar, AzureAIEndpointUrlVar, AzureAIBaseUrlVar]);
         if (string.IsNullOrEmpty(endpointUrl))
@@ -136,28 +118,22 @@ public sealed class AzureAIModelApi : IModelApi
     /// <summary>Org prefix when the name is <c>org/model</c>.</summary>
     public string? OrgPrefix { get; }
 
-    /// <summary>The api key argument as passed (frozen; used by <see cref="ConnectionKey"/>).</summary>
-    public string? InitialApiKey { get; }
-
-    /// <summary>Resolved api key (explicit, hook-overridden, or from the environment).</summary>
-    public string? ApiKey { get; private set; }
-
-    /// <summary>Entra ID token provider (the Python callable shape), set only when no api key was found.</summary>
-    public TokenProvider? TokenProvider { get; }
-
     /// <summary>
-    /// Entra ID credential pinned to <see cref="TokenAudience"/>, set only when no api key was found. It
-    /// is handed to the SDK's <c>TokenCredential</c> constructor, so the token travels only as
-    /// <c>Authorization: Bearer</c> and is cached and refreshed by the SDK (README fidelity note 17).
-    /// By default it is a <c>DefaultAzureCredential</c>, which picks up <c>az login</c>.
+    /// Entra ID credential pinned to <see cref="TokenAudience"/>. It is handed to the SDK's
+    /// <c>TokenCredential</c> constructor, so the token travels only as <c>Authorization: Bearer</c> and
+    /// is cached and refreshed by the SDK (README fidelity note 17). By default it is a
+    /// <c>DefaultAzureCredential</c>, which picks up <c>az login</c>.
     /// </summary>
-    public AudienceTokenCredential? Credential { get; }
+    public AudienceTokenCredential Credential { get; }
 
-    /// <summary>Port-only: <c>max_completion_tokens=true</c> model arg, forcing <c>max_completion_tokens</c> for every family (README fidelity note 18).</summary>
+    /// <summary>Port-only: <c>max_completion_tokens=true</c> model arg, forcing <c>max_completion_tokens</c> for every family (README fidelity note 13).</summary>
     public bool ForceMaxCompletionTokens { get; }
 
-    /// <summary>Tool emulation setting: null (auto), true, or false. Flips to true on the first generate for Llama models.</summary>
-    public bool? EmulateTools { get; private set; }
+    /// <summary>Port-only: the deployment's vendor (the ARM <c>Format</c> string) from the <c>model_format</c> model arg, when given.</summary>
+    public string? ModelFormat { get; }
+
+    /// <summary>The family the reasoning parameters are mapped for (<see cref="ReasoningParams.FamilyOf"/>).</summary>
+    public ModelFamilyHint FamilyHint => ReasoningParams.FamilyOf(ModelFormat, ServiceModelName());
 
     /// <summary>Resolved endpoint (stored verbatim; the SDK appends <c>/chat/completions?api-version=...</c>).</summary>
     public string EndpointUrl { get; }
@@ -167,9 +143,6 @@ public sealed class AzureAIModelApi : IModelApi
 
     /// <summary>The audience/scope requested for Entra ID tokens.</summary>
     public static string TokenAudience => AzureHosting.ResolveAudience();
-
-    /// <summary>Port of <c>ModelAPI.initialize()</c>: re-applies the api-key override hook.</summary>
-    public void Initialize() => ApplyApiKeyOverrides();
 
     /// <summary>Port of <c>service_model_name</c>: the name without its org prefix, used on the wire.</summary>
     public string ServiceModelName() =>
@@ -181,13 +154,7 @@ public sealed class AzureAIModelApi : IModelApi
     /// </summary>
     public string ModelFamily() => ServiceModelName();
 
-    public bool IsLlama() => IsLlamaModel(ModelFamily());
-
-    public bool IsLlama3() => IsLlama3Model(ModelFamily());
-
     public bool IsMistral() => IsMistralModel(ModelFamily());
-
-    public bool IsOpenAIModel() => IsOpenAIModelName(ModelFamily());
 
     /// <summary>Port of <c>canonical_name</c>: explicit org prefix wins, else <c>openai/</c> or <c>mistral/</c> auto-detection.</summary>
     public string CanonicalName()
@@ -211,14 +178,9 @@ public sealed class AzureAIModelApi : IModelApi
         return baseName;
     }
 
-    /// <summary>Port of <c>max_tokens</c>: 2048 for Llama, null for Mistral, <see cref="DefaultMaxTokens"/> otherwise.</summary>
+    /// <summary>Port of <c>max_tokens</c>: null for Mistral (the service default applies), <see cref="DefaultMaxTokens"/> otherwise.</summary>
     public int? MaxTokens()
     {
-        if (IsLlama())
-        {
-            return 2048;
-        }
-
         if (IsMistral())
         {
             return null;
@@ -233,8 +195,8 @@ public sealed class AzureAIModelApi : IModelApi
     /// <summary>Port of <c>collapse_user_messages</c> (true: the model layer merges consecutive user messages).</summary>
     public bool CollapseUserMessages() => true;
 
-    /// <summary>Port of <c>connection_key</c>: <c>f"{initial_api_key}:{model_name}"</c> (a missing key renders as <c>None</c>).</summary>
-    public string ConnectionKey() => $"{InitialApiKey ?? "None"}:{ModelName}";
+    /// <summary>Port of <c>connection_key</c>: with no API key in play, one connection pool per model name.</summary>
+    public string ConnectionKey() => ModelName;
 
     /// <summary>
     /// Port of <c>should_retry</c>: HTTP 408/429/5xx retry (429 as rate-limit, with Retry-After parsing),
@@ -270,7 +232,8 @@ public sealed class AzureAIModelApi : IModelApi
     /// <summary>
     /// Port of <c>completion_params</c>: the forwarded <see cref="GenerateConfig"/> fields in Python order.
     /// <c>max_tokens</c> is emitted as <c>max_completion_tokens</c> for gpt-5 / o-series families, or when
-    /// <see cref="ForceMaxCompletionTokens"/> is set.
+    /// <see cref="ForceMaxCompletionTokens"/> is set. Port-only: the family's reasoning fields for
+    /// <c>ReasoningEffort</c> / <c>ReasoningTokens</c> follow (<see cref="ReasoningRequestParams"/>).
     /// Every other config field is silently ignored.
     /// </summary>
     public JsonObject CompletionParams(GenerateConfig config)
@@ -311,8 +274,30 @@ public sealed class AzureAIModelApi : IModelApi
             parameters["seed"] = config.Seed;
         }
 
+        foreach (var (key, value) in ReasoningRequestParams(config))
+        {
+            parameters[key] = value?.DeepClone();
+        }
+
+        // Port-only: Python's azureai provider ignores response_schema; the chat-completions gateway accepts the
+        // OpenAI response_format shape, so it is forwarded like the openai provider does (extended validation
+        // fields stripped, as for tool schemas on this route). It travels as a pass-through extra.
+        if (config.ResponseSchema is { } responseSchema)
+        {
+            parameters["response_format"] = ResponseFormat.JsonSchemaResponseFormat(responseSchema, JsonSchemaDump.JsonSchemaExtendedFields);
+        }
+
         return parameters;
     }
+
+    /// <summary>
+    /// Port-only: the reasoning fields derived for this family from <c>config.ReasoningEffort</c> /
+    /// <c>ReasoningTokens</c> (<see cref="ReasoningParams.RequestParams"/>); empty when neither is set.
+    /// They travel as pass-through extras and are recorded in the <see cref="ModelCall"/>; a model arg with
+    /// the same key overrides them on the wire (the recorded request then shows the derived value, as the
+    /// Python snapshot excludes model extras).
+    /// </summary>
+    public JsonObject ReasoningRequestParams(GenerateConfig config) => ReasoningParams.RequestParams(FamilyHint, config);
 
     /// <summary>Port of <c>resolve_streaming</c>: explicit setting wins, otherwise stream iff an on_stream consumer is installed.</summary>
     public bool ResolveStreaming() => Streaming ?? ModelStreamObserver.ModelStreamRequested();
@@ -352,36 +337,16 @@ public sealed class AzureAIModelApi : IModelApi
         GenerateConfig config,
         CancellationToken cancellationToken = default)
     {
-        ChatApiHandler? handler;
-        if (EmulateTools is null && IsLlama())
-        {
-            EmulateTools = true;
-            handler = new Llama31Handler(ModelName);
-        }
-        else if (EmulateTools == true)
-        {
-            handler = new Llama31Handler(ModelName);
-        }
-        else
-        {
-            handler = null;
-        }
-
-        if (handler is not null)
-        {
-            input = handler.InputWithTools(input, tools);
-        }
-
         var streaming = ResolveStreaming();
         var options = new ChatCompletionsOptions();
-        foreach (var message in AzureMessageConversion.ChatRequestMessages(input, handler, IsMistral()))
+        foreach (var message in AzureMessageConversion.ChatRequestMessages(input, IsMistral()))
         {
             options.Messages.Add(message);
         }
 
         var completionParams = CompletionParams(config);
         ApplyCompletionParams(options, completionParams);
-        var sendTools = EmulateTools != true && tools.Count > 0;
+        var sendTools = tools.Count > 0;
         if (sendTools)
         {
             foreach (var tool in AzureToolConversion.ChatTools(tools))
@@ -398,24 +363,11 @@ public sealed class AzureAIModelApi : IModelApi
             options.AdditionalProperties[key] = BinaryData.FromObjectAsJson(value);
         }
 
-        ChatCompletionsClient client;
-        if (!string.IsNullOrEmpty(ApiKey))
-        {
-            // An api key goes out as both `api-key` and `Authorization: Bearer`, as the Python SDK sends it.
-            client = new ChatCompletionsClient(new Uri(EndpointUrl), new AzureKeyCredential(ApiKey), CreateClientOptions());
-        }
-        else if (Credential is not null)
-        {
-            // Entra ID (az login, managed identity, ...): the SDK's bearer-token policy sends only
-            // `Authorization: Bearer` and refreshes the token itself; Credential pins the scope to
-            // AZUREAI_AUDIENCE instead of the SDK's ml.azure.com default. Python tunnels the token through
-            // AzureKeyCredential, which also puts it in `api-key` — a header Azure gateways may reject.
-            client = new ChatCompletionsClient(new Uri(EndpointUrl), Credential, CreateClientOptions());
-        }
-        else
-        {
-            throw new PrerequisiteError("Azure AI must have either an API key or token provider.");
-        }
+        // Entra ID (az login, managed identity, ...): the SDK's bearer-token policy sends only
+        // `Authorization: Bearer` and refreshes the token itself; Credential pins the scope to
+        // AZUREAI_AUDIENCE instead of the SDK's ml.azure.com default. Python tunnels the token through
+        // AzureKeyCredential, which also puts it in `api-key` — a header Azure gateways may reject.
+        var client = new ChatCompletionsClient(new Uri(EndpointUrl), Credential, CreateClientOptions(passThrough: options.AdditionalProperties.Count > 0));
 
         var modelCall = ModelCall.Create(RequestSnapshot(options, completionParams, streaming, sendTools), OpenAIUtil.OpenAIMediaFilter);
 
@@ -449,9 +401,13 @@ public sealed class AzureAIModelApi : IModelApi
             var output = new ModelOutput
             {
                 Model = response.Model,
-                Choices = ChatCompletionChoices(response.Model, response.Choices, tools, handler),
+                Choices = ChatCompletionChoices(response.Model, response.Choices),
                 Usage = response.Usage is { } usage
                     ? new ModelUsage(usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens)
+                    {
+                        ReasoningTokens = usage.ReasoningTokens,
+                        InputTokensCacheRead = usage.CachedTokens,
+                    }
                     : null,
             };
             return new GenerateResult(output, null, modelCall);
@@ -538,28 +494,48 @@ public sealed class AzureAIModelApi : IModelApi
     }
 
     /// <summary>Port of <c>chat_completion_choices</c>: choices sorted by index.</summary>
-    public static List<ChatCompletionChoice> ChatCompletionChoices(string model, IReadOnlyList<AzureChatChoice> choices, IReadOnlyList<ToolInfo> tools, ChatApiHandler? handler) =>
-        choices.OrderBy(c => c.Index).Select(choice => ChatCompletionChoice(model, choice, tools, handler)).ToList();
+    public static List<ChatCompletionChoice> ChatCompletionChoices(string model, IReadOnlyList<AzureChatChoice> choices) =>
+        choices.OrderBy(c => c.Index).Select(choice => ChatCompletionChoice(model, choice)).ToList();
 
     /// <summary>Port of <c>chat_complection_choice</c> (sic): message, stop reason and best-effort stop details.</summary>
-    public static ChatCompletionChoice ChatCompletionChoice(string model, AzureChatChoice choice, IReadOnlyList<ToolInfo> tools, ChatApiHandler? handler) =>
+    public static ChatCompletionChoice ChatCompletionChoice(string model, AzureChatChoice choice) =>
         new(
-            ChatCompletionAssistantMessage(model, choice.Message, tools, handler),
+            ChatCompletionAssistantMessage(model, choice.Message),
             ChatCompletionStopReason(choice.FinishReason),
             ModelOutputUtil.CollectStopDetails("azureai", () => OpenAIUtil.OpenAIStopDetails(choice.Raw)));
 
-    /// <summary>Port of <c>chat_completion_assistant_message</c>.</summary>
-    public static ChatMessageAssistant ChatCompletionAssistantMessage(string model, AzureChatResponseMessage response, IReadOnlyList<ToolInfo> tools, ChatApiHandler? handler)
+    /// <summary>
+    /// Port of <c>chat_completion_assistant_message</c>: the native <c>tool_calls</c>, parsed, plus the text.
+    /// When the model exposes its reasoning (<see cref="AzureChatResponseMessage.ReasoningContent"/>) it is
+    /// placed first as <see cref="ContentReasoning"/>, the Inspect convention; Cohere's text markers are
+    /// stripped from the parsed text (the raw response on the <see cref="ModelCall"/> keeps them).
+    /// </summary>
+    public static ChatMessageAssistant ChatCompletionAssistantMessage(string model, AzureChatResponseMessage response)
     {
-        if (handler is not null)
+        var text = StripCohereTextMarkers(response.Content ?? "");
+        var toolCalls = response.ToolCalls?.Select(call => ToolCallParsing.ParseToolCall(call.Id, call.Name, call.Arguments)).ToList();
+        MessageContent content = response.ReasoningContent is { } reasoning
+            ? MessageContent.FromItems([new ContentReasoning(reasoning), new ContentText(text)])
+            : text;
+        return new ChatMessageAssistant(content, toolCalls, model);
+    }
+
+    /// <summary>
+    /// Cohere command deployments on the model-inference route wrap the answer in
+    /// <c>&lt;|START_TEXT|&gt;…&lt;|END_TEXT|&gt;</c>; the markers are removed (a missing end marker, e.g. after a
+    /// length cut-off, is tolerated). Text without the start marker is returned unchanged.
+    /// </summary>
+    internal static string StripCohereTextMarkers(string text)
+    {
+        const string start = "<|START_TEXT|>";
+        const string end = "<|END_TEXT|>";
+        if (!text.StartsWith(start, StringComparison.Ordinal))
         {
-            return handler.ParseAssistantResponse(response.Content ?? "", tools);
+            return text;
         }
 
-        return new ChatMessageAssistant(
-            response.Content ?? "",
-            response.ToolCalls?.Select(call => ToolCallParsing.ParseToolCall(call.Id, call.Name, call.Arguments, tools)).ToList(),
-            model);
+        text = text[start.Length..];
+        return text.EndsWith(end, StringComparison.Ordinal) ? text[..^end.Length] : text;
     }
 
     /// <summary>Port of <c>chat_completion_stop_reason</c> over the wire <c>finish_reason</c>.</summary>
@@ -571,12 +547,6 @@ public sealed class AzureAIModelApi : IModelApi
         "tool_calls" => StopReason.ToolCalls,
         _ => StopReason.Unknown,
     };
-
-    /// <summary>Port of <c>_is_llama_model</c>.</summary>
-    public static bool IsLlamaModel(string name) => name.ToLowerInvariant().Contains("llama");
-
-    /// <summary>Port of <c>_is_llama3_model</c>.</summary>
-    public static bool IsLlama3Model(string name) => name.ToLowerInvariant().Contains("llama-3");
 
     /// <summary>Port of <c>_is_mistral_model</c>.</summary>
     public static bool IsMistralModel(string name) => name.ToLowerInvariant().Contains("mistral");
@@ -652,19 +622,28 @@ public sealed class AzureAIModelApi : IModelApi
                     options.Seed = value!.GetValue<int>();
                     break;
                 default:
-                    // max_completion_tokens is not a declared SDK option; it travels as a pass-through extra.
+                    // max_completion_tokens and response_format are not declared SDK options (the SDK's json_schema
+                    // response-format types are internal); they travel as pass-through extras.
                     options.AdditionalProperties[key] = BinaryData.FromString(value!.ToJsonString());
                     break;
             }
         }
     }
 
-    private AzureAIInferenceClientOptions CreateClientOptions()
+    private AzureAIInferenceClientOptions CreateClientOptions(bool passThrough)
     {
         var clientOptions = new AzureAIInferenceClientOptions();
         if (Settings.Transport is not null)
         {
             clientOptions.Transport = Settings.Transport;
+        }
+
+        if (passThrough)
+        {
+            // The SDK stamps `extra-parameters: pass-through` only on the non-streaming path; the gateway
+            // rejects unknown body fields without it, so streamed extras need the same header (Python sends
+            // it on both paths whenever model_extras are present).
+            clientOptions.AddPolicy(new PassThroughExtraParametersPolicy(), HttpPipelinePosition.PerCall);
         }
 
         // The SDK pipeline keeps its own retry policy underneath Inspect's should_retry loop, just as the
@@ -681,56 +660,6 @@ public sealed class AzureAIModelApi : IModelApi
     /// </summary>
     private static Task<AzureChatCompletions> ReadStreamAsync(Stream contentStream, CancellationToken cancellationToken) =>
         AzureAIStreamAccumulator.CompletionFromStreamAsync(SseParser.ReadUpdatesAsync(contentStream, cancellationToken), cancellationToken);
-
-    private object? CollectModelArg(string name)
-    {
-        if (_modelArgs.TryGetValue(name, out var value) && value is not null)
-        {
-            _modelArgs.Remove(name);
-            return value;
-        }
-
-        return null;
-    }
-
-    /// <summary>Port of <c>ModelAPI._apply_api_key_overrides</c>.</summary>
-    private void ApplyApiKeyOverrides()
-    {
-        var apiKey = ApiKey;
-        foreach (var key in ApiKeyVars)
-        {
-            if (apiKey is not null)
-            {
-                var overrideValue = ModelApiHooks.OverrideApiKey?.Invoke(key, apiKey);
-                if (overrideValue is not null)
-                {
-                    apiKey = overrideValue;
-                }
-            }
-            else
-            {
-                var value = Environment.GetEnvironmentVariable(key);
-                if (value is not null)
-                {
-                    var overrideValue = ModelApiHooks.OverrideApiKey?.Invoke(key, value);
-                    if (overrideValue is not null)
-                    {
-                        Environment.SetEnvironmentVariable(key, overrideValue);
-                    }
-                }
-                else if (ModelApiHooks.HasApiKeyOverride)
-                {
-                    var overrideValue = ModelApiHooks.OverrideApiKey?.Invoke(key, "");
-                    if (overrideValue is not null)
-                    {
-                        apiKey = overrideValue;
-                    }
-                }
-            }
-        }
-
-        ApiKey = apiKey;
-    }
 
     private static string ReplaceFirst(string text, string search, string replacement)
     {

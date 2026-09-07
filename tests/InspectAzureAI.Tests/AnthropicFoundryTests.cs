@@ -19,11 +19,11 @@ public class AnthropicFoundryTests
         + (extraBlocks is null ? "" : "," + extraBlocks) + "],\"stop_reason\":\"" + stopReason + "\",\"stop_sequence\":null,\"usage\":{" + usage + "}}";
 
     private static (AnthropicFoundryModelApi Api, FakeArmHandler Handler, FakeTokenCredential Credential) Build(
-        string body, HttpStatusCode status = HttpStatusCode.OK, string? apiKey = null, string contentType = "application/json")
+        string body, HttpStatusCode status = HttpStatusCode.OK, string contentType = "application/json")
     {
         var handler = new FakeArmHandler(_ => new HttpResponseMessage(status) { Content = new StringContent(body, Encoding.UTF8, contentType) });
         var credential = new FakeTokenCredential("entra-token");
-        var api = new AnthropicFoundryModelApi("claude-sonnet-4-6", apiKey: apiKey,
+        var api = new AnthropicFoundryModelApi("claude-sonnet-4-6",
             settings: new AzureAIClientSettings { TokenCredential = credential }, handler: handler);
         return (api, handler, credential);
     }
@@ -73,37 +73,25 @@ public class AnthropicFoundryTests
     }
 
     [Fact]
-    public async Task api_key_is_sent_as_x_api_key_and_api_key()
-    {
-        using var env = EnvScope.Clean().Set(AzureAIModelApi.AzureAIBaseUrlVar, Inference);
-        var (api, handler, _) = Build(MessageJson(), apiKey: "k");
-
-        await api.GenerateAsync([new ChatMessageUser("hi")], [], ToolChoice.Auto, new GenerateConfig());
-
-        var request = handler.Requests.Single();
-        Assert.Null(request.Headers.Authorization);
-        Assert.Equal("k", request.Headers.GetValues("x-api-key").Single());
-        Assert.Equal("k", request.Headers.GetValues("api-key").Single());
-        Assert.Null(api.Credential);
-    }
-
-    [Fact]
     public void env_precedence_and_base_url_derivation()
     {
-        using var env = EnvScope.Clean().Set("AZUREAI_ANTHROPIC_BASE_URL", "https://res.services.ai.azure.com/models").Set("AZURE_ANTHROPIC_API_KEY", "legacy");
-        var api = new AnthropicFoundryModelApi("azure/claude-3-5-sonnet");
+        using var env = EnvScope.Clean().Set("AZUREAI_ANTHROPIC_BASE_URL", "https://res.services.ai.azure.com/models");
+        var api = new AnthropicFoundryModelApi("azure/claude-3-5-sonnet", settings: Fixtures.Entra());
 
-        Assert.Equal("legacy", api.ApiKey);
+        Assert.NotNull(api.Credential);
         Assert.Equal("claude-3-5-sonnet", api.DeploymentName);
         Assert.Equal("https://res.services.ai.azure.com/anthropic", api.BaseUrl);
         Assert.Equal(4096, api.MaxTokens());
-        Assert.Equal(32000, new AnthropicFoundryModelApi("claude-3-7-sonnet", "https://x/anthropic", "k").MaxTokens());
+        Assert.Equal(32000, new AnthropicFoundryModelApi("claude-3-7-sonnet", "https://x/anthropic", settings: Fixtures.Entra()).MaxTokens());
         Assert.Equal("https://x/anthropic", AnthropicFoundryModelApi.DeriveBaseUrl("https://x/anthropic/"));
         Assert.Equal("https://x/anthropic", AnthropicFoundryModelApi.DeriveBaseUrl("https://x"));
         Assert.Equal("https://x/anthropic", AnthropicFoundryModelApi.DeriveBaseUrl("https://x/models"));
 
-        env.Set("AZUREAI_ANTHROPIC_BASE_URL", null).Set("AZURE_ANTHROPIC_API_KEY", null);
-        Assert.Throws<PrerequisiteError>(() => new AnthropicFoundryModelApi("claude-sonnet-4-6", settings: new AzureAIClientSettings { TokenCredential = new FakeTokenCredential("t") }));
+        env.Set("AZUREAI_ANTHROPIC_BASE_URL", null);
+        var missing = Assert.Throws<PrerequisiteError>(() => new AnthropicFoundryModelApi("claude-sonnet-4-6", settings: new AzureAIClientSettings { TokenCredential = new FakeTokenCredential("t") }));
+        Assert.Equal(
+            "ERROR: Unable to initialise Anthropic on Azure client\n\nNo [bold][blue]AZUREAI_ANTHROPIC_BASE_URL[/blue][/bold], [bold][blue]AZURE_ANTHROPIC_BASE_URL[/blue][/bold], [bold][blue]AZURE_ENDPOINT_URL[/blue][/bold], [bold][blue]AZUREAI_ENDPOINT_URL[/blue][/bold], or [bold][blue]AZUREAI_BASE_URL[/blue][/bold] defined in the environment.",
+            missing.Message);
     }
 
     [Fact]
@@ -182,6 +170,48 @@ public class AnthropicFoundryTests
         Assert.Equal(RetryKind.RateLimit, limited.ShouldRetry(ex).Kind);
         Assert.False(limited.ShouldRetry(result.Error!).Retry);
         Assert.True(limited.IsAuthFailure(new RequestFailedException(401, "nope")));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task tool_result_images_reach_claude_and_are_redacted_in_the_call(bool withCaption)
+    {
+        using var env = EnvScope.Clean().Set(AzureAIModelApi.AzureAIBaseUrlVar, Inference);
+        var (api, handler, _) = Build(MessageJson());
+        var pixels = Convert.ToBase64String(new byte[200]);
+        var content = new List<Content>();
+        if (withCaption)
+        {
+            content.Add(new ContentText("Screenshot") { Citations = [AnthropicWebSearch.ToInspectCitation(JsonNode.Parse("""{"type":"web_search_result_location","url":"https://example.com","encrypted_index":"IDX"}""")!.AsObject())] });
+        }
+
+        content.Add(new ContentImage($"data:image/png;base64,{pixels}"));
+        content.Add(new ContentImage("https://example.com/image.png"));
+        var result = await api.GenerateAsync([
+            new ChatMessageUser("Take a screenshot"),
+            new ChatMessageAssistant("", [new ToolCall("tool1", "screenshot", new JsonObject())]),
+            new ChatMessageTool(MessageContent.FromItems(content), "tool1", "screenshot"),
+        ], [], ToolChoice.Auto, new GenerateConfig());
+
+        var toolResult = JsonNode.Parse(handler.Bodies.Single()!)!["messages"]![2]!["content"]![0]!;
+        Assert.Equal("tool1", toolResult["tool_use_id"]!.ToString());
+        Assert.False(toolResult["is_error"]!.GetValue<bool>());
+        var blocks = toolResult["content"]!.AsArray();
+        Assert.Equal(withCaption ? 3 : 2, blocks.Count);
+        if (withCaption)
+        {
+            Assert.Equal("Screenshot", blocks[0]!["text"]!.ToString());
+            Assert.Null(blocks[0]!["citations"]);
+        }
+
+        var imageIndex = withCaption ? 1 : 0;
+        Assert.Equal("image", blocks[imageIndex]!["type"]!.ToString());
+        Assert.Equal("base64", blocks[imageIndex]!["source"]!["type"]!.ToString());
+        Assert.Equal("image/png", blocks[imageIndex]!["source"]!["media_type"]!.ToString());
+        Assert.Equal(pixels, blocks[imageIndex]!["source"]!["data"]!.ToString());
+        Assert.Equal("https://example.com/image.png", blocks[imageIndex + 1]!["source"]!["url"]!.ToString());
+        Assert.Equal(OpenAIUtil.Base64DataRemoved, result.Call.Request["messages"]![2]!["content"]![0]!["content"]![imageIndex]!["source"]!["data"]!.ToString());
     }
 
     [Fact]

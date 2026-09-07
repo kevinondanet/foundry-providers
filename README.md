@@ -1,40 +1,104 @@
-# InspectAzureAI — a .NET 10 port of the Inspect AI `azureai` provider
+# InspectAzureAI — Inspect AI on .NET for Azure AI Foundry, `az login` only
 
-This repository is a standalone C# sample that faithfully ports the
-[Inspect AI](https://inspect.aisi.org.uk) `azureai` model provider — the adapter for
-[Azure AI Foundry](https://ai.azure.com/) model-inference endpoints — and demonstrates every piece of
-its behaviour: credential and endpoint resolution, model-name handling, request assembly, native and
-emulated (Llama 3.1 `<tool_call>` prompt format) tool calling, streaming accumulation with `on_stream`
-events, content-filter stop details, `ModelCall` capture with media redaction, and retry
-classification.
+A .NET 10 port of [Inspect AI](https://inspect.aisi.org.uk) built around
+[Azure AI Foundry](https://ai.azure.com/): the `azureai` model provider (the adapter for Foundry
+model-inference endpoints) and its companion provider for Claude deployments on the Anthropic Messages
+route, the eval engine that drives them (tasks, solvers, scorers, tools, agents, sandboxes, limits, logs,
+eval sets), two SWE agents, the `inspectai` command line and three console apps. The provider is the
+**lite** cut: it keeps everything needed to drive the deployments that were verified on a live Foundry
+resource (below) with a developer sign-in, and drops the rest:
 
-The Python source of truth is `src/inspect_ai/model/_providers/azureai.py` and its helpers in the
-Inspect repository; every C# type cites the Python location it ports in its `///` summary.
+| Kept | Dropped (available on `main`) |
+|---|---|
+| Entra ID authentication through `DefaultAzureCredential`, which picks up `az login` (and managed identity when hosted) | API keys (`AZURE_API_KEY` / `AZUREAI_API_KEY` / `AZUREAI_ANTHROPIC_API_KEY`), the api-key override hook, the `AZUREAI_CREDENTIAL` selector and `--auth` |
+| **Native tool calling** (`tools` / `tool_choice` on the wire, `tool_calls` parsed back), on both routes | Llama detection and `<tool_call>` prompt-format tool emulation (`emulate_tools`, `Llama31Handler`) |
+| Streaming with `on_stream` events, images, `ModelCall` capture, retry classification, content-filter stop details | The YAML fallback for non-JSON tool arguments (native function calling always returns JSON) |
+| The Mistral rules, the gpt-5 / o-series `max_completion_tokens` rule, `-M max_completion_tokens=true` for MAI-Thinking-1 | |
+| **Reasoning controls** (`--reasoning-effort`, `--reasoning-tokens` mapped to each vendor's field), reasoning text and token counts parsed back, Claude thinking replayed on later turns | |
+| A `params` probe that discovers which request parameters each deployment accepts (the matrix below) | |
+| Deployment discovery (`models`) and the `test-all` smoke matrix | |
+| `AnthropicFoundryModelApi` for `claude-*` deployments (bearer token, `tool_use`, streaming, images) | |
 
-The port targets **net10.0** and is built on the official
-[`Azure.AI.Inference`](https://www.nuget.org/packages/Azure.AI.Inference) (`ChatCompletionsClient`) and
-[`Azure.Identity`](https://www.nuget.org/packages/Azure.Identity) packages.
+The Python source of truth is `src/inspect_ai/model/_providers/azureai.py`; every C# type still cites the
+Python location it ports. The port targets **net10.0** on
+[`Azure.AI.Inference`](https://www.nuget.org/packages/Azure.AI.Inference) and
+[`Azure.Identity`](https://www.nuget.org/packages/Azure.Identity).
+
+## What the solution ports
+
+Four layers, each depending only on the ones below it (`docs/ARCHITECTURE.md` walks through all of them;
+`docs/ports/README.md` indexes the per-subsystem port notes with their deviations from Python):
+
+- **Provider** (`InspectAzureAI.Provider`): `AzureAIModelApi` and `AnthropicFoundryModelApi` behind one
+  `IModelApi`, the Inspect data model (messages, content, tools, `GenerateConfig` with every Python field,
+  `ModelOutput`, `ModelCall`), Entra ID auth, streaming with `on_stream` events, native tool calling,
+  per-vendor reasoning parameters, structured output (`response_format` / Anthropic `output_format`),
+  JSON-schema generation, stall scopes, Anthropic server-side web search with citations, deployment
+  discovery and parameter probes.
+- **Eval engine** (`InspectAzureAI.Eval`): the ambient sample context, the `Model` wrapper (retries,
+  adaptive connection concurrency, prompt cache, cost, roles, fallbacks, hooks), scoped limits (message,
+  token, turn, time, working, cost), sample error policy with retries and early stopping, datasets and
+  `[Task]`s, solvers (generate loop, basic agent, multiple choice, chain of thought, self critique, fork),
+  the full metric and reducer set with classification, cascade, multi, precomputed and math scorers,
+  agents (react, handoff, as_tool, run) with compaction and message trimming, tools (`ToolDef` by reflection,
+  the executor with schema validation, think / web_search / read_file / list_files / grep / todo_write /
+  update_plan, `text_editor` and `bash_session` over the injected `inspect-sandbox-tools`, MCP tool sources),
+  tool-call approval policies, lifecycle hooks, store and state tracking with replay and subtasks, Docker and
+  local sandboxes, the sandbox agent bridge, the log data model with all 23 event types in Python-identical
+  `.json` and `.eval` formats, log editing / recovery / conversion / bundling, re-scoring of existing logs,
+  tabular analysis (evals, samples, messages, events), eval sets with resume and `eval-retry`.
+- **SWE agents** (`InspectAzureAI.Swe`): mini-swe-agent as a native loop and the real Claude Code CLI
+  bridged to the Azure providers, both wired to approval, the cache and compaction.
+- **Microsoft Agent Framework** (`InspectAzureAI.Maf`): an `IChatClient` over the agent bridge so a
+  `ChatClientAgent` (or any Microsoft.Extensions.AI consumer) runs as an Inspect agent with its model calls
+  served by the sample's model, Inspect tools wrapped as `AIFunction`s, tool events, submit and scored attempts
+  (`docs/agent-framework.md`).
+- **Apps**: the `inspectai` command line (`InspectAzureAI.Cli`), the SWE showcase, the model matrix, and
+  the provider-only `Sample` CLI with its diagnostics.
 
 ## Solution layout
 
 ```
 InspectAzureAI.sln
-├── src/InspectAzureAI.Provider     class library — the port
-│   ├── Core/                       minimal Inspect types (messages, content, tools, config, output, ModelCall, stream events)
-│   ├── Util/                       ports of util/util.py, azure_hosting.py, _util/http.py, _openai.py helpers, images.py
-│   ├── Tools/                      ChatAPIHandler + Llama31Handler, parse_tool_call, tool/message conversion
+├── src/InspectAzureAI.Provider     class library — the providers (Azure.AI.Inference, Azure.Identity)
+│   ├── Core/                       Inspect types: messages, content, tools, config, output, ModelCall, stream events, JsonSchema, StallScope
+│   ├── Util/                       azure_hosting.py (DefaultAzureCredential + audience), http retry, _openai.py helpers, images, JSON, reasoning params
+│   ├── Tools/                      parse_tool_call, tool/message conversion (native tools only), response formats
 │   ├── Testing/                    CannedTransport — an offline HttpPipelineTransport
-│   ├── Foundry/                    FoundryCatalog — deployment discovery through Azure Resource Manager (port-only)
-│   ├── Anthropic/                  AnthropicFoundryModelApi — Claude deployments on the Anthropic Messages route (companion)
-│   ├── AzureAIModelApi.cs          port of AzureAIAPI
+│   ├── Foundry/                    FoundryCatalog — deployment discovery through Azure Resource Manager; parameter probes
+│   ├── Anthropic/                  AnthropicFoundryModelApi — Claude deployments on the Anthropic Messages route; web search, citations
+│   ├── AzureAIModelApi.cs          port of AzureAIAPI (Entra ID only)
 │   ├── AzureAIStreamAccumulator.cs port of azureai_completion_from_stream
 │   ├── AzureChatCompletions.cs     dict-backed response view (raw JSON)
 │   └── SseParser.cs                server-sent-events reader
-├── src/InspectAzureAI.Sample       console app with one subcommand per feature
-└── tests/InspectAzureAI.Tests      xunit suite (offline, canned transport)
+├── src/InspectAzureAI.Eval         class library — the eval engine (ModelContextProtocol)
+│   ├── Context/                    SampleContext, Store, Transcript and events, scoped limits, store/state tracking, replay, subtasks
+│   ├── Model/                      the Model wrapper, roles, fallbacks, token estimation; Cache/, Cost/, Compaction/
+│   ├── Concurrency/                connection slots, adaptive controllers, sample scheduling, throughput
+│   ├── Dataset/, Tasks/            samples, JSON and CSV datasets; EvalTask and the [Task] attribute
+│   ├── Solvers/, Scorers/          solvers, TaskState, the generate loop, multiple choice, fork; scorers, Metrics/, reducers
+│   ├── Tools/                      ToolDef, the executor, sandbox tools; Builtin/, Support/ (JSON-RPC, injection) with text_editor and bash_session, Mcp/
+│   ├── Agents/                     react, handoff, as_tool, run, AsSolver; Bridge/ (the sandbox agent bridge)
+│   ├── Approval/, Hooks/           tool-call approval policies; lifecycle hooks
+│   ├── Sandbox/                    Docker/ and Local/ sandboxes
+│   ├── Runner/                     Eval.RunAsync, SampleRunner, error policy; EvalSet/ (eval sets, resume, retry); Scoring/ (re-scoring logs)
+│   ├── Log/                        EvalLog records, Json/ (the .json writer), EvalFormat/ (the .eval zip), Tools/ (edit, recover, convert, bundle)
+│   ├── Analysis/                   evals, samples, messages and events tables
+│   └── Testing/                    ScriptedModelApi, FakeSandboxEnvironment
+├── src/InspectAzureAI.Swe          MiniSweAgent and ClaudeCodeAgent
+├── src/InspectAzureAI.Maf          InspectChatClient, ToolDefFunction and the Agent Framework agent (Microsoft.Agents.AI)
+├── src/InspectAzureAI.Cli          the inspectai executable (System.CommandLine): eval, eval-set, eval-retry, score, list, log, cache, info, view
+├── src/InspectAzureAI.SweShowcase  console app: list, run, show
+├── src/InspectAzureAI.ModelMatrix  console app: every deployment x task x agent
+├── src/InspectAzureAI.Sample       console app: chat, stream, tools, image, token, models, test-all, capture, params, cache, cost, structured
+├── docs/ARCHITECTURE.md            the guided tour; docs/ports/ the port notes; docs/dashboard the wire dashboard (see below)
+└── tests/                          seven xunit projects, all offline: Tests, Eval.Tests, Swe.Tests, Maf.Tests, Cli.Tests, ModelMatrix.Tests, Sample.Tests
 ```
 
 ## Architecture
+
+The diagram below is the provider layer, one generate call end to end. The eval engine, the agents, the CLI
+and the apps are covered section by section in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ```mermaid
 flowchart LR
@@ -42,114 +106,66 @@ flowchart LR
         S[Sample / your code]
     end
     subgraph Provider["InspectAzureAI.Provider"]
-        API[AzureAIModelApi<br/>port of AzureAIAPI]
-        H[Llama31Handler<br/>tool emulation]
+        API[AzureAIModelApi]
+        ANT[AnthropicFoundryModelApi<br/>claude-* deployments]
+        CRED[AzureHosting<br/>DefaultAzureCredential + AZUREAI_AUDIENCE]
         MC[AzureMessageConversion<br/>AzureToolConversion]
         ACC[AzureAIStreamAccumulator<br/>+ SseParser]
-        RAW[AzureChatCompletions<br/>raw JSON view]
         OBS[ModelStreamObserver<br/>on_stream events]
         CALL[ModelCall<br/>request/response capture]
-        RET[ShouldRetry / IsAuthFailure<br/>HttpRetryUtil]
-    end
-    subgraph SDK["Azure.AI.Inference / Azure.Core"]
-        CLI[ChatCompletionsClient]
-        T[HttpPipelineTransport<br/>(injectable)]
+        RET[ShouldRetry / IsAuthFailure]
     end
     subgraph Azure
-        EP[/models/chat/completions<br/>api-version=2024-05-01-preview]
+        EP[/models/chat/completions]
+        AEP[/anthropic/v1/messages]
     end
     S -->|ChatMessage, ToolInfo, ToolChoice, GenerateConfig| API
-    API -->|emulate_tools| H
-    API --> MC
-    MC -->|ChatCompletionsOptions| CLI
-    CLI --> T --> EP
-    EP -->|JSON / SSE| T --> CLI
-    CLI -->|raw response| RAW
-    CLI -->|raw SSE stream| ACC --> RAW
-    ACC -->|Text / ToolCall deltas| OBS --> S
-    RAW -->|ModelOutput + StopDetails| API
+    S --> ANT
+    CRED -->|Authorization: Bearer| API
+    CRED -->|Authorization: Bearer| ANT
+    API --> MC -->|ChatCompletionsClient| EP
+    ANT -->|HttpClient| AEP
+    EP -->|JSON / SSE| ACC --> OBS --> S
     API --> CALL
     API -.->|thrown RequestFailedException| RET
     API -->|GenerateResult| S
 ```
 
-## Python → C# mapping
-
-| Python (inspect_ai) | C# |
-|---|---|
-| `model/_providers/azureai.py` `AzureAIAPI.__init__` | `AzureAIModelApi` constructor |
-| `AzureAIAPI.generate` | `AzureAIModelApi.GenerateAsync` |
-| `AzureAIAPI.completion_params` | `AzureAIModelApi.CompletionParams` |
-| `AzureAIAPI.resolve_streaming` | `AzureAIModelApi.ResolveStreaming` |
-| `AzureAIAPI.max_tokens` / `should_retry` / `is_auth_failure` / `collapse_user_messages` / `connection_key` | same-named methods on `AzureAIModelApi` |
-| `AzureAIAPI.service_model_name` / `canonical_name` / `is_llama` / `is_mistral` / `is_openai_model` | same-named methods |
-| `AzureAIAPI.handle_azure_error` | `AzureAIModelApi.HandleAzureError` |
-| `except AzureError` in `AzureAIAPI.generate` (azure-core's `HttpResponseError` / `ServiceRequestError` / `ServiceResponseError`) | `AzureAIModelApi.AsAzureError` (normalises what Azure.Core throws, see fidelity note 3) |
-| `_is_llama_model` / `_is_llama3_model` / `_is_mistral_model` / `_is_openai_model` | `AzureAIModelApi.IsLlamaModel` / `IsLlama3Model` / `IsMistralModel` / `IsOpenAIModelName` |
-| `_StreamChoice` / `azureai_completion_from_stream` | `StreamChoice` / `AzureAIStreamAccumulator.CompletionFromStreamAsync` |
-| `chat_request_messages` / `chat_request_message` / `chat_content_item` | `Tools/AzureMessageConversion` |
-| `mistral_message_reducer` / `fold_user_message_into_tool_message` | `AzureMessageConversion.MistralMessageReducer` / `FoldUserMessageIntoToolMessage` |
-| `chat_tools` / `chat_tool_definition` / `chat_tool_choice` / `chat_tool_call` | `Tools/AzureToolConversion` |
-| `chat_completion_choices` / `chat_complection_choice` / `chat_completion_assistant_message` / `chat_completion_stop_reason` | `AzureAIModelApi.ChatCompletionChoices` / `ChatCompletionChoice` / `ChatCompletionAssistantMessage` / `ChatCompletionStopReason` |
-| `azure.ai.inference.models.ChatCompletions` (dict-backed `as_dict()`) | `AzureChatCompletions` / `AzureChatChoice` / `AzureChatResponseMessage` (raw `JsonObject`) |
-| `util/chatapi.py` `ChatAPIHandler`, `ChatAPIMessage` | `Tools/ChatApiHandler.cs` |
-| `util/llama31.py` `Llama31Handler`, `parse_tool_call_content`, `filter_assistant_header` | `Tools/Llama31Handler.cs` |
-| `_call_tools.py` `parse_tool_call`, `tool_parse_error_message`, `_object_with_trailing_quotes` | `Tools/ToolCallParsing.cs` |
-| `yaml.safe_load` (non-JSON tool arguments) | `Tools/YamlScalar.cs` (approximation, see fidelity notes) |
-| `util/_json.py` `json_schema_dump`, `JSON_SCHEMA_EXTENDED_FIELDS`, `JSONSchema` | `Tools/JsonSchemaDump.cs`, `Core/Tools.cs` (`ToolParam.ToJson`) |
-| `util/util.py` `normalize_stream_arg`, `model_base_url`, `environment_prerequisite_error` | `Util/ProviderUtil.cs` |
-| `util/azure_hosting.py` `resolve_azure_token_provider`, `DEFAULT_AZURE_AUDIENCE` | `Util/AzureHosting.cs` (`ResolveAzureCredential`, `CreateCredential`, `AudienceTokenCredential`) |
-| *(none)* Entra token diagnostics for the `token` command | `Util/EntraTokenInfo.cs` |
-| *(none)* deployment discovery for `models` / `test-all` | `Foundry/FoundryCatalog.cs` |
-| `_providers/anthropic.py` (Azure path only: client, `max_tokens`, `message_stop_reason`, usage, tools, streaming) | `Anthropic/AnthropicFoundryModelApi.cs` (companion) |
-| `_util/http.py` `is_retryable_http_status`, `parse_retry_after(_from_exception)`, `status_code_of` | `Util/HttpRetryUtil.cs` |
-| `_openai.py` `needs_max_completion_tokens`, `openai_stop_details`, `openai_media_filter` | `Util/OpenAIUtil.cs` |
-| `_model_output.py` `collect_stop_details` | `Util/ModelOutputUtil.cs` |
-| `_util/images.py` `inline_media_data_uri`, `_util/url.py` data-URI helpers | `Util/InlineMedia.cs` |
-| `_util/logger.py` `warn_once` | `Util/ProviderLogger.WarnOnce` |
-| `hooks._hooks.override_api_key` / `has_api_key_override`, `ModelAPI._apply_api_key_overrides` | `Util/ModelApiHooks.cs`, `AzureAIModelApi.ApplyApiKeyOverrides` |
-| `_model.py` `RetryDecision` | `Core/RetryDecision.cs` |
-| `_model_output.py` `ModelOutput`, `ChatCompletionChoice`, `ModelUsage`, `StopReason`, `StopDetails`, `StopCategory` | `Core/ModelOutput.cs` |
-| `_model_call.py` `ModelCall`, `ModelCallFilter`, `_walk_json_value` | `Core/ModelCall.cs` |
-| `_chat_message.py` `ChatMessage*` | `Core/ChatMessage.cs`, `Core/MessageContent.cs` |
-| `_util/content.py` `ContentText/Image/Audio/Video` | `Core/Content.cs` |
-| `tool/_tool_info.py`, `_tool_params.py`, `_tool_call.py`, `_tool_choice.py` | `Core/Tools.cs` |
-| `_generate_config.py` `GenerateConfig` (subset) | `Core/GenerateConfig.cs` |
-| `_stream.py` `Stream*Event`, `StreamHandler`, `ModelStreamObserver`, `model_stream_requested`, `report_model_stream_*` | `Core/Streaming.cs` |
-| `_util/error.py` `PrerequisiteError`; `azure.core.exceptions.ServiceResponseError` | `Core/Errors.cs` (`PrerequisiteError`, `ServiceResponseException`) |
-| `textwrap.dedent`, `json.dumps` / `json.loads`, `shortuuid.uuid`, Python truthiness | `Util/TextWrap.cs`, `Util/PythonJson.cs` (`Dumps` / `Loads`), `Util/ShortUuid.cs`, `Util/PythonSemantics.cs` |
-| `tests/model/providers/test_azureai.py`, `tests/model/test_canonical_names.py::TestAzureAICanonicalName`, `tests/model/test_parse_tool_call.py` | `tests/InspectAzureAI.Tests` (`StreamingTests`, `EnvPrecedenceTests`, `NamingTests`, `ParseToolCallTests`, ...) — tests keep the Python test names |
-
 ## Environment variables
-
-Same names and precedence as the Python provider:
 
 | Variable | Meaning |
 |---|---|
-| `AZURE_API_KEY` | API key (legacy name, **preferred**: checked first) |
-| `AZUREAI_API_KEY` | API key (fallback when `AZURE_API_KEY` is unset — a set-but-empty `AZURE_API_KEY` is taken as-is, see fidelity note 15) |
-| `AZURE_ENDPOINT_URL`, `AZUREAI_ENDPOINT_URL`, `AZUREAI_BASE_URL` | endpoint, consulted in that order (e.g. `https://your-url.azure.com/models`) |
+| `AZURE_ENDPOINT_URL`, `AZUREAI_ENDPOINT_URL`, `AZUREAI_BASE_URL` | endpoint, consulted in that order (e.g. `https://<resource>.services.ai.azure.com/models`) |
 | `INSPECT_EVAL_MODEL_BASE_URL` | last-resort endpoint fallback |
 | `AZUREAI_AUDIENCE` | Entra ID token scope (default `https://cognitiveservices.azure.com/.default`) |
-| `AZUREAI_CREDENTIAL` | *(port only)* which Azure.Identity credential to use: `default` (`DefaultAzureCredential`, includes `az login`), `cli`, `developer-cli`, `managed-identity`, `environment`, `interactive` |
-| `AZUREAI_ANTHROPIC_API_KEY`, `AZURE_ANTHROPIC_API_KEY`, `AZUREAI_ANTHROPIC_BASE_URL`, `AZURE_ANTHROPIC_BASE_URL` | Inspect's variables for `anthropic/azure/<deployment>`, used by the Anthropic companion (`--route anthropic`, and `test-all` for Anthropic-format deployments). With no key Entra ID is used; with no base URL it is derived from `AZUREAI_BASE_URL` (`…/models` → `…/anthropic`) |
-| `AZUREAI_RESOURCE_ID`, `AZURE_SUBSCRIPTION_ID` | *(port only)* `models` / `test-all`: the Foundry resource id (skips discovery) or the subscription to search; otherwise every readable subscription is searched for the account whose endpoints include the `AZUREAI_BASE_URL` host |
-| `AZURE_TENANT_ID`, `AZURE_CLIENT_ID` | *(Azure.Identity standard)* tenant pin for the default / cli credentials; client id of a user-assigned managed identity |
+| `AZURE_TENANT_ID`, `AZURE_CLIENT_ID` | *(Azure.Identity standard, read by `DefaultAzureCredential` itself)* tenant pin; client id of a user-assigned managed identity |
+| `AZUREAI_ANTHROPIC_BASE_URL`, `AZURE_ANTHROPIC_BASE_URL` | Anthropic route base URL; when unset it is derived from `AZUREAI_BASE_URL` (`…/models` → `…/anthropic`) |
+| `AZUREAI_RESOURCE_ID`, `AZURE_SUBSCRIPTION_ID` | `models` / `test-all`: the Foundry resource id (skips discovery) or the subscription to search; otherwise every readable subscription is searched for the account whose endpoints include the `AZUREAI_BASE_URL` host |
+| `INSPECT_AZUREAI_MODEL` | *(sample only)* default model name (`gpt-5.4-mini` when unset) |
 
-Resolution order for the key: explicit constructor argument → api-key override hook → `AZURE_API_KEY` →
-`AZUREAI_API_KEY` → Entra ID. An API key is sent both as `Authorization: Bearer …` and `api-key: …`,
-exactly as the Python SDK does; an Entra ID token is sent only as `Authorization: Bearer …` (fidelity
-note 17). Missing prerequisites raise `PrerequisiteError` with the Python messages (Rich markup included).
+No API-key variable is read. Both providers resolve `DefaultAzureCredential` at construction and send the
+token only as `Authorization: Bearer` (fidelity note 16). A missing endpoint raises `PrerequisiteError`
+with the Python message.
+
+The eval engine and the CLI keep Python's variable names. The ones you are most likely to set:
+
+| Variable | Meaning |
+|---|---|
+| `INSPECT_LOG_DIR`, `INSPECT_LOG_FORMAT` | Log directory (default `logs`) and format (`eval` or `json`, default `eval`) |
+| `INSPECT_EVAL_MODEL`, `INSPECT_EVAL_ASSEMBLY` | The CLI's default `--model` and the assemblies it discovers `[Task]`s in |
+| `INSPECT_CACHE_DIR` | Root of the prompt cache (`inspectai cache path`) |
+| `INSPECT_AZUREAI_MODEL_COST_CONFIG` | A JSON price file applied to the model database (the Python data carries no prices) |
+| `INSPECT_SANDBOX_TOOLS_BINARIES_DIR` | Where the downloaded `inspect-sandbox-tools` binaries are cached |
+| `INSPECT_REQUIRED_HOOKS`, `INSPECT_EVAL_HOOKS` | Hooks that must be registered; hooks the CLI registers |
+
+`docs/ARCHITECTURE.md` section 8 lists every variable with the code that reads it.
 
 ### Signing in with `az login`
-
-Leave both API-key variables unset and the provider authenticates with Entra ID through
-`DefaultAzureCredential`, whose chain includes the Azure CLI:
 
 ```bash
 az login                                   # or: az login --tenant <tenant-id>
 az account set --subscription <name|id>    # the subscription that owns the endpoint
-export AZUREAI_BASE_URL=https://your-resource.services.ai.azure.com/models
+export AZUREAI_BASE_URL=https://<resource>.services.ai.azure.com/models
 
 dotnet run --project src/InspectAzureAI.Sample -- token      # who does the credential resolve to?
 dotnet run --project src/InspectAzureAI.Sample -- chat "hello"
@@ -157,143 +173,327 @@ dotnet run --project src/InspectAzureAI.Sample -- chat "hello"
 
 `token` acquires a token for `AZUREAI_AUDIENCE` and prints the identity, tenant, audience and expiry
 from its claims (never the token itself), so a wrong tenant or an expired login shows up before the
-first model call. On a developer machine `DefaultAzureCredential` probes managed identity first, which
-can add a few seconds; `--auth cli` (or `AZUREAI_CREDENTIAL=cli`) goes straight to `az login`. The
-identity needs a data-plane role on the resource, typically **Cognitive Services User** (or
-**Cognitive Services OpenAI User** for Azure OpenAI deployments); missing roles surface as HTTP 401/403
-from the model call, not from `token`.
+first model call. `DefaultAzureCredential` probes managed identity before the Azure CLI, which can add
+a few seconds on a developer machine; a host that wants the CLI directly can pass any `TokenCredential`
+(for example `AzureCliCredential`) through `AzureAIClientSettings.TokenCredential`.
 
-The sample additionally reads `INSPECT_AZUREAI_MODEL` for the default model name.
+**A data-plane role is required.** Owner or Contributor on the subscription is not enough; the endpoint
+answers `401 ... lacks the required data action Microsoft.CognitiveServices/accounts/MaaS/chat/completions/action`.
+Assign **Cognitive Services User** on the resource, then allow several minutes for propagation:
+
+```bash
+az role assignment create --role "Cognitive Services User" \
+  --assignee-object-id "$(az ad signed-in-user show --query id -o tsv)" --assignee-principal-type User \
+  --scope "$(az cognitiveservices account show -n <resource> -g <rg> --query id -o tsv)"
+```
+
+The same role covers the Azure Resource Manager reads that `models` and `test-all` need.
 
 ## Building and running
 
 ```bash
 dotnet build InspectAzureAI.sln -warnaserror
-dotnet test  InspectAzureAI.sln
+dotnet test  InspectAzureAI.sln          # six projects, offline; Docker, network and Python cross-checks are gated attributes
 ```
 
-The sample app has one subcommand per feature. Every command accepts `--model <name>`,
-`--streaming auto|true|false`, `--emulate-tools true|false`, `--temperature <n>`, `--max-tokens <n|none>`,
-`--model-arg key=value` (repeatable, the Python `-M` args), `--auth <selector>` and `--fake` (answer from an
-in-memory canned endpoint — no network, no keys — handy for seeing the request/response shapes).
+Every sample command accepts `--model <name>`, `--streaming auto|true|false`, `--temperature <n>`,
+`--max-tokens <n|none>`, `--reasoning-effort <none|minimal|low|medium|high|xhigh|max>`, `--reasoning-tokens <n>`,
+`--model-arg key=value` (repeatable, the Python `-M` args; JSON values such as `thinking={"type":"enabled"}` are
+parsed), `--route models|anthropic` and `--fake` (answer from an in-memory canned endpoint with a dummy token —
+no network, no sign-in). `params` and `capture --params` also take `--params all|a,b` and `--parallel <n>`.
 
 ```bash
-export AZUREAI_API_KEY=...            # or rely on DefaultAzureCredential
-export AZUREAI_BASE_URL=https://your-url.azure.com/models
-export INSPECT_AZUREAI_MODEL=Llama-3.3-70B-Instruct
-
+export AZUREAI_BASE_URL=https://<resource>.services.ai.azure.com/models
 S="dotnet run --project src/InspectAzureAI.Sample --"
+
 $S --help                          # list everything
-$S config                          # resolved endpoint / auth mode / names, no call made
-$S token                           # Entra ID only: acquire a token via az login / managed identity and print its identity
+$S config                          # resolved endpoint / credential / names / token-limit parameter, no call made
+$S token                           # acquire a token via az login and print its identity
 $S models                          # discover the resource behind AZUREAI_BASE_URL via ARM and list its deployments
 $S test-all                        # chat + stream + native tools against every healthy deployment; exit 1 on a chat failure
 $S test-all --only gpt-5.4-mini,DeepSeek-V4-Flash --skip-tools --json
-scripts/test-all-models.sh myfoundry0406 rg-mfa-foundry   # same, with the deployment list taken from the Azure CLI
-$S chat --model MAI-Thinking-1 --model-arg max_completion_tokens=true "hello"   # reasoning models reject max_tokens
-$S chat --route anthropic --model claude-sonnet-4-6 "hello"                   # Claude: Anthropic Messages route
-$S tools --route anthropic --model claude-sonnet-4-6 "Weather in Oslo?"
-$S chat --model gpt-5.4-mini --temperature 0 "hello"   # temperature is optional; gpt-5 deployments accept only 1
-$S naming gpt-4o moonshotai/kimi-k2.5 custom-org/llama-3-70b
+$S capture --include-failed --params all --out docs/dashboard/calls.json   # record every HTTP exchange + the parameter probes
+$S params --only gpt-5.4-mini,Kimi-K2.6            # which parameters does each deployment accept? (verdicts + evidence)
+$S chat --model gpt-5.4-mini --reasoning-effort high "Is 10403 a prime number?"   # reasoning_effort on the wire, reasoning_tokens back
+$S chat --model Kimi-K2.6 --reasoning-effort none "hi"                            # thinking {type: disabled} (Kimi ignores it, see the matrix)
+$S chat --route anthropic --model claude-sonnet-4-6 --reasoning-effort medium "Is 10403 prime?"   # adaptive thinking + effort
+$S stream --model Kimi-K2.6 "Is 10403 a prime number?"                            # reasoning deltas stream dimmed before the answer
+$S chat --model DeepSeek-V4-Flash --model-arg 'thinking={"type":"enabled"}' "hi"  # any vendor object as a JSON model arg
+scripts/test-all-models.sh <resource> <resource-group>   # same, with the deployment list taken from the Azure CLI
+$S naming                          # service / canonical names and which token-limit field each verified model gets
 $S chat "What are you?"            # non-streaming completion
 $S stream "Tell me a joke"         # streaming: deltas printed as they arrive
-$S tools                           # native function calling loop (get_weather)
-$S emulate-tools                   # Llama <tool_call> prompt-format loop, same tool
+$S tools "Weather in Paris?"       # native function-calling loop with get_weather (see below)
+$S tools --route anthropic --model claude-sonnet-4-6 "Weather in Oslo?"
 $S image ./photo.png "What is in this picture?"
+$S chat --model MAI-Thinking-1 --model-arg max_completion_tokens=true "hello"   # reasoning models reject max_tokens
+$S chat --model gpt-5.4-mini --temperature 0 "hello"   # temperature is optional; gpt-5 deployments accept only 1
 $S retry-demo                      # ShouldRetry / IsAuthFailure / HandleAzureError decisions
-$S chat --fake                     # any command, offline
+$S tools --fake                    # any command, offline
 ```
 
 Each generating command prints the captured `ModelCall` request and response JSON (with base64 image
 payloads redacted to `<base64-data-removed>`), the output, tool calls, stop details and token usage.
 
+### Tool calling
+
+Tool calling is native on every supported deployment: the `ToolInfo` list is sent as OpenAI-style
+`tools` with the `tool_choice`, the model answers with `tool_calls` (or `tool_use` blocks on the
+Anthropic route), the provider parses each call's JSON arguments into a `ToolCall` (recording a
+`ParseError` instead of throwing when the arguments are malformed), and the caller executes the tool and
+appends a `ChatMessageTool` carrying the `tool_call_id`. The sample's `tools` command runs that loop with a
+local `get_weather` tool until the model answers in plain text:
+
+```
+== turn 1 (native tool_calls, model-inference route) ==
+   request  ... "tools":[{"type":"function","function":{"name":"get_weather", ...}}], "tool_choice":"auto"
+   response ... "finish_reason":"tool_calls", "tool_calls":[{"id":"call_…","function":{"name":"get_weather","arguments":"{\"city\": \"Paris\"}"}}]
+== turn 2 (native tool_calls, model-inference route) ==
+   request  ... {"role":"assistant","tool_calls":[…]}, {"role":"tool","tool_call_id":"call_…","content":"{\"city\":\"Paris\",\"temperature_c\":21, …}"}
+final answer: The weather in Paris is 21C and sunny with a light breeze.
+```
+
+Mistral deployments get the Python `mistral_message_reducer` treatment (a user message that directly
+follows a tool message is folded into it); OpenAI-format deployments require the `tool` message to follow
+the assistant `tool_calls` message, which is the shape the loop produces.
+
+### The wire dashboard
+
+`docs/dashboard/index.html` is a self-contained page that shows one real call to every deployment on the
+resource exactly as it went over HTTP (plus the parameter matrix and the probe exchanges behind it): the request line, every request header (the bearer token is
+replaced by its length), the JSON body, the response status and headers (rate limits, region, served
+model, request ids), the body as JSON or as the individual server-sent events, and the output the provider
+parsed from it. Each header and body field carries a plain-language note, so the page doubles as a tour of
+how the provider talks to Foundry and how the Anthropic route differs. To refresh it against your own
+resource:
+
+```bash
+$S capture --include-failed --params all --out docs/dashboard/calls.json   # chat + stream + tools + reasoning per deployment, then the probes
+scripts/build-dashboard.py                                                 # embeds calls.json into docs/dashboard/index.html
+scripts/build-readme-matrix.py                                             # regenerates the "Parameters by model" table above
+open docs/dashboard/index.html
+```
+
+`capture` records the traffic with an Azure.Core pipeline policy on the model-inference route and a
+delegating handler on the Anthropic route; the build script refuses to embed a report that still contains a
+credential header.
+
+### Thinking and reasoning parameters
+
+Inspect names the controls `reasoning_effort` (`none|minimal|low|medium|high|xhigh|max`) and `reasoning_tokens`
+(a budget); the port keeps those names on `GenerateConfig` and maps them to each vendor's wire field
+(`Util/ReasoningParams.cs`, keyed on the deployment's ARM `Format` when the sample knows it, else on the
+name; `config` and `naming` print the family and the derived fields):
+
+| Family (ARM `Format`) | `--reasoning-effort` becomes | `--reasoning-tokens` becomes | What comes back |
+|---|---|---|---|
+| OpenAI gpt-5.x and model-router, xAI (grok-4.6), Microsoft (MAI-Thinking-1) | `reasoning_effort: <level>` verbatim (`none` included; grok and MAI keep reasoning regardless) | ignored | no reasoning text; `usage.completion_tokens_details.reasoning_tokens` → `ModelUsage.ReasoningTokens` (model-router streams the routed model's `reasoning_content`) |
+| DeepSeek V4 | `reasoning_effort: <level>` (thinking is off by default; the `thinking` object is ignored on Foundry) | ignored | `reasoning_content` → a leading `ContentReasoning`; stream `usage.reasoning_tokens` |
+| MoonshotAI (Kimi K2) | `thinking: {type: enabled}`, or `disabled` for `none` (accepted but ignored: Kimi reasons regardless) | ignored | `reasoning_content` → `ContentReasoning`; stream `usage.reasoning_tokens` |
+| Cohere | `thinking: {type: enabled}` / `disabled` (`disabled` is ignored) | `thinking.token_budget` | `reasoning_content` → `ContentReasoning` |
+| OpenAI without reasoning (gpt-4o), Mistral AI, unknown | nothing (gpt-4o answers HTTP 400 to `reasoning_effort`; Mistral rejects every reasoning field) | nothing | nothing |
+| Anthropic (Claude, Messages route) | `thinking: {type: adaptive}` + `output_config.effort` (`minimal` → `low`); `none` omits `thinking` | `thinking: {type: enabled, budget_tokens}` (the deprecated 4.6 form; `max_tokens` raised above it) | `thinking` blocks → `ContentReasoning` with `signature`; no separate token count |
+
+`--model-arg` still wins over the derived field (model args are applied last), so any vendor object can be
+tried verbatim: `--model-arg 'thinking={"type":"enabled","budget_tokens":2048}'`. Two reserved model args
+exist: `model_format=<vendor>` names the family when the deployment name does not, and `anthropic_beta=<list>`
+becomes the `anthropic-beta` header on the Anthropic route.
+
+Reasoning text arrives as `ContentReasoning` items placed first on the assistant message (`Text` and
+`Completion` stay text-only); `ModelUsage.ReasoningTokens` and `InputTokensCacheRead` are filled from
+`completion_tokens_details` / `prompt_tokens_details` (Kimi, DeepSeek and model-router report the count only
+in stream mode, as a top-level `usage.reasoning_tokens`); streamed reasoning is delivered as
+`StreamReasoningEvent` (the sample prints it dimmed before the answer). On the Anthropic route the thinking
+blocks are replayed unchanged, with their signature, ahead of text and `tool_use` on later turns — the
+Messages API rejects a turn without them. On the model-inference route reasoning is **not** replayed
+(DeepSeek rejects an echoed `reasoning_content`). The `reasoning` smoke check in `test-all` reports `text`
+(reasoning text came back), `hidden` (only a token count), `none` (a reasoning field was sent, nothing came
+back) or `n/a` (the family has no control). Streamed requests that carry pass-through fields now get the
+`extra-parameters: pass-through` header the SDK only sets on non-streaming calls (fidelity note 21).
+
 ### Using the provider from code
 
 ```csharp
-var api = new AzureAIModelApi("Llama-3.3-70B-Instruct");          // env vars resolve key + endpoint
-var result = await api.GenerateAsync(
-    input: [new ChatMessageUser("What is the weather in Paris?")],
-    tools: [weatherTool],
-    toolChoice: ToolChoice.Auto,
-    config: new GenerateConfig { MaxTokens = api.MaxTokens(), Temperature = 0 },
-    onStream: e => { if (e is StreamTextEvent t) Console.Write(t.Text); return Task.CompletedTask; });
-var output = result.OutputOrThrow();        // ModelOutput; result.Call is the ModelCall record
+var api = new AzureAIModelApi("gpt-5.4-mini");                    // AZUREAI_BASE_URL + DefaultAzureCredential (az login)
+var input = new List<ChatMessage> { new ChatMessageUser("What is the weather in Paris?") };
+var config = new GenerateConfig { MaxTokens = api.MaxTokens() };
+
+while (true)
+{
+    var result = await api.GenerateAsync(input, [weatherTool], ToolChoice.Auto, config,
+        onStream: e => { if (e is StreamTextEvent t) Console.Write(t.Text); return Task.CompletedTask; });
+    var output = result.OutputOrThrow();          // ModelOutput; result.Call is the ModelCall record
+    input.Add(output.Message);
+    if (output.Message.ToolCalls is not { Count: > 0 } calls) break;
+    foreach (var call in calls)                   // call.Function, call.Arguments (JsonObject), call.ParseError
+        input.Add(new ChatMessageTool(RunWeather(call.Arguments), call.Id, call.Function));
+}
 ```
 
-`GenerateAsync` mirrors the Python return contract: a `GenerateResult` carrying either the
+Claude deployments use `new AnthropicFoundryModelApi("claude-sonnet-4-6")` behind the same `IModelApi`
+contract. `GenerateAsync` mirrors the Python return contract: a `GenerateResult` carrying either the
 `ModelOutput` or, for a terminal HTTP 400, the exception (which Inspect wraps without retrying); every
 other Azure failure is recorded on the `ModelCall` and **thrown** — already normalised to
 `RequestFailedException` / `ServiceResponseException` (fidelity note 3) — so the caller can consult
-`ShouldRetry(ex)` / `IsAuthFailure(ex)`; the sample's `retry-demo` shows the classification table.
-Non-Azure failures (an empty stream, a malformed SSE chunk, caller cancellation) propagate unrecorded
-and unretried, exactly as non-`AzureError` exceptions do in Python.
+`ShouldRetry(ex)` / `IsAuthFailure(ex)`. Non-Azure failures (an empty stream, a malformed SSE chunk,
+caller cancellation) propagate unrecorded and unretried, exactly as non-`AzureError` exceptions do in Python.
 
 ## Verified against a live Foundry resource
 
-Checked on 2 September 2026 against an Azure AI Foundry resource (kind `AIServices`, eastus2) using
-`az login` only, no API key, endpoint `https://<resource>.services.ai.azure.com/models`. `models`
-discovered the resource through Azure Resource Manager with the same identity and listed twelve
-deployments; `test-all` then ran chat, streaming and a native tool call against each:
+Checked against an Azure AI Foundry resource (kind `AIServices`, eastus2) using `az login` only, endpoint
+`https://<resource>.services.ai.azure.com/models`. `models` discovered the resource through Azure Resource
+Manager with the same identity and listed twenty-one deployments; `test-all` then ran chat, streaming, a
+native tool call and a reasoning call (`--reasoning-effort medium` mapped per family) against each:
 
-| Deployment | Format | chat | stream | tools | Note |
-|---|---|---|---|---|---|
-| gpt-5.6-sol, gpt-5.6-luna, gpt-5.4-mini | OpenAI | ok | ok | ok | usage not reported in stream mode (as in Python) |
-| model-router | OpenAI | ok | ok | ok | answered from a routed model (`grok-4-1-fast-reasoning` in one run) |
-| DeepSeek-V4-Pro, DeepSeek-V4-Flash | DeepSeek | ok | ok | ok | emulated (`<tool_call>`) tool calling also works on DeepSeek-V4-Flash |
-| Mistral-Large-3 | Mistral AI | ok | ok | ok | Mistral naming rules apply (`max_tokens()` is null) |
-| MAI-Thinking-1 | Microsoft | ok | ok | ok | rejects `max_tokens`; `test-all` retried with `max_completion_tokens=true` automatically (fidelity note 18) |
-| Kimi-K2.7-Code | MoonshotAI | ok | ok | ok | |
-| Cohere-command-a-plus-05-2026 | Cohere | ok | ok | ok | |
-| grok-4.6 | xAI | ok | ok | ok | slowest of the set (~20 s for the three checks) |
-| claude-sonnet-4-6 | Anthropic | ok | ok | ok | the model-inference route answers `Requested API is currently not supported` for Anthropic deployments; `test-all` sends them through the Anthropic Messages route (`/anthropic/v1/messages`, same bearer token) via the companion provider. `image` on this route also described a test picture correctly |
+| Deployment | Format | chat | stream | tools | reasoning | Note |
+|---|---|---|---|---|---|---|
+| gpt-5.6-sol, gpt-5.6-luna, gpt-5.6-luna-2, gpt-5.6-terra, gpt-5.4-mini | OpenAI | ok | ok | ok | hidden · 33–52 tok | `max_completion_tokens` sent (gpt-5 rule); usage not reported in stream mode (as in Python) unless `--model-arg stream_options={"include_usage":true}`, which the probe found accepted |
+| gpt-4o | OpenAI | ok | ok | ok | n/a | `max_tokens` sent (the gpt-5 / o-series rule does not apply) |
+| model-router | OpenAI | ok | ok | ok | text | answered from a routed model (`grok-4-1-fast-reasoning` in one run) |
+| DeepSeek-V4-Pro, DeepSeek-V4-Flash, DeepSeek-V4-Flash-0731 | DeepSeek | ok | ok | ok | text | |
+| Mistral-Large-3 | Mistral AI | ok | ok | ok | n/a | Mistral naming rules apply (`max_tokens()` is null, user-after-tool messages folded) |
+| Ministral-3B | Mistral AI | ok | ok | ok | n/a | the name does not contain `mistral`, so — exactly as in Python — the Mistral rules do not apply and `max_tokens` 2048 is sent, which the deployment accepts; capacity 1, ~60 s for its three checks |
+| MAI-Thinking-1 | Microsoft | ok | ok | ok | hidden · 667 tok | rejects `max_tokens`; `test-all` retried with `max_completion_tokens=true` automatically (fidelity note 13) |
+| Kimi-K2.7-Code, Kimi-K2.6 | MoonshotAI | ok | ok | ok | text | |
+| Cohere-command-a-plus-05-2026 | Cohere | ok | ok | ok | text | |
+| grok-4.6 | xAI | ok | ok | ok | hidden · 238 tok | ~20–28 s for the three checks |
+| claude-sonnet-4-6 | Anthropic | ok | ok | ok | text | the model-inference route answers `Requested API is currently not supported` for Anthropic deployments; `test-all` sends them through the Anthropic Messages route (`/anthropic/v1/messages`, same bearer token) via the companion provider. `image` on this route also described a test picture correctly |
+| gpt-5.4-pro | OpenAI | — | — | — | — | not a chat-completions deployment (`models` shows chat = no): HTTP 400 `The requested operation is unsupported.`, returned as the terminal error |
+| Cohere-parse-v5 | Cohere | — | — | — | — | document-parsing model (`models` shows chat = no): HTTP 404 `Requested API is currently not supported` |
+| FLUX.2-pro | Black Forest Labs | — | — | — | — | image-generation model: HTTP 404 `Service request failed.` on `/chat/completions`. The ARM capability metadata still marks it chat-capable, so a bare `test-all` includes it and exits 1; use `--only` to pick the chat deployments |
 
-Earlier the same day, before the extra deployments existed: `image` (gpt-5.4-mini) accepted a data-URI
-image; `emulate-tools` against gpt-5.4-mini failed on turn 2 with HTTP 400 because OpenAI-format
-deployments require a `tool` message to follow an assistant `tool_calls` message, the same shape Python
-sends (`azureai.py:713-716`, `Llama31Handler.tool_message`).
+The first twelve deployments were recorded with the full port on 2 September 2026 and re-run on
+this lite branch on 3 September 2026 with the same `az login` identity (`12/12 tested deployments answered
+chat; 0 skipped`). The nine deployments added to the resource later that day were checked on the lite
+branch the same afternoon with `test-all --include-failed --only …`: `6/9`, the three non-chat models
+failing at the endpoint as noted. MAI-Thinking-1 goes through the automatic `max_completion_tokens=true`
+retry and claude-sonnet-4-6 through the Anthropic Messages route. Slowest of the whole set: Ministral-3B
+(~61 s), DeepSeek-V4-Pro (~33 s) and grok-4.6 (~28 s). The `reasoning` column comes from the run later that
+day with the reasoning work in place (`18/19 tested deployments answered chat; 2 skipped`, FLUX.2-pro being
+the one failure): `text` = reasoning text came back as `ContentReasoning`, `hidden` = only a token count,
+`n/a` = the family has no reasoning control (gpt-4o rejects `reasoning_effort`, Mistral rejects every
+reasoning field).
 
-Two things to know before your first call:
+Do not send `temperature` to gpt-5 deployments unless it is 1; the sample leaves it unset by default and
+`--temperature <n>` sets it explicitly.
 
-- **A data-plane role is required.** Owner or Contributor on the subscription is not enough; the
-  endpoint answers `401 ... lacks the required data action
-  Microsoft.CognitiveServices/accounts/MaaS/chat/completions/action`. Assign **Cognitive Services User**
-  (data actions `Microsoft.CognitiveServices/*`) on the resource, then allow several minutes for
-  propagation (six minutes in this test):
+## Parameters by model
 
-  ```bash
-  az role assignment create --role "Cognitive Services User" \
-    --assignee-object-id "$(az ad signed-in-user show --query id -o tsv)" --assignee-principal-type User \
-    --scope "$(az cognitiveservices account show -n <resource> -g <rg> --query id -o tsv)"
-  ```
-- **Do not send `temperature` to gpt-5 deployments** unless it is 1; the sample leaves it unset by
-  default and `--temperature <n>` sets it explicitly.
+Measured by `params` (and `capture --params all`): every chat deployment gets a baseline call, a streamed
+baseline, then one call per candidate parameter sent alone on top of the baseline, and each is classified
+from the HTTP status and the response. `ok` = accepted with a visible effect (two choices for `n`, logprobs
+present, a JSON object for `response_format`, the count stopping before "4" for `stop`, usage appearing on
+the stream, a reasoning signal appearing or disappearing); `ok (no visible effect)` = HTTP 200 for a parameter
+the probe cannot observe (temperature, top_p, seed, penalties, top_k, verbosity, effort); `ignored` = HTTP 200
+but no effect; `rejected` = HTTP 400 (the evidence in the dashboard quotes the service); `-` = not probed for
+that route. The dashboard's "Parameter matrix" view shows the same data with the evidence and the recorded
+exchange behind every cell.
+
+<!-- params-matrix:start -->
+| Deployment | reasoning | `baseline` | `stream` | `temperature` | `top_p` | `seed` | `frequency_penalty` | `presence_penalty` | `stop` | `n` | `logprobs` | `parallel_tool_calls` | `response_format.json_object` | `response_format.json_schema` | `max_tokens` | `stream_options` | `reasoning_effort=none` | `reasoning_effort=low` | `reasoning_effort=high` | `reasoning_effort=xhigh` | `verbosity=low` | `reasoning_tokens` | `sampling-extras` | `max_completion_tokens` | `thinking.enabled` | `thinking.disabled` | `top_k` | `metadata` | `thinking.adaptive` | `output_config.effort=low` | `thinking.budget` |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| gpt-5.6-sol, gpt-5.6-luna, gpt-5.6-luna-2, gpt-5.6-terra | hidden · 30–53 tok | ok* | ok | rej | rej | ok* | rej | rej | rej | ok | rej | ok* | ok | ok | rej | ok | ok | ok | ok | ok | ok* | n/a | - | - | - | - | - | - | - | - | - |
+| model-router | text | ok* | ok | ok* | ok* | - | - | - | ign | ok | ok | ok* | ok | rej | - | ok* | ign | ok | ok | ok | ok* | n/a | ok* | ok* | ok | ign | - | - | - | - | - |
+| DeepSeek-V4-Pro, DeepSeek-V4-Flash, DeepSeek-V4-Flash-0731 | text | ok* | ok | ok* | ok* | - | - | - | ok | ok | ok | ok* | ok | ok | - | ok* | ok* | ok | ok | - | - | n/a | ok* | ok* | ign | ok* | ok* | - | - | - | - |
+| gpt-5.4-mini | hidden · 37 tok | ok* | ok | ok* | ok* | - | - | - | rej | ok | ok | ok* | ok | ok | rej | ok | ok* | ok | ok | ok | ok* | n/a | ok* | - | - | - | - | - | - | - | - |
+| claude-sonnet-4-6 | text | ok* | ok | ok* | ok* | - | - | - | ok | - | - | - | - | - | - | - | - | - | ok | - | - | ok | - | - | ok | ok* | ok* | ok* | ok | ok* | - |
+| Mistral-Large-3 | n/a | ok* | ok | ok* | ok* | - | - | - | ok | ok | rej | ok* | ok | ok | - | ok* | - | - | rej | - | - | n/a | ok* | rej | rej | rej | rej | - | - | - | rej |
+| MAI-Thinking-1 | hidden · 889 tok | ok* | ok | ok* | ok* | - | - | - | ign | ign | ign | ok* | rej | rej | rej | ok* | ign | ok* | ok* | - | - | n/a | ok* | - | ok* | ign | ok* | - | - | - | - |
+| Kimi-K2.7-Code, Cohere-command-a-plus-05-2026, Kimi-K2.6 | text | ok* | ok | ok* | ok* | - | - | - | ign | ok | ok | ok* | ok | ok | - | ok* | - | - | ok | - | - | ok | ok* | ok* | ok | ign | ok* | - | - | - | ok |
+| grok-4.6 | hidden · 227 tok | ok* | ok | ok* | ok* | ok* | rej | rej | rej | rej | ok | ok* | ok | ok | - | ok* | - | ok | ok | - | - | n/a | - | ok* | ok | ign | ok* | - | - | - | - |
+| gpt-5.4-pro | fail | rej | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - |
+| Cohere-parse-v5, FLUX.2-pro | fail | err | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - |
+| Ministral-3B | n/a | ok* | ok | ok* | ok* | rej | ok* | ok* | ok | ok | rej | ok* | ok | ok | - | rej | - | - | rej | - | - | n/a | - | rej | rej | rej | rej | - | - | - | rej |
+| gpt-4o | n/a | ok* | ok | ok* | ok* | - | - | - | ok | ok | ok | ok* | ok | ok | - | ok | - | - | rej | - | - | n/a | ok* | ok* | rej | rej | rej | - | - | - | rej |
+
+`ok` accepted with a visible effect · `ok*` accepted, no visible effect · `ign` HTTP 200 but no effect · `rej` HTTP 400 · `err` other failure · `n/a` the provider derives nothing for this family · `-` not probed for this route.
+
+Probed on 2026-09-03 22:09:38Z against myfoundry0406.
+<!-- params-matrix:end -->
 
 ## Claude deployments: the Anthropic Messages route
 
 Anthropic models on Foundry are not served on the model-inference route; Inspect reaches them with its
 `anthropic` provider (`anthropic/azure/<deployment>`, Messages API). `Anthropic/AnthropicFoundryModelApi.cs`
-is a companion, not part of the `azureai` port: it follows the Azure path of that provider (same
-environment variables, `max_tokens` rule, stop-reason and usage mapping, `input_schema` tools,
-`tool_result` blocks, base64 image sources, SSE streaming with `text_delta` and `input_json_delta`)
-behind the same `IModelApi` contract, sends `anthropic-version: 2023-06-01`, and adds two things Inspect's
-Azure path does not have: Entra ID bearer auth when no key is set, and a base URL derived from the
-inference endpoint. Not ported: extended thinking, prompt caching, citations, batch mode, server-side
-tools, the Python client's retry policy. Errors follow the same contract as the main provider (400 returned,
-408/429/5xx thrown for `ShouldRetry`, 401 as `IsAuthFailure`).
+follows the Azure path of that provider (same base-URL variables, `max_tokens` rule, stop-reason and usage
+mapping, `input_schema` tools, `tool_result` blocks, base64 image sources, SSE streaming with `text_delta`
+and `input_json_delta`) behind the same `IModelApi` contract, sends `anthropic-version: 2023-06-01`, and
+differs in two ways: it authenticates with the same Entra ID credential as the main provider (Python
+requires `AZUREAI_ANTHROPIC_API_KEY`), and it derives the base URL from the inference endpoint. Extended
+thinking is mapped from `ReasoningEffort` / `ReasoningTokens` (adaptive thinking plus `output_config.effort`,
+or the deprecated `budget_tokens` form) and thinking blocks are parsed, streamed (`thinking_delta`,
+`signature_delta`) and replayed with their signature; model args become top-level fields. Not ported:
+prompt caching, citations, batch mode, server-side tools, `thinking.display`, the Python client's retry
+policy. Errors follow the same contract as the main provider (400 returned, 408/429/5xx thrown for
+`ShouldRetry`, 401 as `IsAuthFailure`).
+
+## Python → C# mapping
+
+| Python (inspect_ai) | C# |
+|---|---|
+| `model/_providers/azureai.py` `AzureAIAPI.__init__` (Entra branch only) | `AzureAIModelApi` constructor |
+| `AzureAIAPI.generate` / `completion_params` / `resolve_streaming` | `AzureAIModelApi.GenerateAsync` / `CompletionParams` / `ResolveStreaming` |
+| `AzureAIAPI.max_tokens` / `should_retry` / `is_auth_failure` / `collapse_user_messages` / `connection_key` | same-named methods on `AzureAIModelApi` |
+| `AzureAIAPI.service_model_name` / `canonical_name` / `is_mistral` / `_is_mistral_model` / `_is_openai_model` | `ServiceModelName` / `CanonicalName` / `IsMistral` / `IsMistralModel` / `IsOpenAIModelName` |
+| `AzureAIAPI.handle_azure_error`; `except AzureError` | `HandleAzureError`; `AsAzureError` (fidelity note 3) |
+| `_StreamChoice` / `azureai_completion_from_stream` | `StreamChoice` / `AzureAIStreamAccumulator.CompletionFromStreamAsync` |
+| `chat_request_messages` / `chat_request_message` / `chat_content_item` / `mistral_message_reducer` / `fold_user_message_into_tool_message` | `Tools/AzureMessageConversion` |
+| `chat_tools` / `chat_tool_definition` / `chat_tool_choice` / `chat_tool_call` | `Tools/AzureToolConversion` |
+| `chat_completion_choices` / `chat_complection_choice` / `chat_completion_assistant_message` / `chat_completion_stop_reason` | same-named static methods on `AzureAIModelApi` |
+| `azure.ai.inference.models.ChatCompletions` (dict-backed `as_dict()`) | `AzureChatCompletions` / `AzureChatChoice` / `AzureChatResponseMessage` (raw `JsonObject`) |
+| `_call_tools.py` `parse_tool_call` (JSON branch), `tool_parse_error_message`, `_object_with_trailing_quotes` | `Tools/ToolCallParsing.cs` |
+| `util/_json.py` `json_schema_dump`, `JSON_SCHEMA_EXTENDED_FIELDS`, `JSONSchema` | `Tools/JsonSchemaDump.cs`, `Core/Tools.cs` (`ToolParam.ToJson`) |
+| `util/util.py` `normalize_stream_arg`, `model_base_url`, `environment_prerequisite_error` | `Util/ProviderUtil.cs` |
+| `util/azure_hosting.py` `resolve_azure_token_provider`, `DEFAULT_AZURE_AUDIENCE` | `Util/AzureHosting.cs` (`ResolveAzureCredential`, `AudienceTokenCredential`) |
+| *(none)* Entra token diagnostics for the `token` command | `Util/EntraTokenInfo.cs` |
+| *(none)* deployment discovery for `models` / `test-all` | `Foundry/FoundryCatalog.cs` |
+| `_providers/anthropic.py` (Azure path: `max_tokens`, `message_stop_reason`, usage, tools, streaming) | `Anthropic/AnthropicFoundryModelApi.cs` (companion) |
+| `_util/http.py` `is_retryable_http_status`, `parse_retry_after(_from_exception)`, `status_code_of` | `Util/HttpRetryUtil.cs` |
+| `_openai.py` `needs_max_completion_tokens`, `openai_stop_details`, `openai_media_filter` | `Util/OpenAIUtil.cs` |
+| `_model_output.py` `collect_stop_details`; `ModelOutput`, `ChatCompletionChoice`, `ModelUsage`, `StopReason`, `StopDetails` | `Util/ModelOutputUtil.cs`; `Core/ModelOutput.cs` |
+| `_util/images.py` `inline_media_data_uri`, `_util/url.py` data-URI helpers | `Util/InlineMedia.cs` |
+| `_util/logger.py` `warn_once` | `Util/ProviderLogger.WarnOnce` |
+| `_model.py` `RetryDecision`; `_model_call.py` `ModelCall`, `ModelCallFilter` | `Core/RetryDecision.cs`; `Core/ModelCall.cs` |
+| `_chat_message.py` `ChatMessage*`; `_util/content.py` `Content*`; `tool/_tool_*.py`; `_generate_config.py` (subset) | `Core/ChatMessage.cs`, `Core/MessageContent.cs`, `Core/Content.cs`, `Core/Tools.cs`, `Core/GenerateConfig.cs` |
+| `_stream.py` `Stream*Event`, `StreamHandler`, `ModelStreamObserver`, `model_stream_requested`, `report_model_stream_*` | `Core/Streaming.cs` |
+| `_util/error.py` `PrerequisiteError`; `azure.core.exceptions.ServiceResponseError` | `Core/Errors.cs` (`PrerequisiteError`, `ServiceResponseException`) |
+| `json.dumps` / `json.loads`, `shortuuid.uuid`, Python truthiness | `Util/PythonJson.cs`, `Util/ShortUuid.cs`, `Util/PythonSemantics.cs` |
+| `tests/model/providers/test_azureai.py`, `test_canonical_names.py::TestAzureAICanonicalName`, `test_parse_tool_call.py` | `tests/InspectAzureAI.Tests` — tests keep the Python test names where the feature survived |
 
 ## Intentionally out of scope
 
-The port covers the provider and the framework contract it directly touches. These Inspect pieces are
-**not** ported:
+The provider keeps the lite cut above (no API keys, no Llama prompt-format tool emulation, no YAML
+tool-argument fallback). The eval loop, the `Model` wrapper, retries and adaptive concurrency, transcript
+and `ModelEvent` recording, limits, the cache, the model-info database, tool execution and approval and
+`stream_idle_timeout` — the pieces earlier cuts of this README listed here — are all ported now (see
+"Ported from inspect_ai" below). What remains unported across the whole solution; each note under
+`docs/ports/` ends with the precise list for its area:
 
-- the eval loop, `Model.generate` wrapper and its input transforms (collapsing consecutive user
-  messages, moving tool-result images into user messages, reasoning-history filtering, `max_tokens`
-  defaulting — the sample passes `api.MaxTokens()` explicitly);
-- the tenacity retry loop, adaptive concurrency and connection pooling (`ShouldRetry` /
-  `ConnectionKey` / `MaxConnections` are exposed for a host to drive);
-- transcript / `ModelEvent` recording (a `ModelCall` is returned instead of registered on an event);
-- sample limits, token/time limits, caching, the model-info registry (`model_family()` therefore
-  always equals `service_model_name()`), tool execution and approval, and `stream_idle_timeout`.
+- **Python-side plumbing**: the task, solver, scorer, metric and model registries and entry-point discovery
+  (tasks are `[Task]` methods; everything else is named through the built-in factories), `.py` task files,
+  Python's Mersenne Twister (seeded shuffles are stable only within .NET), pydantic-specific APIs.
+- **CLI surface**: the `acp`, `ctl`, `trace`, `sandbox` and `download` commands, `log recover` /
+  `export-config` / `convert-chunked` / `types`, the `--json` NDJSON launch protocol, rich panels and
+  progress displays, `.env` files, YAML config, policy and price files (JSON only).
+- **The viewer**: `inspect view` is a web app; `inspectai view` hands off to Python's when it is installed
+  (it reads this port's logs). Viewer assets are not shipped (`INSPECT_VIEW_DIST_DIR`) and there is no native
+  `view bundle` / `view embed`.
+- **Storage**: remote filesystems (S3 / fsspec, ETags, conditional writes), the realtime sample buffer
+  (SQLite) and buffer-backed recovery, the chunked `.eval` writer, Hugging Face bundle targets, checkpoints.
+- **Model features with no Azure route**: batch mode, native (server-side) compaction, server-side
+  `fallback_models` (warned and ignored, as Python does on Azure; a client-side `FallbackModelApi` is
+  port-only), the `google` web-search provider and the internal search of non-Azure providers, `web_fetch`
+  and the newer Anthropic web-search versions, the `perplexity()` / `target_perplexity()` scorers (no
+  logprobs), MCP sampling (the SDK marks it obsolete).
+- **Exact numerics**: tiktoken (token counts are a character heuristic unless the provider counts), SymPy
+  (the math scorer evaluates the numeric subset exactly and compares symbolic answers as text), numpy's
+  random state for bootstrap metrics.
+- **Operator surfaces**: ACP / TUI / fullscreen approval panels and notifications, human `modify`
+  decisions, the hard-pause gate and control channel, `inspect ctl` live overrides.
+- **Miscellaneous**: sample shuffling, `limit` ranges, token-limit formulas and the `500k` / `1m` syntax,
+  `score_on_error`, working and cost limits on agent scopes, `ToolSource` plumbing inside solvers,
+  host-tool execution grants in the sandbox bridge (the .NET bridge exposes no host-tool surface), the
+  legacy `inspect-tool-support` image path and the MCP tools bridge for sandboxed agents.
 
 ## Fidelity notes
 
@@ -341,61 +541,182 @@ Places where the port deliberately deviates from the Python implementation, and 
    `json.loads`' last-wins handling of duplicated object keys (`JsonNode.Parse` would throw). The one
    acceptance difference: the non-standard `NaN` / `Infinity` / `-Infinity` tokens `json.loads` accepts
    are reported as a parse error (a `JsonNode` cannot hold them; models essentially never emit them).
-6. **YAML fallback is an approximation.** `yaml.safe_load` for non-JSON tool arguments is replaced by
-   `YamlScalar`: YAML 1.1 scalars (including `yes/no/on/off`, `1_000`, `0x10`), quoted strings, flow
-   collections and a single-line `key: value` mapping. Block collections, anchors/aliases and
-   multi-document input fall back to the raw string (Python would parse them).
+6. **No YAML fallback (lite).** Python `yaml.safe_load`s tool arguments that are not a JSON object into
+   the tool's first parameter; that branch only fires for prompt-emulated tool calls, so the lite port
+   drops it and such arguments yield an empty argument object with no parse error.
 7. **Empty stream** raises `InvalidOperationException` (Python: a plain `RuntimeError`), with the same
    message; like Python it is not retried.
 8. **Streaming observer.** `ModelStreamObserver` ports `on_stream` delivery, handler detachment on
    exception, usage/heartbeat progress and the "choice 0 only" gating; stall scopes
    (`stream_idle_timeout`) and partial-output flushing are not ported, so `ModelStreamRequested()` is true
    only when a handler is installed.
-9. **Null assistant content under emulation** is treated as `""` (Python would raise `TypeError` from
-   `re.findall(None)`).
-10. **API-key override hook.** Inspect's hook registry is replaced by `ModelApiHooks` with a separate
-    `HasApiKeyOverride` flag, because in Python `has_api_key_override()` reflects registered hook
-    classes while `override_api_key` is a module function (the Python test patches only the latter).
-11. **Numeric precision.** The SDK stores `temperature`, `top_p` and the penalties as `float`
-    (single precision) and `seed` as `long`; `0.0` therefore serialises as `0`.
-12. **`streaming` argument.** `null` is accepted as a synonym for `"auto"` (C# cannot default an
+9. **Numeric precision.** The SDK stores `temperature`, `top_p` and the penalties as `float`
+   (single precision) and `seed` as `long`; `0.0` therefore serialises as `0`.
+10. **`streaming` argument.** `null` is accepted as a synonym for `"auto"` (C# cannot default an
     `object` parameter to a string).
-13. **`model_family()`** has no model-info registry to consult and always returns `service_model_name()`.
-14. **Managed identity** uses `DefaultAzureCredential` from Azure.Identity, a hard dependency, so the
-    Python `ImportError` → `PrerequisiteError` branch cannot occur; credential construction failures
-    surface with the same message.
-15. **Empty `AZURE_API_KEY`.** Like `os.environ.get(AZURE_API_KEY, os.environ.get(AZUREAI_API_KEY))`,
-    a set-but-empty `AZURE_API_KEY` is taken as-is (`ApiKey == ""`, `AZUREAI_API_KEY` never consulted)
-    and the constructor falls through to managed identity. Python's `generate` then still builds
-    `AzureKeyCredential("")` (its check is `is not None`) and sends an empty key; .NET's
-    `AzureKeyCredential` rejects an empty key, so the port uses the resolved token provider instead —
-    the evident intent of the fall-through.
-16. **Refusal text is not a stop detail.** `openai_stop_details` reads `message.refusal` with
+11. **`model_family()`** has no model-info registry to consult and always returns `service_model_name()`.
+12. **Refusal text is not a stop detail.** `openai_stop_details` reads `message.refusal` with
     `getattr`, and azure.ai.inference's dict-backed `ChatResponseMessage` exposes no such attribute, so
     for this provider Python never produces a `refusal` explanation; the port reproduces that by not
     reading the raw `refusal` key (a refusal with no filtered category yields no stop details).
-18. **`max_completion_tokens=true` model arg (port-only).** Python emits `max_completion_tokens` only for
+13. **`max_completion_tokens=true` model arg (port-only).** Python emits `max_completion_tokens` only for
     gpt-5 and o-series names; reasoning models under other names (MAI-Thinking-1) reject `max_tokens`. The
     port pops a boolean `max_completion_tokens` model arg and, when true, sends `config.MaxTokens` as
     `max_completion_tokens` for any family. A non-boolean value is left in `model_extras` as a body field,
     exactly as Python would forward it. `test-all` applies the arg automatically when a deployment answers
     400 asking for it.
-19. **Deployment discovery (`Foundry/FoundryCatalog.cs`) is port-only.** Inspect takes the model name from
+14. **Deployment discovery (`Foundry/FoundryCatalog.cs`) is port-only.** Inspect takes the model name from
     the CLI; the sample's `models` and `test-all` commands resolve the account behind the endpoint through
     Azure Resource Manager (`https://management.azure.com/.default` scope on the same credential) and list
     its deployments. Cognitive Services User includes the read actions this needs.
-20. **Anthropic companion (`Anthropic/AnthropicFoundryModelApi.cs`) is a separate provider, not part of the
+15. **Anthropic companion (`Anthropic/AnthropicFoundryModelApi.cs`) is a separate provider, not part of the
     `azureai` port.** It exists so `test-all` can cover every deployment on the resource. It mirrors
     Inspect's `anthropic/azure` path where the sample needs it (see the section above) and diverges by
-    accepting Entra ID and deriving the base URL; Python requires `AZUREAI_ANTHROPIC_API_KEY` and
-    `AZUREAI_ANTHROPIC_BASE_URL`. An API key is sent as both `x-api-key` and `api-key`; a token only as
-    `Authorization: Bearer`.
-17. **Entra ID tokens are sent as `Authorization: Bearer` only.** Python feeds the Entra token into
+    using Entra ID and deriving the base URL; Python requires `AZUREAI_ANTHROPIC_API_KEY` and
+    `AZUREAI_ANTHROPIC_BASE_URL`.
+16. **Entra ID tokens are sent as `Authorization: Bearer` only.** Python feeds the Entra token into
     `AzureKeyCredential`, so azure-ai-inference sends it in both `Authorization` and `api-key`. Azure AI
     Services and Azure OpenAI gateways validate `api-key` first when it is present and reject the JWT with
     401, which is why `az login` can look broken. The port hands the credential to the SDK's
     `TokenCredential` constructor instead: only the bearer header is sent and the SDK caches and refreshes
     the token. `AudienceTokenCredential` keeps the Python `AZUREAI_AUDIENCE` semantics (default
     `https://cognitiveservices.azure.com/.default`) because that constructor would otherwise request
-    `https://ml.azure.com/.default`. `AZUREAI_CREDENTIAL`, `--auth` and the `token` command are additions
-    with no Python counterpart; the default remains `DefaultAzureCredential`, as in Python.
+    `https://ml.azure.com/.default`. The credential is always `DefaultAzureCredential`, as in Python;
+    `Azure.Identity` is a hard dependency, so Python's `ImportError` → `PrerequisiteError` branch cannot
+    occur (credential construction failures surface with the same message). The `token` command is an
+    addition with no Python counterpart.
+17. **`connection_key`** is `f"{api_key}:{model_name}"` in Python; with no key in play the port returns the
+    model name, which yields the same one-pool-per-model behaviour.
+18. **Per-family reasoning mapping (port-only).** Python forwards `reasoning_effort` only in providers whose
+    vendor API defines it (openai-compatible, anthropic); the Foundry route fronts several vendors, so
+    `ReasoningParams` maps `ReasoningEffort` / `ReasoningTokens` per family (table above), seeded from vendor
+    documentation and corrected by the `params` probe. Unknown families get nothing, like Inspect's gating of
+    `reasoning_effort` to gpt-5 / o-series. The derived fields are part of `completion_params`, so they appear
+    in the recorded `ModelCall` request; a model arg with the same key overrides them on the wire while the
+    snapshot keeps the derived value (the Python snapshot excludes `model_extras`).
+19. **Reasoning content.** `reasoning_content` (and the `reasoning` / `thinking` spellings) becomes a leading
+    `ContentReasoning` on the assistant message and `StreamReasoningEvent` deltas; it is not replayed on the
+    model-inference route. Anthropic `thinking` / `redacted_thinking` blocks keep their `signature` / `data`
+    and are replayed first on later turns; a reasoning item without a signature is dropped with a warning
+    (Inspect raises). Anthropic reports no separate reasoning token count, so `ReasoningTokens` stays null there.
+20. **Cohere text markers.** Cohere command deployments wrap the answer in `<|START_TEXT|>…<|END_TEXT|>` on the
+    model-inference route; the parsed text drops the markers (a missing end marker is tolerated), the raw
+    response on the `ModelCall` keeps them.
+21. **`extra-parameters: pass-through` on streamed calls.** The .NET SDK sets the header only on the
+    non-streaming path; the gateway rejects unknown body fields without it, so `PassThroughExtraParametersPolicy`
+    adds it to streamed requests that carry pass-through fields, matching what azure-ai-inference does for
+    `model_extras` on both paths.
+22. **JSON model args and reserved names (port-only).** `-M key=value` values that start with `{` or `[` are
+    parsed as JSON (Inspect's CLI parses YAML scalars only); `model_format` and `anthropic_beta` are reserved
+    (family hint and `anthropic-beta` header) and never reach the body; the Anthropic companion now accepts
+    model args as top-level fields.
+23. **Parameter probes (port-only).** `params` sends each candidate alone on top of a baseline and classifies
+    it from the status and the response with the heuristics listed under "Parameters by model"; a grouped
+    probe (`seed` + penalties) is split into single-field probes only when rejected. Verdicts are evidence
+    of what the gateway did on that day, not a vendor contract.
+
+## SWE showcase
+
+`src/InspectAzureAI.Eval` and `src/InspectAzureAI.Swe` port Inspect AI's eval components (datasets, tasks,
+solvers, scorers, agents, tools, Docker/local sandboxes, the `Model` wrapper, the sandbox agent bridge, the eval
+runner and JSON logs) and two Inspect SWE agents (mini-swe-agent as a native C# loop, and the real Claude Code
+CLI bridged to the Azure providers) to .NET; `src/InspectAzureAI.Maf` adds a Microsoft Agent Framework agent
+whose model calls are bridged in-process ([docs/agent-framework.md](docs/agent-framework.md)).
+`src/InspectAzureAI.SweShowcase` runs them on your Foundry deployments; see
+[docs/swe-showcase.md](docs/swe-showcase.md) for the architecture, every flag, the Python → C# mapping and the
+fidelity notes.
+
+```bash
+az login && export AZUREAI_BASE_URL=https://<resource>.services.ai.azure.com/models
+dotnet run --project src/InspectAzureAI.SweShowcase -- run --fake --sandbox local --task hello-swe --agent mini-swe   # offline smoke test
+dotnet run --project src/InspectAzureAI.SweShowcase -- run --task hello-swe --agent mini-swe                          # Docker sandbox, real model
+dotnet run --project src/InspectAzureAI.SweShowcase -- run --task ctf --agent basic                                 # capture-the-flag: setup scripts plant flags in the container
+dotnet run --project src/InspectAzureAI.SweShowcase -- run --task pytest-fix --agent claude-code --model claude-sonnet-4-6
+dotnet run --project src/InspectAzureAI.SweShowcase -- run --task hello-swe --agent maf --attempts 2                  # Microsoft Agent Framework ChatClientAgent, bridged in-process
+dotnet run --project src/InspectAzureAI.SweShowcase -- run --task pytest-fix --agent mini-swe --log-format json --cache 1W --compaction edit --approval policy.json --cost-limit 0.50 --hooks sample-log=hooks.log
+dotnet run --project src/InspectAzureAI.SweShowcase -- show logs/<timestamp>_hello-swe_<id>.eval
+dotnet run --project src/InspectAzureAI.ModelMatrix -- --parallel 3 --markdown docs/model-matrix-results.md   # Claude Code × every deployment, one eval set per deployment
+```
+
+`--approval`, `--cache`, `--compaction`, `--hooks`, `--cost-limit`, `--model-cost-config` and `--log-format` reach the
+agents exactly as Python's `eval(approval=)`, `generate(cache=)`, `react(compaction=)` and `@hooks` would
+(`docs/ports/showcase-wiring.md`). Running the matrix twice into the same `--log-dir` resumes it, as
+`inspect eval-set` does.
+
+## The `inspectai` command line
+
+`src/InspectAzureAI.Cli` ports Python's `inspect` command (`docs/ports/cli.md`; `docs/ARCHITECTURE.md` §6.5).
+Tasks live in assemblies rather than `.py` files: mark a `public static` method returning an `EvalTask` with
+`[Task]`. Its parameters are the `-T` task arguments, its name defaults to the snake_case method name, and
+`[Task("name", "light=true")]` sets the name and the attributes `list tasks -F` filters on.
+
+```csharp
+using InspectAzureAI.Eval.Dataset;
+using InspectAzureAI.Eval.Scorers;
+using InspectAzureAI.Eval.Tasks;
+
+public static class MyTasks
+{
+    [Task]                                          // discovered as "hello"; -T count=5 binds to the parameter
+    public static EvalTask Hello(int count = 2) => new()
+    {
+        Name = "hello",
+        Dataset = new MemoryDataset(Enumerable.Range(1, count).Select(i => new Sample($"Say ok ({i})") { Target = "ok", Id = i })),
+        Scorers = [Scorers.Includes()],
+    };
+}
+```
+
+```bash
+I="dotnet run --project src/InspectAzureAI.Cli --"
+$I list tasks bin/MyEvals.dll                                    # the [Task] methods of an assembly (-F light=true filters)
+$I eval hello --assembly bin/MyEvals.dll --model mockllm/model    # offline: Python's mockllm stands in for a deployment
+$I eval hello --assembly bin/MyEvals.dll --model azureai/gpt-5.4-mini -T count=5 --limit 3 --epochs 2 --log-format eval
+$I eval hello --assembly bin/MyEvals.dll --model claude-sonnet-4-6 --solver basic_agent -S max_attempts=2 \
+     --cache 1W --approval policy.json --cost-limit 0.5 --token-limit 200000 --time-limit 600
+$I eval-set hello other_task --assembly bin/MyEvals.dll --model gpt-5.4-mini --log-dir logs/set --retry-attempts 3   # re-run to resume
+$I eval-retry logs/set/*.eval --assembly bin/MyEvals.dll         # retry the failed samples of finished logs
+$I score logs/2026-…_hello_…​.eval --scorer includes --overwrite  # re-score in place (--action append|overwrite, --output-file)
+$I log list --json; $I log dump logs/x.eval; $I log convert logs --to json --output-dir out; $I log schema
+$I cache list; $I cache prune; $I cache path                     # the prompt cache (INSPECT_CACHE_DIR)
+$I info version
+$I view --log-dir logs                                           # hands off to Python's `inspect view` when it is on PATH
+```
+
+Exit codes follow the rest of the solution: 0 success, 1 a run whose log is not `success`, 2 usage or
+prerequisite, 3 sign-in, Azure, sandbox or cancellation. Environment variables keep Python's names
+(`INSPECT_EVAL_MODEL`, `INSPECT_LOG_DIR`, `INSPECT_LOG_FORMAT`, `INSPECT_EVAL_TASK_ARGS`, ...); `INSPECT_EVAL_ASSEMBLY`
+and `INSPECT_EVAL_HOOKS` are this port's.
+
+## Ported from inspect_ai
+
+Each subsystem has a note under `docs/ports/` recording what was ported, from which Python files, the public C#
+API, every deviation and why, and what was not ported; [docs/ports/README.md](docs/ports/README.md) is the index
+with the deviations in one line each. Python paths are relative to `src/inspect_ai/`.
+
+| Area | Python | .NET | Note |
+|---|---|---|---|
+| Scoped limits, error policy, sample retries, early stopping | `util/_limit.py`, `_eval/task/{error,run,util}.py` | `Eval/Context/*Limit*.cs`, `Eval/Runner/` | [runner-extras](docs/ports/runner-extras.md) |
+| Connection concurrency, adaptive controllers, throughput | `util/_concurrency.py`, `model/_throughput.py` | `Eval/Concurrency/` | [concurrency](docs/ports/concurrency.md) |
+| Model database, pricing, cost limit | `model/_model_data/`, `model/_model_info.py` | `Eval/Model/Cost/` | [cost](docs/ports/cost.md) |
+| Prompt cache | `model/_cache.py` | `Eval/Model/Cache/` | [prompt-cache](docs/ports/prompt-cache.md) |
+| Structured output, JSON schema, reflection tools, stall scopes, fallbacks, roles | `model/_generate_config.py`, `util/_json.py`, `tool/_tool_info.py`, `model/_stream.py` | `Provider/Core/`, `Eval/Model/` | [model-extras](docs/ports/model-extras.md) |
+| Message trimming and compaction | `model/_trim.py`, `model/_compaction/` | `Eval/Model/Compaction/` | [compaction](docs/ports/compaction.md) |
+| Multiple choice, chain of thought, self critique, fork, choice and answer scorers | `solver/_multiple_choice.py`, `_prompt.py`, `_critique.py`, `_fork.py`, `scorer/_choice.py`, `_answer.py` | `Eval/Solvers/`, `Eval/Scorers/ChoiceScorers.cs` | [solvers](docs/ports/solvers.md) |
+| Metrics, reducers, classification / cascade / multi / precomputed / math scorers | `scorer/_metrics/`, `_reducer/`, `_classification.py`, `_math.py` | `Eval/Scorers/` | [metrics](docs/ports/metrics.md) |
+| React agent, handoff, as_tool, run, message filters | `agent/_react.py`, `_handoff.py`, `_as_tool.py`, `_filter.py`, `_run.py` | `Eval/Agents/` | [react-agents](docs/ports/react-agents.md) |
+| think, web_search, read_file, list_files, grep, todo_write, update_plan; Anthropic web search | `tool/_tools/`, `model/_providers/anthropic.py` | `Eval/Tools/Builtin/`, `Provider/Anthropic/` | [builtin-tools](docs/ports/builtin-tools.md) |
+| text_editor, bash_session, sandbox-tools injection and JSON-RPC | `tool/_tools/_text_editor.py`, `_bash_session.py`, `tool/_sandbox_tools_utils/`, `util/_sandbox/` | `Eval/Tools/Support/`, `Eval/Tools/` | [sandbox-tools](docs/ports/sandbox-tools.md) |
+| MCP tool sources | `tool/_mcp/` | `Eval/Tools/Mcp/` | [mcp-tools](docs/ports/mcp-tools.md) |
+| Tool-call approval policies (incl. the agent bridge) | `approval/` | `Eval/Approval/` | [approval](docs/ports/approval.md) |
+| Lifecycle hooks | `hooks/` | `Eval/Hooks/` | [hooks](docs/ports/hooks.md) |
+| Store and state tracking, JSON changes, replay, subtasks | `_util/json.py`, `util/_store.py`, `util/_store_model.py`, `util/_subtask.py` | `Eval/Context/` | [store-replay](docs/ports/store-replay.md) |
+| Log data model, transcript events, the `.json` format | `log/_log.py`, `event/`, `log/_recorders/json.py` | `Eval/Log/`, `Eval/Log/Json/` | [log-schema](docs/ports/log-schema.md) |
+| The `.eval` zip format, recorders, log listing | `log/_recorders/eval.py`, `log/_file.py`, `_util/zipfile.py` | `Eval/Log/EvalFormat/` | [eval-format](docs/ports/eval-format.md) |
+| Score edits, invalidation, recovery, conversion, bundling | `log/_score.py`, `log/_recover/`, `log/_convert.py`, `log/_bundle.py` | `Eval/Log/Tools/` | [log-tools](docs/ports/log-tools.md) |
+| Scoring existing logs, results recomputation | `_eval/score.py`, `_eval/task/results.py`, `log/_metric.py` | `Eval/Runner/Scoring/` | [score-logs](docs/ports/score-logs.md) |
+| Tabular analysis: evals, samples, messages, events | `analysis/` | `Eval/Analysis/` | [analysis](docs/ports/analysis.md) |
+| Eval sets, resume, eval_retry | `_eval/evalset.py`, `_eval/eval.py` | `Eval/Runner/EvalSet/` | [eval-set](docs/ports/eval-set.md) |
+| The `inspect` command line | `_cli/` | `Cli/` | [cli](docs/ports/cli.md) |
+| How the area branches were merged and unified | — | — | [integration](docs/ports/integration.md) |
+| How the apps and SWE agents use the ported subsystems | — | `SweShowcase/`, `ModelMatrix/`, `Sample/`, `Swe/` | [showcase-wiring](docs/ports/showcase-wiring.md) |

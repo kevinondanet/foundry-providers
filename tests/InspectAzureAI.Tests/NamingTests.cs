@@ -1,5 +1,3 @@
-using InspectAzureAI.Provider;
-
 namespace InspectAzureAI.Tests;
 
 /// <summary>Port of <c>TestAzureAICanonicalName</c> (tests/model/test_canonical_names.py).</summary>
@@ -55,24 +53,23 @@ public class NamingTests
     [Fact]
     public void test_detection_uses_service_model_name()
     {
-        var api = Fixtures.Api("custom-org/llama-3-70b");
-        Assert.True(api.IsLlama());
-        Assert.True(api.IsLlama3());
-        Assert.Equal("llama-3-70b", api.ServiceModelName());
+        var api = Fixtures.Api("custom-org/Mistral-large-2411");
+        Assert.True(api.IsMistral());
+        Assert.Equal("Mistral-large-2411", api.ServiceModelName());
+        Assert.Equal("custom-org/Mistral-large-2411", api.CanonicalName());
     }
 
     [Theory]
-    [InlineData("Llama-3.3-70B-Instruct", 2048)]
+    [InlineData("some-unknown-model", 2048)]
     [InlineData("Mistral-large-2411", null)]
     [InlineData("gpt-4o", 2048)]
     public void max_tokens_defaults(string model, int? expected) => Assert.Equal(expected, Fixtures.Api(model).MaxTokens());
 
     [Fact]
-    public void connection_key_uses_initial_api_key_and_full_model_name()
+    public void connection_key_is_the_full_model_name()
     {
-        Assert.Equal("test:moonshotai/kimi-k2.5", Fixtures.Api("moonshotai/kimi-k2.5").ConnectionKey());
-        using var env = EnvScope.Clean().Set(AzureAIModelApi.AzureAIApiKeyVar, "env-key");
-        Assert.Equal("None:gpt-4o", Fixtures.Api("gpt-4o", apiKey: null).ConnectionKey());
+        Assert.Equal("moonshotai/kimi-k2.5", Fixtures.Api("moonshotai/kimi-k2.5").ConnectionKey());
+        Assert.Equal("gpt-4o", Fixtures.Api("gpt-4o").ConnectionKey());
     }
 
     [Fact]

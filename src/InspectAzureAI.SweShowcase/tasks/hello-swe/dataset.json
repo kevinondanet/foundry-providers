@@ -1,0 +1,32 @@
+[
+  {
+    "id": 1,
+    "input": "Create a file named hello.py in the current directory. Running `python3 hello.py` must print exactly `Hello, Inspect!` on a single line.",
+    "target": "python3 hello.py prints Hello, Inspect!",
+    "metadata": {
+      "check": "test \"$(python3 hello.py)\" = \"Hello, Inspect!\""
+    }
+  },
+  {
+    "id": 2,
+    "input": "The file words.py in the current directory prints the words given as command-line arguments, one per line. Add a --reverse flag that prints the words in reverse order. Without the flag the existing behaviour must not change.",
+    "target": "python3 words.py --reverse a b c prints c, b, a on separate lines; python3 words.py a b c still prints a, b, c",
+    "files": {
+      "words.py": "files/words.py"
+    },
+    "metadata": {
+      "check": "test \"$(python3 words.py --reverse a b c | tr '\\n' ' ')\" = \"c b a \" && test \"$(python3 words.py a b c | tr '\\n' ' ')\" = \"a b c \""
+    }
+  },
+  {
+    "id": 3,
+    "input": "The file stats.py in the current directory should print the sum of the numbers in its NUMBERS list, which is 35, but it prints a different number because of an off-by-one bug in the loop. Fix the bug without changing the list.",
+    "target": "python3 stats.py prints 35",
+    "files": {
+      "stats.py": "files/stats.py"
+    },
+    "metadata": {
+      "check": "test \"$(python3 stats.py)\" = \"35\" && grep -q '3, 5, 7, 9, 11' stats.py"
+    }
+  }
+]

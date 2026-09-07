@@ -113,6 +113,9 @@ public sealed record ModelOutput
 
     public string? Error { get; init; }
 
+    /// <summary>The fallback that served this request, when a different model than requested did (port of <c>ModelOutput.fallback</c>).</summary>
+    public ModelFallback? Fallback { get; init; }
+
     /// <summary>True when there are no choices.</summary>
     public bool Empty => Choices.Count == 0;
 

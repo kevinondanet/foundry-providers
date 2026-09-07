@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>InspectAzureAI.CtfSample</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\InspectAzureAI.Provider\InspectAzureAI.Provider.csproj" />
+    <ProjectReference Include="..\InspectAzureAI.Eval\InspectAzureAI.Eval.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- The dataset, its setup scripts and the sandbox Dockerfile travel next to the executable. -->
+    <None Update="ctf/**" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

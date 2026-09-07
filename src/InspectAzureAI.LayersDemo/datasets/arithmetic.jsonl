@@ -1,0 +1,2 @@
+{"id":"multiply","input":"What is 17 * 23?","target":"391"}
+{"id":"read-file","input":"Read notes.txt in your working directory and tell me the secret number it contains.","target":"42","files":{"notes.txt":"The secret number is 42.\n"}}

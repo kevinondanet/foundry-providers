@@ -25,45 +25,13 @@ public class GenerateTests
         new() { Responder = _ => CannedResponse.Json(200, json) };
 
     [Fact]
-    public async Task emulate_tools_auto_enables_for_llama_and_omits_native_tools()
-    {
-        var transport = Transport(Fixtures.Completion("<tool_call>{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Paris\"}}</tool_call>"));
-        var api = Fixtures.Api("Llama-3.3-70B-Instruct", transport: transport);
-        Assert.Null(api.EmulateTools);
-
-        var (result, _) = await Generate(api, transport, tools: [Fixtures.WeatherTool]);
-
-        Assert.True(api.EmulateTools);
-        var body = transport.LastRequest!.BodyJson;
-        Assert.False(body.ContainsKey("tools"));
-        Assert.False(body.ContainsKey("tool_choice"));
-        Assert.Equal("system", body["messages"]![0]!["role"]!.GetValue<string>());
-        Assert.Contains("<tools>", body["messages"]![0]!["content"]!.GetValue<string>());
-        Assert.Equal("Llama-3.3-70B-Instruct", body["model"]!.GetValue<string>());
-
-        // the recorded request omits tools too (tools: null) and never carries the model
-        Assert.True(result.Call.Request.ContainsKey("tools"));
-        Assert.Null(result.Call.Request["tools"]);
-        Assert.False(result.Call.Request.ContainsKey("tool_choice"));
-        Assert.False(result.Call.Request.ContainsKey("model"));
-
-        var output = result.OutputOrThrow();
-        var call = Assert.Single(output.Message.ToolCalls!);
-        Assert.Equal("get_weather", call.Function);
-        Assert.Equal("""{"city":"Paris"}""", call.Arguments.ToJsonString());
-        Assert.Equal("Llama-3.3-70B-Instruct", output.Message.Model);
-        Assert.Equal(StopReason.Stop, output.StopReason);
-    }
-
-    [Fact]
-    public async Task native_tools_sent_for_non_llama_models()
+    public async Task native_tools_are_sent()
     {
         var transport = Transport(Fixtures.ToolCallCompletion("call_1", "get_weather", "{\"city\": \"Paris\"}"));
         var api = Fixtures.Api("gpt-4o", transport: transport);
 
         var (result, _) = await Generate(api, transport, tools: [Fixtures.WeatherTool], toolChoice: ToolChoice.Any);
 
-        Assert.Null(api.EmulateTools);
         var body = transport.LastRequest!.BodyJson;
         Assert.Equal("get_weather", body["tools"]![0]!["function"]!["name"]!.GetValue<string>());
         Assert.Equal("required", body["tool_choice"]!.GetValue<string>());
@@ -81,22 +49,6 @@ public class GenerateTests
     }
 
     [Fact]
-    public async Task emulate_tools_opt_in_and_opt_out()
-    {
-        var transport = Transport(Fixtures.Completion("ok"));
-        var forced = Fixtures.Api("gpt-4o", transport: transport, modelArgs: new Dictionary<string, object?> { ["emulate_tools"] = true });
-        await Generate(forced, transport, tools: [Fixtures.WeatherTool]);
-        Assert.False(transport.LastRequest!.BodyJson.ContainsKey("tools"));
-        Assert.Equal("system", transport.LastRequest.BodyJson["messages"]![0]!["role"]!.GetValue<string>());
-
-        var disabled = Fixtures.Api("Llama-3.3-70B-Instruct", transport: transport, modelArgs: new Dictionary<string, object?> { ["emulate_tools"] = false });
-        await Generate(disabled, transport, tools: [Fixtures.WeatherTool]);
-        Assert.False(disabled.EmulateTools);
-        Assert.True(transport.LastRequest!.BodyJson.ContainsKey("tools"));
-        Assert.Equal("user", transport.LastRequest.BodyJson["messages"]![0]!["role"]!.GetValue<string>());
-    }
-
-    [Fact]
     public async Task request_carries_completion_params_extras_and_auth_headers()
     {
         var transport = Transport(Fixtures.Completion("ok"));
@@ -110,8 +62,8 @@ public class GenerateTests
 
         var request = transport.LastRequest!;
         Assert.Equal("https://example.com/models/chat/completions?api-version=2024-05-01-preview", request.Uri.ToString());
-        Assert.Equal("test", request.Headers["api-key"]);
-        Assert.Equal("Bearer test", request.Headers["Authorization"]);
+        Assert.False(request.Headers.ContainsKey("api-key"));
+        Assert.Equal($"Bearer {Fixtures.FakeToken}", request.Headers["Authorization"]);
         Assert.Equal("pass-through", request.Headers["extra-parameters"]);
         var body = request.BodyJson;
         Assert.True(body["azure"]!.GetValue<bool>());
@@ -453,24 +405,6 @@ public class GenerateTests
         Assert.Equal("sunnythanks", messages[2]!["content"]!.GetValue<string>());
         Assert.True(transport.LastRequest.BodyJson.ContainsKey("tools"));
         Assert.Null(api.MaxTokens());
-    }
-
-    [Fact]
-    public async Task tool_history_round_trips_under_emulation()
-    {
-        var transport = Transport(Fixtures.Completion("It is sunny."));
-        var api = Fixtures.Api("Llama-3.3-70B-Instruct", transport: transport);
-        var input = new ChatMessage[]
-        {
-            new ChatMessageUser("q"),
-            new ChatMessageAssistant("Checking", [new ToolCall("c1", "get_weather", new() { ["city"] = "Paris" })]),
-            new ChatMessageTool("sunny", "c1", "get_weather"),
-        };
-        await Generate(api, transport, input: input, tools: [Fixtures.WeatherTool]);
-        var messages = transport.LastRequest!.BodyJson["messages"]!.AsArray();
-        Assert.Equal("Checking\n\n<tool_call>{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Paris\"} }</tool_call>", messages[2]!["content"]!.GetValue<string>());
-        Assert.Equal("tool", messages[3]!["role"]!.GetValue<string>());
-        Assert.Equal("c1", messages[3]!["tool_call_id"]!.GetValue<string>());
     }
 
     [Fact]

@@ -4,7 +4,6 @@ using Azure.Core;
 using InspectAzureAI.Provider;
 using InspectAzureAI.Provider.Core;
 using InspectAzureAI.Provider.Testing;
-using InspectAzureAI.Provider.Util;
 
 [assembly: CollectionBehavior(DisableTestParallelization = true)]
 
@@ -15,11 +14,10 @@ internal sealed class EnvScope : IDisposable
 {
     private static readonly string[] Vars =
     [
-        AzureAIModelApi.AzureApiKeyVar, AzureAIModelApi.AzureAIApiKeyVar, AzureAIModelApi.AzureEndpointUrlVar,
-        AzureAIModelApi.AzureAIEndpointUrlVar, AzureAIModelApi.AzureAIBaseUrlVar, "INSPECT_EVAL_MODEL_BASE_URL",
-        AzureAIModelApi.AzureAIAudienceVar, AzureHosting.AzureAICredential, AzureHosting.AzureTenantId, AzureHosting.AzureClientId,
+        AzureAIModelApi.AzureEndpointUrlVar, AzureAIModelApi.AzureAIEndpointUrlVar, AzureAIModelApi.AzureAIBaseUrlVar,
+        "INSPECT_EVAL_MODEL_BASE_URL", AzureAIModelApi.AzureAIAudienceVar, "AZURE_TENANT_ID", "AZURE_CLIENT_ID",
         InspectAzureAI.Provider.Foundry.FoundryCatalog.ResourceIdVar, InspectAzureAI.Provider.Foundry.FoundryCatalog.SubscriptionIdVar,
-        "AZUREAI_ANTHROPIC_API_KEY", "AZURE_ANTHROPIC_API_KEY", "AZUREAI_ANTHROPIC_BASE_URL", "AZURE_ANTHROPIC_BASE_URL",
+        "AZUREAI_ANTHROPIC_BASE_URL", "AZURE_ANTHROPIC_BASE_URL",
     ];
 
     private readonly Dictionary<string, string?> _saved = new();
@@ -82,35 +80,23 @@ internal static class Fixtures
         },
     };
 
-    public static readonly ToolInfo TestingTool = new("testing_tool", "A tool")
-    {
-        Parameters = new ToolParams
-        {
-            Properties = new Dictionary<string, ToolParam> { ["param1"] = ToolParam.Of("string") },
-            Required = ["param1"],
-        },
-    };
+    /// <summary>The bearer token every <see cref="Api"/> instance presents (stands in for an <c>az login</c> token).</summary>
+    public const string FakeToken = "test-token";
 
-    public static readonly ToolInfo TestingToolBool = new("testing_tool", "A tool")
-    {
-        Parameters = new ToolParams
-        {
-            Properties = new Dictionary<string, ToolParam> { ["param1"] = ToolParam.Of("boolean") },
-            Required = ["param1"],
-        },
-    };
+    /// <summary>Host settings carrying only a fake Entra ID credential.</summary>
+    public static AzureAIClientSettings Entra(string token = FakeToken) => new() { TokenCredential = new FakeTokenCredential(token) };
 
     public static AzureAIModelApi Api(
         string modelName = "test-model",
         object? streaming = null,
         IReadOnlyDictionary<string, object?>? modelArgs = null,
         CannedTransport? transport = null,
-        string? apiKey = "test",
         int sdkRetries = 0) =>
-        new(modelName, BaseUrl, apiKey, streaming: streaming, modelArgs: modelArgs,
+        new(modelName, BaseUrl, streaming: streaming, modelArgs: modelArgs,
             settings: new AzureAIClientSettings
             {
                 Transport = transport,
+                TokenCredential = new FakeTokenCredential(FakeToken),
                 ConfigureClientOptions = o =>
                 {
                     o.Retry.MaxRetries = sdkRetries;

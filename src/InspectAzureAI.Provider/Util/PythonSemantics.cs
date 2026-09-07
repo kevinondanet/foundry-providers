@@ -40,7 +40,4 @@ public static class PythonSemantics
 
     /// <summary>Python's <c>string.whitespace</c> characters.</summary>
     public const string Whitespace = " \t\n\r\x0b\x0c";
-
-    /// <summary>Python <c>str.strip()</c> (strips Unicode whitespace).</summary>
-    public static string Strip(string s) => s.Trim();
 }

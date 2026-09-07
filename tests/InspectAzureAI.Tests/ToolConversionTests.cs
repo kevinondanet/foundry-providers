@@ -56,29 +56,26 @@ public class ToolConversionTests
     {
         static string Dict(ChatRequestMessage m) => AzureMessageConversion.AsDict(m).ToJsonString(Relaxed);
 
-        Assert.Equal("""{"role":"system","content":"s"}""", Dict(AzureMessageConversion.ChatRequestMessage(new ChatMessageSystem("s"), null)));
+        Assert.Equal("""{"role":"system","content":"s"}""", Dict(AzureMessageConversion.ChatRequestMessage(new ChatMessageSystem("s"))));
         Assert.Equal(
             """{"role":"user","content":[{"type":"text","text":"t"},{"type":"image_url","image_url":{"url":"data:image/png;base64,AAAA","detail":"auto"}}]}""",
             Dict(AzureMessageConversion.ChatRequestMessage(
-                new ChatMessageUser(new Content[] { new ContentText("t"), new ContentImage("data:image/png;base64,AAAA") }), null)));
+                new ChatMessageUser(new Content[] { new ContentText("t"), new ContentImage("data:image/png;base64,AAAA") }))));
         Assert.Equal(
             """{"role":"tool","content":"Error: boom","tool_call_id":"c1"}""",
-            Dict(AzureMessageConversion.ChatRequestMessage(new ChatMessageTool("ignored", "c1", error: new ToolCallError("unknown", "boom")), null)));
+            Dict(AzureMessageConversion.ChatRequestMessage(new ChatMessageTool("ignored", "c1", error: new ToolCallError("unknown", "boom")))));
         Assert.Equal(
             """{"role":"tool","content":"sunny","tool_call_id":"c1"}""",
-            Dict(AzureMessageConversion.ChatRequestMessage(new ChatMessageTool("sunny", "c1"), null)));
+            Dict(AzureMessageConversion.ChatRequestMessage(new ChatMessageTool("sunny", "c1"))));
         Assert.Equal(
             """{"role":"tool","content":"x","tool_call_id":"None"}""",
-            Dict(AzureMessageConversion.ChatRequestMessage(new ChatMessageTool("x"), null)));
+            Dict(AzureMessageConversion.ChatRequestMessage(new ChatMessageTool("x"))));
 
         var assistantWithCall = new ChatMessageAssistant("", [new ToolCall("c1", "f", new() { ["a"] = 1 })]);
         Assert.Equal(
             """{"role":"assistant","tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":"{\"a\": 1}"}}]}""",
-            Dict(AzureMessageConversion.ChatRequestMessage(assistantWithCall, null)));
-        Assert.Equal(
-            """{"role":"assistant","content":"<tool_call>{\"name\": \"f\", \"arguments\": {\"a\": 1} }</tool_call>"}""",
-            Dict(AzureMessageConversion.ChatRequestMessage(assistantWithCall, new Llama31Handler("m"))));
-        Assert.Equal("""{"role":"assistant","content":"hi"}""", Dict(AzureMessageConversion.ChatRequestMessage(new ChatMessageAssistant("hi"), null)));
+            Dict(AzureMessageConversion.ChatRequestMessage(assistantWithCall)));
+        Assert.Equal("""{"role":"assistant","content":"hi"}""", Dict(AzureMessageConversion.ChatRequestMessage(new ChatMessageAssistant("hi"))));
     }
 
     [Fact]
@@ -120,7 +117,7 @@ public class ToolConversionTests
             new ChatMessageAssistant("ok"),
             new ChatMessageUser("not folded"),
         };
-        var folded = AzureMessageConversion.ChatRequestMessages(messages, null, isMistral: true);
+        var folded = AzureMessageConversion.ChatRequestMessages(messages, isMistral: true);
         Assert.Equal(3, folded.Count);
         var tool = Assert.IsType<ChatRequestToolMessage>(folded[0]);
         Assert.Equal("resultmore[Image: data:image/png;base64,AAAA]again", tool.Content);
@@ -128,7 +125,7 @@ public class ToolConversionTests
         Assert.IsType<ChatRequestAssistantMessage>(folded[1]);
         Assert.IsType<ChatRequestUserMessage>(folded[2]);
 
-        var notMistral = AzureMessageConversion.ChatRequestMessages(messages, null, isMistral: false);
+        var notMistral = AzureMessageConversion.ChatRequestMessages(messages, isMistral: false);
         Assert.Equal(5, notMistral.Count);
     }
 

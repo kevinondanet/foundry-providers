@@ -1,0 +1,44 @@
+Interact with a bash shell.
+
+Interact with a bash shell by sending it input text and retrieving output
+from it. There is no guarantee that all output will be returned in a
+single call. Call this function multiple times to retrieve additional
+output from the shell.
+
+USAGE NOTES:
+- Ensure that the shell is at a command prompt (typically when the
+  output ends in "$ " or "# ") before submitting a new command.
+- Control characters must be sent as Unicode escape sequences (e.g., use
+  "\u0003" for Ctrl+C/ETX, "\u0004" for Ctrl+D/EOT). The literal string
+  "Ctrl+C" will not be interpreted as a control character.
+- Use the "read" action to retrieve output from the shell without
+  sending any input. This is useful for long-running commands that
+  produce output over time. The "read" action will return any new output
+  since the last call.
+- If a long-running command is in progress, additional input to execute
+  a new command will not be processed until the previous completes. To
+  abort a long-running command, use the "interrupt" action:
+  `bash_session(action="interrupt")`
+- If output ends with "> " (the shell's continuation prompt), it means
+  the previous input contained unmatched quotes, backticks, or other
+  incomplete syntax. Either complete the quoted input or use the
+  "interrupt" action to cancel, then retry with corrected input.
+
+Example use case:
+- For a short-running command with a nominal amount of output, a single
+  call may suffice.
+  ```
+  bash_session(action="type_submit", input="echo foo") -> "foo\nuser@host:/# "
+  ```
+- For a long-running command with output over time, multiple calls to are needed.
+  ```
+  bash_session(action="type_submit", input="tail -f /tmp/foo.log") -> <some output>
+  bash_session(action="read") -> <more output>
+  # Send interrupt (Ctrl+C)
+  bash_session(action="interrupt") -> "<final output>^Cuser@host:/# "
+  ```
+- Interactive command awaiting more input from the user.
+  ```
+  bash_session(action="type_submit", input="ssh fred@foo.com") -> "foo.com's password: "
+  bash_session(action="type_submit", input="secret") -> "fred@foo.com:~$ "
+  ```

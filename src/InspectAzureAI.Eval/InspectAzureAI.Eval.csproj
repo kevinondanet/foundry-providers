@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>InspectAzureAI.Eval</RootNamespace>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\InspectAzureAI.Provider\InspectAzureAI.Provider.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="ModelContextProtocol" Version="2.2.0" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="InspectAzureAI.Eval.Tests" />
+    <InternalsVisibleTo Include="InspectAzureAI.Swe.Tests" />
+    <InternalsVisibleTo Include="InspectAzureAI.Maf" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Model/Cost/ModelData/*.json" LogicalName="InspectAzureAI.Eval.ModelData.%(Filename)%(Extension)" />
+  </ItemGroup>
+</Project>
