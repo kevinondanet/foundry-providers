@@ -49,6 +49,10 @@ Four layers, each depending only on the ones below it (`docs/ARCHITECTURE.md` wa
   tabular analysis (evals, samples, messages, events), eval sets with resume and `eval-retry`.
 - **SWE agents** (`InspectAzureAI.Swe`): mini-swe-agent as a native loop and the real Claude Code CLI
   bridged to the Azure providers, both wired to approval, the cache and compaction.
+- **Microsoft Agent Framework** (`InspectAzureAI.Maf`): an `IChatClient` over the agent bridge so a
+  `ChatClientAgent` (or any Microsoft.Extensions.AI consumer) runs as an Inspect agent with its model calls
+  served by the sample's model, Inspect tools wrapped as `AIFunction`s, tool events, submit and scored attempts
+  (`docs/agent-framework.md`).
 - **Apps**: the `inspectai` command line (`InspectAzureAI.Cli`), the SWE showcase, the model matrix, and
   the provider-only `Sample` CLI with its diagnostics.
 
@@ -82,12 +86,13 @@ InspectAzureAI.sln
 │   ├── Analysis/                   evals, samples, messages and events tables
 │   └── Testing/                    ScriptedModelApi, FakeSandboxEnvironment
 ├── src/InspectAzureAI.Swe          MiniSweAgent and ClaudeCodeAgent
+├── src/InspectAzureAI.Maf          InspectChatClient, ToolDefFunction and the Agent Framework agent (Microsoft.Agents.AI)
 ├── src/InspectAzureAI.Cli          the inspectai executable (System.CommandLine): eval, eval-set, eval-retry, score, list, log, cache, info, view
 ├── src/InspectAzureAI.SweShowcase  console app: list, run, show
 ├── src/InspectAzureAI.ModelMatrix  console app: every deployment x task x agent
 ├── src/InspectAzureAI.Sample       console app: chat, stream, tools, image, token, models, test-all, capture, params, cache, cost, structured
 ├── docs/ARCHITECTURE.md            the guided tour; docs/ports/ the port notes; docs/dashboard the wire dashboard (see below)
-└── tests/                          six xunit projects, all offline: Tests, Eval.Tests, Swe.Tests, Cli.Tests, ModelMatrix.Tests, Sample.Tests
+└── tests/                          seven xunit projects, all offline: Tests, Eval.Tests, Swe.Tests, Maf.Tests, Cli.Tests, ModelMatrix.Tests, Sample.Tests
 ```
 
 ## Architecture
@@ -615,9 +620,11 @@ Places where the port deliberately deviates from the Python implementation, and 
 `src/InspectAzureAI.Eval` and `src/InspectAzureAI.Swe` port Inspect AI's eval components (datasets, tasks,
 solvers, scorers, agents, tools, Docker/local sandboxes, the `Model` wrapper, the sandbox agent bridge, the eval
 runner and JSON logs) and two Inspect SWE agents (mini-swe-agent as a native C# loop, and the real Claude Code
-CLI bridged to the Azure providers) to .NET. `src/InspectAzureAI.SweShowcase` runs them on your Foundry
-deployments; see [docs/swe-showcase.md](docs/swe-showcase.md) for the architecture, every flag, the Python → C#
-mapping and the fidelity notes.
+CLI bridged to the Azure providers) to .NET; `src/InspectAzureAI.Maf` adds a Microsoft Agent Framework agent
+whose model calls are bridged in-process ([docs/agent-framework.md](docs/agent-framework.md)).
+`src/InspectAzureAI.SweShowcase` runs them on your Foundry deployments; see
+[docs/swe-showcase.md](docs/swe-showcase.md) for the architecture, every flag, the Python → C# mapping and the
+fidelity notes.
 
 ```bash
 az login && export AZUREAI_BASE_URL=https://<resource>.services.ai.azure.com/models
@@ -625,6 +632,7 @@ dotnet run --project src/InspectAzureAI.SweShowcase -- run --fake --sandbox loca
 dotnet run --project src/InspectAzureAI.SweShowcase -- run --task hello-swe --agent mini-swe                          # Docker sandbox, real model
 dotnet run --project src/InspectAzureAI.SweShowcase -- run --task ctf --agent basic                                 # capture-the-flag: setup scripts plant flags in the container
 dotnet run --project src/InspectAzureAI.SweShowcase -- run --task pytest-fix --agent claude-code --model claude-sonnet-4-6
+dotnet run --project src/InspectAzureAI.SweShowcase -- run --task hello-swe --agent maf --attempts 2                  # Microsoft Agent Framework ChatClientAgent, bridged in-process
 dotnet run --project src/InspectAzureAI.SweShowcase -- run --task pytest-fix --agent mini-swe --log-format json --cache 1W --compaction edit --approval policy.json --cost-limit 0.50 --hooks sample-log=hooks.log
 dotnet run --project src/InspectAzureAI.SweShowcase -- show logs/<timestamp>_hello-swe_<id>.eval
 dotnet run --project src/InspectAzureAI.ModelMatrix -- --parallel 3 --markdown docs/model-matrix-results.md   # Claude Code × every deployment, one eval set per deployment

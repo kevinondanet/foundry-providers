@@ -69,6 +69,24 @@ public sealed class ShowcaseOfflineTests : IDisposable
     }
 
     [Python3Fact]
+    public async Task fake_maf_agent_solves_the_first_hello_swe_sample_on_the_local_sandbox()
+    {
+        var run = await RunAsync("run", "--fake", "--sandbox", "local", "--task", "hello-swe", "--agent", "maf", "--log-dir", _logDir);
+
+        Assert.True(run.ExitCode == 0, run.Stderr + run.Stdout);
+        var log = ReadSingleLog();
+        Assert.Equal(EvalStatus.Success, log.Status);
+        Assert.True(Accuracy(log, "exec_check") > 0);
+        var first = log.Samples!.Single(sample => (int)sample.Id == 1);
+        Assert.Equal("C", first.Scores!["exec_check"].Text);
+        Assert.Contains(first.Messages, message => message is ChatMessageTool { Function: "submit" });
+        Assert.Contains(first.Messages, message => message is ChatMessageTool { Function: "bash" });
+        Assert.Contains(first.Messages, message => message is ChatMessageSystem);
+        Assert.Contains("hello.py", first.Output.Completion);
+        Assert.Contains(first.Events, e => e is Eval.Context.ToolEvent { Function: "bash" });
+    }
+
+    [Python3Fact]
     public async Task fake_run_limited_to_the_first_sample_over_two_epochs_scores_full_accuracy()
     {
         var run = await RunAsync("run", "--fake", "--task", "hello-swe", "--agent", "mini-swe", "--limit", "1", "--epochs", "2", "--log-dir", _logDir);
@@ -121,6 +139,7 @@ public sealed class ShowcaseOfflineTests : IDisposable
         Assert.Contains("system-explorer", run.Stdout);
         Assert.Contains("model_graded_qa", run.Stdout);
         Assert.Contains("claude-code", run.Stdout);
+        Assert.Contains("maf", run.Stdout);
     }
 
     [Python3Fact]

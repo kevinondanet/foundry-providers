@@ -1494,6 +1494,8 @@ Three things happen on every bridged request:
 
 Errors map per dialect: a `LimitExceededException` is stored as `LimitError` and cancels `LimitReached`, which tears down the CLI's exec; `ModelGenerateException` and bad requests answer 400; anything else 500, as an `event: error` frame once a stream has started.
 
+The same `AgentBridge` has an in-process face: `InspectAzureAI.Maf.InspectChatClient` implements Microsoft.Extensions.AI's `IChatClient` over it, so a Microsoft Agent Framework `ChatClientAgent` (or any `IChatClient` consumer) runs its own tool loop while every model call, approval decision and limit is Inspect's; `ToolDefFunction` hands Inspect tools such as the sandbox `bash` to the framework, and function-invocation middleware records a `ToolEvent` per call. `docs/agent-framework.md` covers it.
+
 ### 4.8 Scoped limits, error policy, retries and early stopping
 
 > **In plain English:** Limits used to be one flat checklist per question. Now they stack: the exam sets a budget, an agent inside it can set a smaller one, and a helper inside that a smaller one still, and every use is counted against the whole stack from the outside in. The same section covers what happens when a question crashes: retry it from scratch, count it against a failure threshold, or stop the whole exam early.

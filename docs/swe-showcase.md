@@ -7,6 +7,7 @@ two Inspect SWE agents, plus a console app that runs them against the user's Mic
 |---|---|
 | `src/InspectAzureAI.Eval` | Datasets and samples, tasks, solvers and `TaskState`, scorers and metrics, agents, tools, sandboxes (Docker and local), the `Model` wrapper (retry loop, limits, transcript), the sandbox **agent bridge**, an eval runner and a JSON eval log. |
 | `src/InspectAzureAI.Swe` | **mini-swe-agent** (a native C# port of the upstream v2 `DefaultAgent` bash tool-calling loop) and **Claude Code** (the real CLI binary inside the sandbox, its Anthropic API calls proxied to the host bridge and served by the Azure providers). |
+| `src/InspectAzureAI.Maf` | A **Microsoft Agent Framework** `ChatClientAgent` as an Inspect agent: an `IChatClient` over the agent bridge serves its model calls in-process, Inspect tools are wrapped as `AIFunction`s ([agent-framework.md](agent-framework.md)). |
 | `src/InspectAzureAI.SweShowcase` | The `swe-showcase` console app with three built-in tasks, a Docker sandbox image, and a fully offline `--fake` mode. |
 | `src/InspectAzureAI.ModelMatrix` | The `model-matrix` console app: every deployment on the resource × one task × one agent (Claude Code by default), with a results table, a JSON summary and an optional Markdown table. |
 | `tests/InspectAzureAI.Eval.Tests`, `tests/InspectAzureAI.Swe.Tests`, `tests/InspectAzureAI.ModelMatrix.Tests` | xunit suites; Docker- and network-dependent tests are gated by `[DockerFact]` / `[NetworkFact]`. |
@@ -57,8 +58,12 @@ flowchart LR
   host-side `SandboxAgentBridge` (`ANTHROPIC_BASE_URL=http://host.docker.internal:<port>`, a per-run bearer
   token), which translates the Anthropic Messages API into `Model.GenerateAsync` calls and reconstructs the
   agent's conversation from the request/response threads.
+- **Agent Framework** (`--agent maf`) talks no HTTP: the framework's `ChatClientAgent` is given an
+  `InspectChatClient`, an `IChatClient` over the same `AgentBridge`, so its function-calling loop runs in-process
+  while every model call, approval decision and limit is Inspect's; the sandbox `bash` tool is handed to the
+  framework as an `AIFunction`.
 - Every model call goes through `Model`, so the retry loop, the message/token limits, the `ModelEvent`s in the
-  transcript and the usage in the log are the same for all three agents.
+  transcript and the usage in the log are the same for all four agents.
 
 ## How to run
 
@@ -81,6 +86,9 @@ dotnet run --project src/InspectAzureAI.SweShowcase -- run --task pytest-fix --a
 
 # the inspect_swe docs example, model-graded
 dotnet run --project src/InspectAzureAI.SweShowcase -- run --task system-explorer --agent basic --limit 1
+
+# a Microsoft Agent Framework agent, its model calls bridged in-process to the deployment
+dotnet run --project src/InspectAzureAI.SweShowcase -- run --task hello-swe --agent maf --attempts 2
 
 # inspect a log
 dotnet run --project src/InspectAzureAI.SweShowcase -- show logs/<timestamp>_hello-swe_<id>.json
@@ -106,7 +114,7 @@ sign-in problem is detected before any sample starts (a token is acquired up fro
 
 ```
 swe-showcase list
-swe-showcase run --task <name> --agent mini-swe|claude-code|basic [options]
+swe-showcase run --task <name> --agent mini-swe|claude-code|basic|maf [options]
 swe-showcase show <log.eval|log.json>
 ```
 
@@ -115,7 +123,7 @@ swe-showcase show <log.eval|log.json>
 | Flag | Meaning |
 |---|---|
 | `--task <name>` | `hello-swe`, `pytest-fix`, `system-explorer` or `ctf` (required). |
-| `--agent <name>` | `mini-swe`, `claude-code` or `basic` (required). |
+| `--agent <name>` | `mini-swe`, `claude-code`, `basic` or `maf` (required); `maf` is a Microsoft Agent Framework `ChatClientAgent` with the sandbox `bash` tool ([agent-framework.md](agent-framework.md)). |
 | `--model <deployment>` | Foundry deployment; default `$INSPECT_AZUREAI_MODEL`, else `gpt-5.4-mini`. |
 | `--route models\|anthropic` | Model-inference route (default) or the Anthropic Messages route; `claude-*` names take the Anthropic route automatically. |
 | `--limit N` | Run only the first N samples. |
@@ -233,6 +241,8 @@ values in the logs (`show` prints the same).
 | hello-swe (2, `--sample-id 2`) | claude-code | claude-sonnet-4-6 (anthropic) | `exec_check=C` | 97,023 | 19.9 s | Exercises `files` (`words.py` copied into `/workspace`); `Read` (a wrong `/root/words.py` guess, then `/workspace/words.py`), `Edit`, final text; 4 bridged calls; the cached binary was reused (no download). |
 | system-explorer (1) | mini-swe | gpt-5.4-mini (models) | `model_graded_qa=I` | 3,480 | 8.0 s | The grader is the same deployment: the grading prompt is the verbatim `scorer/_model.py` template, the verdict `GRADE: I` was parsed and the grader exchange kept under `metadata.grading`. The agent ran `python3 --version`, answered once without a tool call (one `format_error_template` turn), then submitted with nothing after the marker, so the graded answer was its last text, which never stated the version. |
 | hello-swe (1) | claude-code | gpt-5.4-mini (models) | `exec_check=C` | 32,069 | 12.9 s | Claude Code driven by a non-Anthropic deployment through the bridge: `Write` then a text answer, 2 calls, 15,488 cached input tokens on the second; stderr carried the CLI's `[claude-code:unrecognized_model]` warning (exit 0, classified as success). |
+| hello-swe (1) | maf | gpt-5.4-mini (models) | `exec_check=C` | 807 | 5.3 s | 2026-09-07, Microsoft.Agents.AI 1.20.0: the framework's `ChatClientAgent` made 2 bridged calls in-process, invoked `bash(cmd=…)` (wrote `hello.py`) and `submit(answer="Done")`, both as `ToolEvent`s; no HTTP, no leftover container. |
+| hello-swe (2, `--sample-id 2`) | maf | claude-sonnet-4-6 (anthropic) | `exec_check=C` | 9,059 | 26.9 s | 2026-09-07: the same Agent Framework agent on the Anthropic route, 6 bridged calls and 5 tool calls (`bash` reads and rewrites `words.py`, then `submit`); the submission text is `output.completion`. |
 | hello-swe (2, `--sample-id 2`) | claude-code | claude-sonnet-4-6 (anthropic) | `exec_check=C` | 97,028 | 20.8 s | Re-run after the review fix pass. The first post-fix attempt failed with the CLI's "issue with the selected model" message and zero model calls because the bridge had been narrowed to a `127.0.0.1` prefix; restoring the wildcard prefix (fidelity note 1) fixed it, and a regression test now sends a request with `Host: host.docker.internal:<port>`. |
 
 What the runs showed about the port (recorded so they are not mistaken for bugs):
@@ -666,6 +676,32 @@ Python behaviour; anything not listed here is intended to match the Python sourc
     the CLI exec through `SandboxAgentBridge.LimitReached` and rethrows `LimitError`), never as the
     "Error executing claude code agent" failure the CLI's exit would otherwise produce; Python gets the same
     outcome from its bridge task group cancelling the exec. `ClaudeCodeDebug` exposes read-only lists.
+### Microsoft Agent Framework
+
+71. `InspectChatClient` is the in-process form of the bridge: it feeds `AgentBridge.GenerateAsync` directly from
+    Microsoft.Extensions.AI messages instead of parsing an HTTP body, so aliases, refusal retries, approval
+    replay and thread tracking are the bridge's own. Instructions (`ChatOptions.Instructions`) become one leading
+    `ChatMessageSystem`; function calls travel as `FunctionCallContent` / `FunctionResultContent` with
+    `JsonElement` arguments, the shape the OpenAI client produces.
+72. Only `AIFunction` tools cross to the model; hosted tools, unsupported content types, schema-less JSON mode
+    and out-of-range seeds are refused (`NotSupportedException`) rather than dropped; a JSON-schema response
+    format becomes a `ResponseSchema`. Generation parameters are mapped but stripped by the bridge unless it
+    forwards generation config. Reasoning signatures and redacted blocks ride in `ProtectedData`.
+73. A `FunctionInvokingChatClient` with the framework's per-run caps lifted runs the tools (Inspect's limits bound
+    the run). An Inspect tool (`ToolDefFunction`) runs through the tool executor under the model's call id —
+    validation, error mapping, truncation, the `ToolEvent`; its error object and content travel back as the
+    `ChatMessageTool` itself — without a second approval; a framework-side
+    function gets its `ToolEvent` from the run's middleware (Python's in-process bridge records none), and a limit
+    or termination it raises is re-thrown after the run, since the framework turns tool exceptions into error
+    results. The loop ends through `FunctionInvocationContext.Terminate` at the end of the iteration that ran
+    the submit tool (no extra model call, siblings still run); a response with an un-invoked call fails the run.
+74. The outer loop is `react`'s: a submission with attempts left is scored with `Agents.ScoreAsync` and answered
+    with the incorrect message on the same session; a run that stops without submitting gets the continue
+    message; the final round's tool results, which never reach a model request, are appended to the state from
+    the framework's response by tool-call id.
+75. Compaction is refused for `maf`: the framework owns its session history. The other flags reach it as for
+    `basic`; `--fake` drives it with `basic`'s scripted turns (`bash(cmd)` then `submit(answer)`).
+
 ## Intentionally out of scope
 
 Eval sets, approval policies, checkpointing, centaur/human-cli mode, MCP servers and bridged host tools,

@@ -13,7 +13,7 @@ namespace InspectAzureAI.SweShowcase;
 /// The model behind <c>--fake</c>: a <see cref="ScriptedModelApi"/> whose every turn is computed from the
 /// conversation it is asked to continue, so a run is deterministic under any sample concurrency. It solves
 /// sample 1 of each task with the turn shape the agent expects (mini-swe: <c>bash</c> calls with <c>command</c>,
-/// then the submit marker; basic: <c>bash</c> calls with <c>cmd</c>, then <c>submit</c>), gives up on every other
+/// then the submit marker; basic and maf: <c>bash</c> calls with <c>cmd</c>, then <c>submit</c>), gives up on every other
 /// sample, and answers a model-graded judge prompt with <c>GRADE: C</c> when the submission carries the expected answer.
 /// </summary>
 internal static class FakeScripts
@@ -34,7 +34,7 @@ internal static class FakeScripts
         Func<IReadOnlyList<ChatMessage>, IReadOnlyList<ToolInfo>, ModelOutput> respond = agent switch
         {
             AgentChoice.MiniSweName => (messages, _) => MiniSweTurn(solution, messages),
-            AgentChoice.BasicName => (messages, _) => BasicTurn(solution, messages),
+            AgentChoice.BasicName or AgentChoice.MafName => (messages, _) => BasicTurn(solution, messages),
             AgentChoice.ClaudeCodeName => throw new UsageError(
                 "--fake cannot drive claude-code: the Claude Code CLI runs inside a real sandbox and needs a real model served through the bridge. "
                 + "Use --agent mini-swe or --agent basic with --fake, or drop --fake."),

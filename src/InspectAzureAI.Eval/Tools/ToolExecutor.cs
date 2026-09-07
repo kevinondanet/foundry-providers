@@ -113,7 +113,27 @@ public static class ToolExecutor
     /// <summary><paramref name="Extra"/> and <paramref name="Output"/> are a handoff's messages (appended after the tool message) and the agent's output.</summary>
     private sealed record Outcome(ChatMessageTool Message, Exception? Fatal, IReadOnlyList<ChatMessage>? Extra = null, ModelOutput? Output = null);
 
-    private static async Task<Outcome> RunOneAsync(ToolCall call, IReadOnlyList<ToolDef> tools, IReadOnlyList<ChatMessage> conversation, int? maxOutput, CancellationToken cancellationToken)
+    /// <summary>
+    /// Runs one call of one tool for a caller that drives its own tool loop (the Agent Framework adapter): the
+    /// executor's argument validation, error mapping, output truncation and transcript recording, but no approval,
+    /// since a bridged scaffold's calls were approved on the model response before the scaffold saw them. An
+    /// unhandled exception is rethrown after the event is recorded, as <see cref="ExecuteToolsAsync"/> does.
+    /// </summary>
+    internal static async Task<ChatMessageTool> ExecuteOneAsync(ToolCall call, ToolDef tool, IReadOnlyList<ChatMessage> conversation, int? maxOutput = null, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(call);
+        ArgumentNullException.ThrowIfNull(tool);
+        ArgumentNullException.ThrowIfNull(conversation);
+        var outcome = await RunOneAsync(call, [tool], conversation, maxOutput, cancellationToken, applyApproval: false).ConfigureAwait(false);
+        if (outcome.Fatal is { } fatal)
+        {
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(fatal).Throw();
+        }
+
+        return outcome.Message;
+    }
+
+    private static async Task<Outcome> RunOneAsync(ToolCall call, IReadOnlyList<ToolDef> tools, IReadOnlyList<ChatMessage> conversation, int? maxOutput, CancellationToken cancellationToken, bool applyApproval = true)
     {
         var transcript = SampleContext.Current?.Transcript;
         // Python encloses a handoff's tool span in a "handoff" span named after the agent.
@@ -141,18 +161,22 @@ public static class ToolExecutor
             }
             else
             {
-                // Python's call_tool applies the approver before validating the arguments; a "modify" decision
-                // rebinds only the call the tool receives, the tool message and event keep the model's own call.
-                var assistantText = conversation[^1] is ChatMessageAssistant assistant ? assistant.Text : "";
-                var (approved, approval) = await ToolApproval.ApplyAsync(assistantText, call, tool.Viewer, conversation, cancellationToken).ConfigureAwait(false);
-                if (!approved)
+                var executeCall = call;
+                if (applyApproval)
                 {
-                    throw approval?.Decision == ApprovalDecision.Terminate
-                        ? new TerminateSampleException("Tool call approver requested termination.")
-                        : new ToolApprovalError(approval?.Explanation);
-                }
+                    // Python's call_tool applies the approver before validating the arguments; a "modify" decision
+                    // rebinds only the call the tool receives, the tool message and event keep the model's own call.
+                    var assistantText = conversation.Count > 0 && conversation[^1] is ChatMessageAssistant assistant ? assistant.Text : "";
+                    var (approved, approval) = await ToolApproval.ApplyAsync(assistantText, call, tool.Viewer, conversation, cancellationToken).ConfigureAwait(false);
+                    if (!approved)
+                    {
+                        throw approval?.Decision == ApprovalDecision.Terminate
+                            ? new TerminateSampleException("Tool call approver requested termination.")
+                            : new ToolApprovalError(approval?.Explanation);
+                    }
 
-                var executeCall = approval?.Modified ?? call;
+                    executeCall = approval?.Modified ?? call;
+                }
                 foreach (var required in tool.Parameters.Required)
                 {
                     if (!executeCall.Arguments.ContainsKey(required))

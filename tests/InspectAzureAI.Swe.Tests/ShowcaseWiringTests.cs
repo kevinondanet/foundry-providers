@@ -137,6 +137,16 @@ public sealed class ShowcaseWiringTests : IDisposable
     }
 
     [Fact]
+    public async Task compaction_is_refused_for_maf()
+    {
+        var run = await RunAsync("run", "--fake", "--task", "hello-swe", "--agent", "maf", "--log-dir", _logDir, "--compaction", "edit");
+
+        Assert.Equal(2, run.ExitCode);
+        Assert.Contains("--compaction does not apply to maf", run.Stderr);
+        Assert.False(Directory.Exists(_logDir));
+    }
+
+    [Fact]
     public async Task compaction_is_refused_for_claude_code()
     {
         var run = await RunAsync("run", "--fake", "--task", "hello-swe", "--agent", "claude-code", "--log-dir", _logDir, "--compaction", "edit");

@@ -13,6 +13,7 @@
   <ItemGroup>
     <InternalsVisibleTo Include="InspectAzureAI.Eval.Tests" />
     <InternalsVisibleTo Include="InspectAzureAI.Swe.Tests" />
+    <InternalsVisibleTo Include="InspectAzureAI.Maf" />
   </ItemGroup>
   <ItemGroup>
     <EmbeddedResource Include="Model/Cost/ModelData/*.json" LogicalName="InspectAzureAI.Eval.ModelData.%(Filename)%(Extension)" />

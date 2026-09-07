@@ -1,0 +1,665 @@
+{
+  "surface": "report",
+  "manifest": {
+    "version": 1,
+    "surface": "report",
+    "title": "How Inspect AI abstracts models: Microsoft Foundry, Claude, and agent interoperability",
+    "description": "Source-level technical report \u2022 September 7, 2026 \u2022 Microsoft Foundry and Anthropic Claude",
+    "generatedAt": "2026-09-07T18:47:17.896923+00:00",
+    "blocks": [
+      {
+        "id": "title",
+        "type": "markdown",
+        "body": "# How Inspect AI abstracts models: Microsoft Foundry, Claude, and agent interoperability"
+      },
+      {
+        "id": "summary",
+        "type": "markdown",
+        "body": "## Technical summary\n\n**Inspect AI uses a common conversation and generation model, implemented by provider-specific adapters. It does not convert every model to a single universal wire protocol.** An evaluation or agent supplies typed messages, tool definitions, and generation settings. The selected adapter constructs the vendor request, invokes the appropriate SDK or endpoint, and converts the result into Inspect\u2019s common output and transcript types. [Inspect model orchestration](https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_model.py#L409)\n\nFor Microsoft Foundry, the essential routing distinction is:\n\n- **Claude on Foundry:** `anthropic/azure/<deployment>` \u2192 Anthropic Messages through `AsyncAnthropicFoundry`.\n- **OpenAI on Azure:** `openai/azure/<deployment>` \u2192 Azure OpenAI through `AsyncAzureOpenAI`, with Chat Completions or Responses selected by the adapter.\n- **Azure model inference:** `azureai/<deployment>` \u2192 Azure AI Inference `ChatCompletionsClient`.\n\nThese routes have different feature coverage. At the reviewed revision, the upstream Python `azureai` adapter does not map `response_schema`, `reasoning_effort`, or `reasoning_tokens` in its normal generation-parameter translation. The Anthropic adapter has extensive model-specific handling for these features. Your local .NET provider adds functionality beyond Python\u2019s Azure inference adapter. [Azure inference provider implementation](https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_providers/azureai.py#L361) [Anthropic provider implementation](https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_providers/anthropic.py#L989)\n\n**Portability has a boundary.** Inspect can preserve thinking state and normalize schemas, but a bridge, provider, SDK, endpoint, or specific model can still reject, alter, omit, or incompletely represent a feature. A valid comparison must record all of these choices. \u201cThe same prompt and `high` effort\u201d does not establish equal compute or equivalent behavior.\n\n**Evidence date:** September 7, 2026. Upstream source is pinned to commit `3fea5104189022519d8e432950bc73f37103848e`. This report is a source-level architecture review, with current Microsoft and Anthropic documentation checked separately. No live model requests or deployment benchmarks were performed."
+      },
+      {
+        "id": "architecture",
+        "type": "markdown",
+        "body": "## A shared semantic layer sits between agents and provider protocols\n\nThe translation pipeline below identifies the responsibility of each layer. The return path reverses the message translation while retaining usage and provider evidence where implemented.\n\n```text\nEvaluation / solver / agent\n          |\n          | native Inspect call, or framework call through a bridge\n          v\nModel.generate(messages, tools, tool_choice, config)\n          |\n          | configuration, history, limits, retries, caching, logging\n          v\nSelected ModelAPI provider adapter\n          |\n          | roles + content + schemas + model-specific settings\n          v\nVendor SDK -> authenticated endpoint -> model\n          |\n          | response / streaming events\n          v\nModelOutput + typed assistant content + usage + ModelCall\n          |\n          v\nAgent executes client tools, appends results, and calls again\n```\n\n**`Model` and `ModelAPI` have different jobs.** `Model` is the common orchestration wrapper. `ModelAPI` is the extension contract: its core `generate` method receives canonical input, tools, tool choice, and `GenerateConfig`, returning `ModelOutput` or output/error together with `ModelCall`. Provider hooks also supply retry classification, connection grouping, defaults, token-counting behavior, and history requirements. This keeps the evaluation loop reusable without pretending each backend has the same semantics. [Inspect model orchestration](https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_model.py#L275)\n\n**The abstraction is richer than a text prompt.** Messages distinguish system, user, assistant, and tool roles. Assistant messages can carry tool calls separately from their content. Content types represent text, media, reasoning, and provider-executed tool activity. Output includes choices, stop reasons, usage, and metadata; the human-readable completion is only one view of that result. Flattening everything to the final text discards much of what makes agents reproducible. [Canonical chat messages](https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_chat_message.py) [Typed content and reasoning](https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/_util/content.py) [Model output and usage](https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_model_output.py)\n\nInspect normalizes API-level inputs. For a hosted model, the server generally remains responsible for the tokenizer and proprietary chat template. A local model provider may apply its own model template. \u201cDifferent model syntax\u201d therefore includes both the client JSON schema, which Inspect translates, and the model\u2019s token-level prompt encoding, which is commonly outside the hosted adapter."
+      },
+      {
+        "id": "scope",
+        "type": "markdown",
+        "body": "## Scope and terms: model, host, protocol, and agent are separate\n\nThis report covers the model-facing integration architecture across provider families and agent integration routes, with detailed treatment of Foundry and Claude. It does not claim tested compatibility with every agent product or every feature in every model catalog.\n\n**Provider** means the Inspect adapter selected by the model string. **Host** means the service serving the deployment. **Protocol** means the request/response contract, such as Anthropic Messages, OpenAI Responses, or Bedrock Converse. **Agent framework** means the component that manages the loop, tools, and state. A hosted agent service is an additional orchestration boundary; it is not simply a model endpoint.\n\n**Thinking tokens** can refer to requested reasoning budget, reported reasoning usage, visible reasoning summary, or opaque state needed for continuation. Those are different objects. **Strict formatting** can mean prompt instructions, valid JSON, schema-constrained output, or validated tool arguments; these also require separate checks.\n\nThe unit of compatibility is the full path: **agent interface \u2192 bridge \u2192 Inspect adapter \u2192 SDK \u2192 endpoint/API version \u2192 deployment/model version**. Capability changes at any point can alter the result. This is the basis for the route and validation tables below."
+      },
+      {
+        "id": "routing",
+        "type": "markdown",
+        "body": "## Foundry requires choosing the right adapter and endpoint\n\nThe model string selects the adapter before the request is sent. The host name alone cannot select the correct message format. The table describes source-observed routes, not a promise that every deployed model accepts every setting. [Provider registrations](https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_providers/providers.py) [OpenAI and Azure OpenAI provider](https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_providers/openai.py#L290) [Anthropic provider implementation](https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_providers/anthropic.py#L430) [Azure inference provider implementation](https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_providers/azureai.py#L283)"
+      },
+      {
+        "id": "route-table",
+        "type": "table",
+        "tableId": "routes"
+      },
+      {
+        "id": "foundry",
+        "type": "markdown",
+        "body": "## Foundry hosting does not erase Anthropic\u2019s contract\n\nMicrosoft documents Claude\u2019s resource endpoint as `https://<resource>.services.ai.azure.com/anthropic/v1/messages`. The base URL for an SDK that appends `/v1/messages` is normally the `/anthropic` prefix. A Foundry project URL, an Azure `/models` inference URL, and this Anthropic URL are distinct interfaces. Follow the endpoint supplied for the deployment rather than mechanically appending paths to a project URL. [Microsoft deployment guide](https://learn.microsoft.com/en-us/azure/foundry/foundry-models/how-to/use-foundry-models-claude).\n\n**The current upstream Python auth path has a meaningful limit.** Its Azure branch resolves `AZUREAI_ANTHROPIC_BASE_URL` or the legacy alternative, requires an API key, and constructs `AsyncAnthropicFoundry`. Although the platform supports Entra ID, this branch still enforces an API-key prerequisite. Do not infer Python Inspect managed-identity support merely from Foundry\u2019s authentication capabilities. Your local .NET implementation instead explicitly uses Entra ID. [Anthropic provider implementation](https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_providers/anthropic.py#L430)\n\nFor Azure OpenAI, the adapter resolves Azure-specific base URL and API version and supports an Azure token provider. Its API selection is model-aware; Responses is preferred for certain reasoning and coding model families, and can be controlled through `responses_api`. Model names that hide the real family can therefore affect more than display labels. [OpenAI and Azure OpenAI provider](https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_providers/openai.py#L193)\n\nFoundry also distinguishes Azure-hosted and Anthropic-hosted Claude offerings. Features and lifecycle status are deployment-specific. Current Microsoft documentation describes Messages, streaming, thinking, schemas, and tools; this is platform capability evidence, not proof that each feature is surfaced by Inspect. [Microsoft Claude capabilities](https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/claude-models).\n\n**Practical rule:** choose the Anthropic route for Claude, the OpenAI route for Azure OpenAI features, and the Azure inference route only when that is the target deployment contract. Then check adapter support independently."
+      },
+      {
+        "id": "formats",
+        "type": "markdown",
+        "body": "## Messages and tool calls are translated structurally\n\nA single logical tool cycle has different native shapes. The sketches below show payload structure, not captured traffic; IDs and values are illustrative.\n\n### OpenAI Chat Completions\n\n```json\n{\"role\":\"assistant\",\"tool_calls\":[\n  {\"id\":\"call_1\",\"type\":\"function\",\"function\":\n    {\"name\":\"lookup\",\"arguments\":\"{\\\"key\\\":\\\"alpha\\\"}\"}}\n]}\n{\"role\":\"tool\",\"tool_call_id\":\"call_1\",\"content\":\"found\"}\n```\n\n### Anthropic Messages\n\n```json\n{\"role\":\"assistant\",\"content\":[\n  {\"type\":\"tool_use\",\"id\":\"call_1\",\"name\":\"lookup\",\n    \"input\":{\"key\":\"alpha\"}}\n]}\n{\"role\":\"user\",\"content\":[\n  {\"type\":\"tool_result\",\"tool_use_id\":\"call_1\",\"content\":\"found\"}\n]}\n```\n\nInspect\u2019s common representation uses a structured `ToolCall` and a `ChatMessageTool` tied to the call ID. The provider translates JSON argument objects versus JSON-encoded strings, role placement, error indicators, and content blocks. Claude tool results are user content blocks, not OpenAI-style `role: tool` messages. Standard Anthropic system instructions are separated into the top-level `system` field; its adapter also contains newer model-specific message handling. [Anthropic provider implementation](https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_providers/anthropic.py#L2294) [OpenAI message and configuration utilities](https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_openai.py) \n\n**Responses is another contract.** It represents function calls and outputs as typed items, with reasoning items and other outputs distinct from text messages. Google uses contents and parts; Bedrock Converse uses its own content blocks and tool-use/result shapes. They converge on Inspect objects, not on identical raw JSON. [OpenAI Responses translation](https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_providers/openai_responses.py) [Google provider implementation](https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_providers/google.py) [Bedrock Converse provider](https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_providers/bedrock.py)\n\n**Multimodal data needs conversion too.** Image URLs/data URIs, base64 payloads, documents, citations, and tool-returned media require provider-specific conversion and may be restricted by the endpoint. The Anthropic adapter includes image and document conversion; the generic Azure inference message path is substantially smaller. A common content class expresses intent, not universal backend acceptance.\n\n**Tool execution has two owners.** Inspect or the external agent normally executes custom client tools. Vendor server tools execute at the service and can return tool activity and citations inside model output. Treating server-tool results as locally executed function results would misrepresent the agent\u2019s behavior."
+      },
+      {
+        "id": "thinking",
+        "type": "markdown",
+        "body": "## Claude thinking requires control, preservation, and accounting\n\n### 1. Control is translated by model family\n\n`GenerateConfig.reasoning_effort` is an abstract effort setting. `reasoning_tokens` is an explicit budget where supported. In the inspected Claude adapter, older budget-based models can receive `thinking: {\"type\":\"enabled\",\"budget_tokens\":...}`. For eligible adaptive models, effort becomes `thinking: {\"type\":\"adaptive\",...}` together with `output_config.effort`. The implementation rejects explicit reasoning-token budgets for its Claude 4.7-and-later detection path and applies model-specific disabled-thinking rules. It also removes incompatible sampling settings with warnings. These are explicit branches, not a protocol-wide automatic negotiation. [Anthropic provider implementation](https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_providers/anthropic.py#L989)\n\nFor budget-based translation, the shared mapping is `minimal\u21922048`, `low\u21924096`, `medium\u219210000`, `high\u219216000`, and `xhigh/max\u219232000`. These are Inspect policy values. They are not vendor promises of equal computation across models. An explicit supported budget takes precedence on the older Claude path. [Reasoning conversion utilities](https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_reasoning.py#L25)\n\n### 2. Returned thinking is not necessarily the underlying reasoning text\n\n`ContentReasoning` has reasoning, summary, signature, and redaction fields. Crucially, **field meaning must be read with the provider implementation**: current upstream Anthropic conversion stores a thinking block\u2019s readable text in `summary`, its signature in `reasoning`, and sets `redacted=True`. A redacted block stores opaque data without a readable summary. The local .NET code uses a different arrangement: readable text in `Reasoning` and signature in `Signature`. Sharing class names is insufficient for serialization parity. [Typed content and reasoning](https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/_util/content.py#L32) [Anthropic provider implementation](https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_providers/anthropic.py#L4005)\n\n### 3. Continuation requires the original state\n\nThe Anthropic adapter forces reasoning history retention and records original thinking blocks internally for replay, including through simpler bridge formats. It reconstructs native blocks using their stored signatures/data. Tool loops must preserve block order, IDs, and opaque state; retaining a visible summary alone is insufficient. A transcript export that keeps only display text can therefore lose replay fidelity even when it remains readable. [Anthropic provider implementation](https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_providers/anthropic.py#L1563) [Anthropic provider implementation](https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_providers/anthropic.py#L4005)\n\nCross-model reasoning text can sometimes be rendered as ordinary context, but that is a compatibility transformation, not conversion into a valid signed Claude reasoning block. Do not manufacture signatures or assume a block from another provider can serve as native continuation state.\n\n### 4. Usage is separate from displayed reasoning\n\nThe current adapter prefers `usage.output_tokens_details.thinking_tokens` when returned. Its fallback counts nonempty visible thinking text through token counting and can undercount the hidden computation represented by a summary. Reasoning is already included in Anthropic\u2019s output-token total; adding it again double-counts tokens. Report missing or estimated reasoning usage explicitly. [Anthropic provider implementation](https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_providers/anthropic.py#L3474)\n\nThe engineering implication is to store three separate things: requested effort/budget, provider-reported usage, and the full continuation payload. A chart of visible thinking length cannot substitute for reasoning cost."
+      },
+      {
+        "id": "schemas",
+        "type": "markdown",
+        "body": "## Strict response formatting and strict tool inputs are different\n\n**Prompt-only formatting** asks the model to produce a shape. **JSON mode** requests parseable JSON. **Schema-constrained output** asks the backend to enforce a schema on response text. **Strict tool use** constrains tool names and argument schemas. An agent can need any combination of these.\n\nInspect exposes `ResponseSchema(name, json_schema, description, strict)` through `GenerateConfig.response_schema`. The providers translate it differently: OpenAI Chat Completions uses `response_format`; Responses uses `text.format`; the current Anthropic adapter writes `output_format` into `extra_body` and adds the structured-output beta header. It also changes additional-properties behavior in the schema. [Generation configuration](https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_generate_config.py#L16) [OpenAI message and configuration utilities](https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_openai.py#L400) [OpenAI Responses translation](https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_providers/openai_responses.py#L537) [Anthropic provider implementation](https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_providers/anthropic.py#L1102)\n\nAnthropic\u2019s current public contract uses `output_config.format`; its documentation states that the older field remains accepted during a transition. The upstream Inspect code reviewed here still emits that legacy form. This is a concrete migration dependency to test, not evidence that structured output is absent. [Anthropic structured outputs](https://platform.claude.com/docs/en/build-with-claude/structured-outputs).\n\n**The ordinary Anthropic tool conversion does not automatically emit `strict: true`.** It builds `ToolParam` with name, description, and input schema. Setting a response schema does not change this into strict tool validation. If strict tool arguments are required, verify the actual outbound tools array and use a supported provider extension or adapter change; do not assume arbitrary `ToolInfo.options` are copied through. [Anthropic provider implementation](https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_providers/anthropic.py#L1727)\n\n**The bridge can weaken the requested schema.** In the inspected Anthropic bridge, `output_config.format` is converted into Inspect\u2019s `ResponseSchema`. Its source explicitly notes that unsupported schema keywords such as `allOf`, `const`, `$ref`/`$defs`, and `minItems` can be dropped with a warning. The result may constrain less than the client asked for. This is an observed conversion limit at this revision, not a conjecture. [Anthropic bridge implementation](https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/agent/_bridge/anthropic_api_impl.py#L266)\n\nThinking and constrained final JSON are compatible concepts: the constraint applies to the answer segment, not every intermediate reasoning or tool block. Still validate the final application object and distinguish incomplete output, refusal, and truncation from a successful structured answer. [Anthropic structured-output scope](https://platform.claude.com/docs/en/build-with-claude/structured-outputs).\n\n**For this workspace, schema fidelity should be tested in both directions:** client schema \u2192 common schema \u2192 wire schema, then raw model response \u2192 extracted final text \u2192 application validation. Validating only the final text cannot reveal a silently weakened generation constraint."
+      },
+      {
+        "id": "coverage",
+        "type": "markdown",
+        "body": "## Shared settings do not imply identical provider support\n\nThis matrix separates observed automatic translation from provider capability. \u201cNo mapping\u201d means the reviewed normal Python adapter path lacks it; a custom body or an updated adapter may change the result. Such a workaround still needs response decoding and continuation support. [Azure inference provider implementation](https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_providers/azureai.py#L361) [Anthropic provider implementation](https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_providers/anthropic.py#L989) [OpenAI Responses translation](https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_providers/openai_responses.py#L510)"
+      },
+      {
+        "id": "feature-table",
+        "type": "table",
+        "tableId": "features"
+      },
+      {
+        "id": "mapping-context",
+        "type": "markdown",
+        "sourceId": "mapping-audit",
+        "body": "### A bounded source audit illustrates the coverage gap\n\nFor the three inspected fields\u2014`response_schema`, `reasoning_effort`, and `max_tokens`\u2014Anthropic and OpenAI Responses each contain explicit mappings for all three; Azure inference maps only `max_tokens`. The chart counts code mappings at the pinned revision. It is not a completeness score, a performance comparison, or evidence that every model accepts each field. The matrix above provides the more important semantic detail."
+      },
+      {
+        "id": "mapping-chart",
+        "type": "chart",
+        "chartId": "mapping-audit-chart"
+      },
+      {
+        "id": "wire",
+        "type": "markdown",
+        "body": "## Wire protocols and streaming retain provider-specific behavior\n\nOn hosted routes, the selected SDK sends authenticated network requests using the service\u2019s native HTTP contract. Non-streaming responses are complete JSON objects. Streaming paths receive provider events and accumulate them into a complete output while optionally emitting progress. Anthropic uses SSE content-block events, including text, thinking, signatures, and partial tool JSON; OpenAI Responses uses typed response events. Bedrock streaming uses its AWS runtime event interface rather than assuming Anthropic SSE. [Anthropic provider implementation](https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_providers/anthropic.py#L4300) [OpenAI Responses translation](https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_providers/openai_responses.py) [Bedrock Converse provider](https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_providers/bedrock.py)\n\n**Partial tool JSON is not yet a runnable tool call.** The stream accumulator must assemble arguments, preserve ordering, and wait for completion. A signature can arrive separately from thinking text. Usage and finish information may arrive late. Providers also differ in how they signal refusals and content filtering.\n\nThe Azure inference implementation accumulates chunks and warns when a stream contains no usage. Its retry classification recognizes both HTTP failures and failures occurring after HTTP 200. The OpenAI Azure Chat Completions path avoids automatic streaming in cases where accumulation loses filter details; an explicitly selected streaming path can have different evidence fidelity. [Azure inference provider implementation](https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_providers/azureai.py#L303) [Azure inference provider implementation](https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_providers/azureai.py#L383) [OpenAI and Azure OpenAI provider](https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_providers/openai.py#L626)\n\n`ModelCall` exposes provider request/response evidence alongside normalized output. This is invaluable for debugging a field that was omitted or transformed. However, an SDK-level logged object is not automatically a byte-for-byte network capture: SDK defaults, headers, media filtering, and server-side processing can sit outside the representation. Use raw transport fixtures when exact wire parity matters.\n\n**Live streaming versus simulated streaming matters.** An agent-facing interface may generate its stream updates from an already-complete response. That can preserve eventual content while changing first-token latency, cancellation, and incremental tool behavior. The local .NET `InspectChatClient` does exactly this. Do not benchmark it as provider-native token streaming."
+      },
+      {
+        "id": "agents",
+        "type": "markdown",
+        "body": "## Agent interoperability is implemented at API boundaries\n\nInspect documents two main bridges. `agent_bridge()` intercepts supported Python SDK calls within the process. `sandbox_agent_bridge()` provides an HTTP interface for agents running in a sandbox, allowing other implementation languages. The supported client-facing families include OpenAI Chat Completions, OpenAI Responses, Anthropic, and Google. `model=\"inspect\"` routes a client call to the configured Inspect model. [Agent bridge documentation](https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/docs/agent-bridge.qmd)\n\nThis supports framework integrations such as OpenAI Agents SDK, LangChain, and Pydantic AI through their model clients, and sandboxed CLI agents such as Claude Code or Codex through compatible endpoint configuration. The framework still owns its agent behavior; Inspect mediates model calls and evaluation state. A framework that bypasses the bridge or uses an unimplemented endpoint is outside that path.\n\n**Client format need not equal target format.** An OpenAI-shaped client can reach Claude through Inspect, but the call passes through two translations: client format \u2192 Inspect \u2192 Anthropic. Claude-specific semantics must survive both. Prefer a native Anthropic-facing bridge when Claude-native state and tools are central, while still testing the actual mappings.\n\n**Generation forwarding is a policy choice.** By default, upstream bridge documentation says ordinary client generation settings\u2014including reasoning settings\u2014are not forwarded. Inspect\u2019s resolved model configuration and provider defaults govern generation. Structural intent, including tools, tool choice, response format, stop sequences, and seed, is forwarded. Set `forward_generation_config=True` only when the client\u2019s settings should govern. An apparent \u201clost thinking budget\u201d can therefore be deliberate policy rather than a parser defect. [Agent bridge documentation](https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/docs/agent-bridge.qmd#L204)\n\n**Hosted Foundry Agent Service is a separate case.** Calling a model through `anthropic/azure` does not by itself run or evaluate an existing hosted Foundry agent. Evaluating that system requires a solver/agent wrapper that invokes the hosted service and imports its behavior or traces as appropriate. If its internal model calls never pass through Inspect, Inspect cannot claim the same per-call control and accounting as a bridged agent. This is an architectural implication of the boundary, not a claim of a universal built-in Foundry Agent Service connector.\n\n**MCP is a tool protocol, not the model message protocol.** Tools exposed by an MCP server can be adapted into the tool layer, and some vendor endpoints can call remote MCP servers themselves. Those are different execution paths, with different visibility and policy. The Anthropic provider explicitly partitions MCP server definitions from ordinary tool definitions. [Anthropic provider implementation](https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_providers/anthropic.py#L1713)"
+      },
+      {
+        "id": "extensions",
+        "type": "markdown",
+        "body": "## Model-specific features use explicit extensions and capability gates\n\nInspect avoids a lowest-common-denominator design by combining shared fields with provider-specific configuration and typed output. Examples in the Anthropic adapter include prompt caching and cache TTL, beta headers, web search, computer use, code execution, document citations, context management, and platform-gated options. Some vendor-defined tools are still client-executed; \u201cnative tool schema\u201d does not always mean \u201cserver execution.\u201d [Anthropic provider implementation](https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_providers/anthropic.py#L1755)\n\nThree extension mechanisms are worth separating:\n\n1. **Common setting translated by the provider.** Examples: response schema, reasoning effort, parallel-tool preference.\n2. **Provider argument or body/header override.** Examples: constructor options, `extra_body`, and beta headers. Constructor arguments are not universally request-body fields: Anthropic passes remaining arguments to its SDK client, while Azure inference uses remaining arguments as `model_extras`.\n3. **A custom registered `ModelAPI`.** This provides full control when the existing adapter cannot represent the endpoint or its return values. It must implement request conversion, response decoding, errors, and relevant continuation semantics\u2014not just construct a URL.\n\nA request-side escape hatch does not automatically teach the response converter a new block type. Likewise, a bridge may forward only selected extension fields. For example, the Anthropic bridge\u2019s general native extra-field list contains `metadata` and `service_tier`; other behavior is handled through explicit mappings. [Anthropic provider implementation](https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_providers/anthropic.py#L4952) [Anthropic bridge implementation](https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/agent/_bridge/anthropic_api_impl.py#L315)\n\nModel-family detection supplies another capability layer. The reviewed common model code consults model information and its `family`, then falls back to the service model name. Friendly deployment aliases should therefore retain explicit family metadata or be tested against the expected mapping. Otherwise, the adapter may choose the wrong reasoning mode, default limit, or token-limit field. [Inspect model orchestration](https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_model.py#L391)"
+      },
+      {
+        "id": "example",
+        "type": "markdown",
+        "body": "## A concrete Claude-on-Foundry configuration\n\nThis minimal Python example uses the upstream Anthropic route. It is illustrative and was not run against a deployment. Use an existing deployment that supports adaptive thinking and structured output; the deployment name should allow correct model-family resolution.\n\n```bash\nexport AZUREAI_ANTHROPIC_BASE_URL=\"https://<resource>.services.ai.azure.com/anthropic\"\nexport AZUREAI_ANTHROPIC_API_KEY=\"<provided securely>\"\n```\n\n```python\nfrom inspect_ai.model import GenerateConfig, ResponseSchema, get_model\nfrom inspect_ai.util import JSONSchema\n\nschema = JSONSchema(\n    type=\"object\",\n    properties={\"answer\": JSONSchema(type=\"string\")},\n    required=[\"answer\"],\n    additionalProperties=False,\n)\nmodel = get_model(\n    \"anthropic/azure/<claude-deployment>\",\n    config=GenerateConfig(\n        max_tokens=8192,\n        reasoning_effort=\"high\",\n        response_schema=ResponseSchema(\n            name=\"answer\", json_schema=schema\n        ),\n    ),\n)\n# Within an async evaluation or agent:\noutput = await model.generate(\"Explain why preserving tool-call IDs matters.\")\n```\n\nAt the reviewed revision, an eligible adaptive Claude request is conceptually assembled as follows. This omits credentials and other optional fields:\n\n```json\n{\n  \"model\":\"<claude-deployment>\",\n  \"max_tokens\":8192,\n  \"messages\":[{\"role\":\"user\",\"content\":\"...\"}],\n  \"thinking\":{\"type\":\"adaptive\",\"display\":\"summarized\"},\n  \"output_config\":{\"effort\":\"high\"},\n  \"output_format\":{\"type\":\"json_schema\",\"schema\":{\n    \"type\":\"object\",\n    \"properties\":{\"answer\":{\"type\":\"string\"}},\n    \"required\":[\"answer\"],\"additionalProperties\":false\n  }}\n}\n```\n\nInspect also adds the applicable structured-output beta header. Current native Anthropic examples instead put the schema under `output_config.format`; the sketch intentionally reflects the inspected adapter\u2019s legacy request shape. A different model family can change the thinking section. [Anthropic provider implementation](https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_providers/anthropic.py#L989)\n\nBefore accepting the result, inspect the stop reason, parse the final answer as JSON, validate it against the intended schema, and preserve the full assistant message for a subsequent tool turn. Do not serialize only `output.completion` as the agent\u2019s entire state."
+      },
+      {
+        "id": "dotnet",
+        "type": "markdown",
+        "body": "## Your .NET implementation is related to upstream, but not identical\n\nThe following findings come from the supplied working tree, not from the upstream Python package. They describe code paths, not proven live-service behavior.\n\n**`AzureAIModelApi` extends upstream Azure inference.** It adds family-sensitive reasoning mapping, response-format passthrough, and reasoning-content extraction. Its `model_format` argument supplies a vendor/family hint for opaque deployment names. The source explicitly labels these as port-only behavior. These additions address real upstream coverage gaps but should have their own compatibility contract.\n\n**`AnthropicFoundryModelApi` is a dedicated Messages implementation.** It builds `/anthropic/v1/messages`, authenticates with Entra ID, sends HTTP JSON directly, and implements streamed and non-streamed responses. It supports thinking/signature replay, response schemas through legacy `output_format`, and web-search result/citation handling. Its documentation excludes prompt caching, input document citations, batch mode, and other server tools from the port\u2019s implemented scope.\n\n**Thinking policy is less model-specific than current upstream.** `ThinkingParams` uses a positive explicit budget whenever supplied, otherwise adaptive thinking, without the upstream generation-specific guards. For `reasoning_effort=\"none\"`, it emits no thinking field rather than consulting model defaults and disable support. This creates a credible compatibility risk for models that reject budgets or default to thinking. This is a source-derived risk, not a demonstrated failed request.\n\n**Reasoning serialization differs.** The local implementation stores readable thinking and signatures separately. Upstream\u2019s current Anthropic converter uses summary plus opaque reasoning/redaction state. A direct field-name-based interchange would need explicit translation.\n\n**The Microsoft Agent Framework integration is in process.** `InspectChatClient` implements `Microsoft.Extensions.AI.IChatClient`, converts framework messages through `MafConversion`, and calls the Inspect bridge. `TextReasoningContent.ProtectedData` carries the signature/opaque data. It does not route through Python\u2019s HTTP bridge.\n\n**The MAF generation converter has a narrower explicit field list.** `ToGenerateConfig` maps sampling parameters, limits, tool parallelism, and schema response formats, but does not map a general reasoning setting or arbitrary additional properties. Configure the Inspect-side model deliberately and check forwarding policy. Schema-less JSON mode is explicitly rejected.\n\n**MAF streaming is synthesized.** `GetStreamingResponseAsync` first awaits the complete response and then converts it to updates. Final-message fidelity and live streaming fidelity need separate tests.\n\nReviewed local files: `InspectAzureAI.Provider/AzureAIModelApi.cs`; `InspectAzureAI.Provider/Anthropic/AnthropicFoundryModelApi.cs`; `InspectAzureAI.Maf/MafConversion.cs`; `InspectAzureAI.Maf/InspectChatClient.cs`. Source paths and hashes are retained in the companion review notes. No implementation changes were made."
+      },
+      {
+        "id": "method",
+        "type": "markdown",
+        "body": "## Evidence, limitations, and robustness\n\n**Method.** The review traced the common model contract, content and output types, provider registrations, the Azure/OpenAI/Anthropic adapters, representative Google and Bedrock paths, the Anthropic bridge, and the local .NET conversions. Upstream references are pinned to one commit. Microsoft and Anthropic documentation were checked for endpoint, hosting, authentication, thinking, and schema-contract changes.\n\n**Source precedence.** Executable adapter code establishes what Inspect sends; platform documentation establishes what a service advertises. They are intentionally not treated as interchangeable. For example, upstream provider documentation contains an Azure Anthropic `/models` URL example, while Microsoft\u2019s deployment guide specifies the Anthropic endpoint. This report uses the dedicated endpoint and records the discrepancy rather than relying on the example blindly. [Provider configuration documentation](https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/docs/providers.qmd#L315)\n\n**No runtime certification.** No live auth, billing, quota, model availability, refusal, streaming, or schema-enforcement tests were run. No throughput, latency, or accuracy measurements are claimed. Upstream `main` is not necessarily the user\u2019s installed release. The .NET observations reflect the current working files, which may contain uncommitted changes.\n\n**Main sources of uncertainty.** SDK versions can change accepted parameters; service deployments can enable features at different times; model aliases can hide family identity; schema normalization can weaken constraints; stream accumulation can lose metadata; and hidden reasoning usage may be estimated or unavailable. Cross-platform parity should be evaluated against these specific failure modes rather than a single success response.\n\n**Robustness criterion.** A feature should be called supported only when configuration survives conversion, the target accepts it, the response is decoded correctly, and required state survives a subsequent turn. The validation plan below is designed around that criterion."
+      },
+      {
+        "id": "validation",
+        "type": "markdown",
+        "body": "## Recommended validation before claiming Foundry parity\n\n**Prioritize multi-turn and schema fidelity before expanding the provider list.** Basic text completion verifies only a small fraction of the contract. The following checks are proposed; they were not executed in this review.\n\n1. **Route and identity:** test deployment alias, family metadata, endpoint path, API version, and selected auth method. Include an opaque deployment name.\n2. **Tool round trip:** assistant tool call \u2192 tool result \u2192 assistant continuation, including multiple calls, error results, and correct ID matching.\n3. **Reasoning replay:** signed thinking, redacted thinking, empty summaries, and thinking before/after tool calls. Assert that original state survives both framework and provider conversions.\n4. **Reasoning controls:** budget-based and adaptive models; unsupported explicit budget; absent effort versus `none`; max-token limits; incompatible temperature settings. Check warnings and actual serialized fields.\n5. **Schema fidelity:** simple object, nested schema, enums, required fields, additional properties, and keywords such as `$ref`/`$defs` and `minItems`. Compare the requested and transmitted schemas structurally.\n6. **Strict tool inputs:** assert `strict` is actually transmitted when required; verify response schemas do not accidentally stand in for tool constraints.\n7. **Bridge policy:** run with and without generation forwarding. Confirm which settings come from the evaluation and which come from the external agent.\n8. **Streaming:** fragmented tool JSON, late signatures, final usage, content-filter information, disconnect after HTTP 200, and cancellation. Test genuine incremental streaming separately from synthesized updates.\n9. **Accounting:** reconcile raw usage against normalized prompt/output/reasoning/cache totals; identify estimates and absent usage without converting them to zero.\n10. **Provider-specific tools and media:** verify the supported web-search/citation and image/document paths; explicitly reject or record unsupported blocks.\n\nStart with canned transport fixtures for exact payload conversion, then use a small live deployment suite for endpoint acceptance and continuation. Preserve the request, response, normalized message, SDK version, model version, and test outcome together. This separates adapter regressions from service behavior changes."
+      },
+      {
+        "id": "questions",
+        "type": "markdown",
+        "body": "## Decisions and open questions for the implementation\n\nThe recommended design is a rich common model with explicit provider adapters and a capability record per deployment. Preserve opaque provider state, normalize only semantics that can be represented faithfully, and reject or warn on unsupported requested guarantees.\n\nThe remaining implementation decisions are:\n\n- Is the target behavior parity with a specific Python Inspect release, or a deliberately broader Foundry integration? The current .NET code already implements the latter in several areas.\n- Must Entra ID work end to end for Claude in the Python path as well as .NET?\n- Which deployments and SDK/API versions form the supported contract, including Claude model families and Foundry hosting type?\n- Does \u201cstrict\u201d require only constrained final answers, or also strict tool arguments and full JSON Schema keyword preservation?\n- Are you evaluating models through a common harness, third-party agents through a bridge, or existing hosted Foundry agents? These require different integration boundaries.\n- Is true incremental streaming required, or is final-result streaming acceptable for the MAF consumer?\n\nResolving these points turns a broad \u201csupports Foundry and Claude\u201d claim into a testable interface specification."
+      }
+    ],
+    "sources": [
+      {
+        "id": "core",
+        "label": "Inspect model orchestration",
+        "url": "https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_model.py",
+        "path": "src/inspect_ai/model/_model.py"
+      },
+      {
+        "id": "config",
+        "label": "Generation configuration",
+        "url": "https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_generate_config.py",
+        "path": "src/inspect_ai/model/_generate_config.py"
+      },
+      {
+        "id": "messages",
+        "label": "Canonical chat messages",
+        "url": "https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_chat_message.py",
+        "path": "src/inspect_ai/model/_chat_message.py"
+      },
+      {
+        "id": "content",
+        "label": "Typed content and reasoning",
+        "url": "https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/_util/content.py",
+        "path": "src/inspect_ai/_util/content.py"
+      },
+      {
+        "id": "output",
+        "label": "Model output and usage",
+        "url": "https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_model_output.py",
+        "path": "src/inspect_ai/model/_model_output.py"
+      },
+      {
+        "id": "anthropic",
+        "label": "Anthropic provider implementation",
+        "url": "https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_providers/anthropic.py",
+        "path": "src/inspect_ai/model/_providers/anthropic.py"
+      },
+      {
+        "id": "azure",
+        "label": "Azure inference provider implementation",
+        "url": "https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_providers/azureai.py",
+        "path": "src/inspect_ai/model/_providers/azureai.py"
+      },
+      {
+        "id": "openai",
+        "label": "OpenAI and Azure OpenAI provider",
+        "url": "https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_providers/openai.py",
+        "path": "src/inspect_ai/model/_providers/openai.py"
+      },
+      {
+        "id": "responses",
+        "label": "OpenAI Responses translation",
+        "url": "https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_providers/openai_responses.py",
+        "path": "src/inspect_ai/model/_providers/openai_responses.py"
+      },
+      {
+        "id": "openaiutil",
+        "label": "OpenAI message and configuration utilities",
+        "url": "https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_openai.py",
+        "path": "src/inspect_ai/model/_openai.py"
+      },
+      {
+        "id": "google",
+        "label": "Google provider implementation",
+        "url": "https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_providers/google.py",
+        "path": "src/inspect_ai/model/_providers/google.py"
+      },
+      {
+        "id": "bedrock",
+        "label": "Bedrock Converse provider",
+        "url": "https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_providers/bedrock.py",
+        "path": "src/inspect_ai/model/_providers/bedrock.py"
+      },
+      {
+        "id": "registry",
+        "label": "Provider registrations",
+        "url": "https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_providers/providers.py",
+        "path": "src/inspect_ai/model/_providers/providers.py"
+      },
+      {
+        "id": "bridge",
+        "label": "Agent bridge documentation",
+        "url": "https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/docs/agent-bridge.qmd",
+        "path": "docs/agent-bridge.qmd"
+      },
+      {
+        "id": "abridge",
+        "label": "Anthropic bridge implementation",
+        "url": "https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/agent/_bridge/anthropic_api_impl.py",
+        "path": "src/inspect_ai/agent/_bridge/anthropic_api_impl.py"
+      },
+      {
+        "id": "reasoning",
+        "label": "Reasoning conversion utilities",
+        "url": "https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_reasoning.py",
+        "path": "src/inspect_ai/model/_reasoning.py"
+      },
+      {
+        "id": "providers",
+        "label": "Provider configuration documentation",
+        "url": "https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/docs/providers.qmd",
+        "path": "docs/providers.qmd"
+      },
+      {
+        "id": "routing-sources",
+        "label": "Provider routing review at pinned Inspect revision",
+        "url": "https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_providers/providers.py",
+        "path": "src/inspect_ai/model/_providers/providers.py"
+      },
+      {
+        "id": "mapping-audit",
+        "label": "Source audit of three shared configuration fields",
+        "url": "https://github.com/UKGovernmentBEIS/inspect_ai/tree/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model",
+        "path": "source-notes.md",
+        "query": {
+          "description": "Counts manually reviewed code mappings at Inspect commit 3fea5104189022519d8e432950bc73f37103848e. Evidence: anthropic.py completion_config, openai_responses.py, azureai.py completion_params. Values are code-review observations, not service measurements.",
+          "language": "sql",
+          "sql": "WITH reviewed_mappings(adapter, response_schema, reasoning_effort, max_tokens) AS (\n VALUES ('Anthropic',1,1,1), ('OpenAI Responses',1,1,1), ('Azure inference',0,0,1)\n)\nSELECT adapter, response_schema + reasoning_effort + max_tokens AS mapped,\n       3 AS checked, response_schema, reasoning_effort, max_tokens\nFROM reviewed_mappings",
+          "tables_used": [
+            "reviewed_mappings"
+          ],
+          "engine": "sqlite",
+          "executed_at": "2026-09-07T18:47:17.896923+00:00"
+        }
+      },
+      {
+        "id": "table-routes",
+        "label": "Provider and protocol routes \u2014 pinned source review",
+        "path": "routes-audit.sql",
+        "url": "https://github.com/UKGovernmentBEIS/inspect_ai/tree/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_providers",
+        "query": {
+          "engine": "sqlite",
+          "language": "sql",
+          "sql": "SELECT json_extract(value, '$.route') AS route, json_extract(value, '$.selector') AS selector, json_extract(value, '$.client') AS client, json_extract(value, '$.contract') AS contract, json_extract(value, '$.caveat') AS caveat FROM json_each('[{\"route\": \"Claude on Microsoft Foundry\", \"selector\": \"anthropic/azure/<deployment>\", \"client\": \"AsyncAnthropicFoundry\", \"contract\": \"Anthropic Messages\", \"caveat\": \"Use the Anthropic endpoint; native Claude semantics and model-specific gates.\"}, {\"route\": \"OpenAI on Azure\", \"selector\": \"openai/azure/<deployment>\", \"client\": \"AsyncAzureOpenAI\", \"contract\": \"Chat Completions or Responses\", \"caveat\": \"Endpoint/API version and deployment must support the selected API.\"}, {\"route\": \"Azure model inference\", \"selector\": \"azureai/<deployment>\", \"client\": \"Azure AI Inference ChatCompletionsClient\", \"contract\": \"Azure inference chat completions\", \"caveat\": \"Upstream mapped configuration is narrower than the shared config type.\"}, {\"route\": \"Claude direct\", \"selector\": \"anthropic/<model>\", \"client\": \"AsyncAnthropic\", \"contract\": \"Anthropic Messages\", \"caveat\": \"Direct-only features are explicitly gated in the adapter.\"}, {\"route\": \"Claude on AWS / Google\", \"selector\": \"anthropic/bedrock/<model> or anthropic/vertex/<model>\", \"client\": \"AsyncAnthropicBedrock / AsyncAnthropicVertex\", \"contract\": \"SDK adapts Messages to hosting service\", \"caveat\": \"Hosting-specific authentication and feature availability.\"}, {\"route\": \"Bedrock generic\", \"selector\": \"bedrock/<model>\", \"client\": \"AWS Bedrock runtime\", \"contract\": \"Converse / ConverseStream\", \"caveat\": \"Separate adapter from anthropic/bedrock; do not equate capabilities.\"}, {\"route\": \"Google models\", \"selector\": \"google/<model>\", \"client\": \"Google GenAI client\", \"contract\": \"GenerateContent\", \"caveat\": \"Contents/parts and thinking config differ from OpenAI and Claude.\"}, {\"route\": \"Compatible / local servers\", \"selector\": \"openai-api/<model>, vllm/<model>, other registered providers\", \"client\": \"Provider-specific client, often OpenAI-compatible\", \"contract\": \"Advertised server API or local inference\", \"caveat\": \"Compatibility does not imply native reasoning, tools, or schema enforcement.\"}]')",
+          "description": "Tabulates manually reviewed source-code findings; not live service tests. See linked provider implementations and report citations.",
+          "tables_used": [
+            "json_each(reviewed_source_findings)"
+          ]
+        }
+      },
+      {
+        "id": "table-features",
+        "label": "Automatic mappings in reviewed Python adapters \u2014 pinned source review",
+        "path": "features-audit.sql",
+        "url": "https://github.com/UKGovernmentBEIS/inspect_ai/tree/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_providers",
+        "query": {
+          "engine": "sqlite",
+          "language": "sql",
+          "sql": "SELECT json_extract(value, '$.feature') AS feature, json_extract(value, '$.anthropic') AS anthropic, json_extract(value, '$.openai') AS openai, json_extract(value, '$.azure') AS azure FROM json_each('[{\"feature\": \"Reasoning controls\", \"anthropic\": \"Budget/adaptive mappings with model-specific guards\", \"openai\": \"Reasoning settings mapped by selected API/model\", \"azure\": \"No normal reasoning_effort/reasoning_tokens mapping\"}, {\"feature\": \"Structured response schema\", \"anthropic\": \"Legacy output_format + beta; schema transformed\", \"openai\": \"response_format or text.format\", \"azure\": \"No normal response_schema mapping\"}, {\"feature\": \"Thinking output\", \"anthropic\": \"Typed summaries, signatures/data, replay state\", \"openai\": \"API-dependent reasoning/summary representation\", \"azure\": \"Normal output path does not expose equivalent rich reasoning\"}, {\"feature\": \"Custom tool calls\", \"anthropic\": \"Native tool_use/tool_result translation\", \"openai\": \"Function calls and outputs translated\", \"azure\": \"Native tools or model-specific tool emulation\"}, {\"feature\": \"Usage accounting\", \"anthropic\": \"Output/reasoning/cache detail where available\", \"openai\": \"Provider-reported details by API\", \"azure\": \"Prompt/completion/total; streaming usage can be absent\"}, {\"feature\": \"Provider escape hatches\", \"anthropic\": \"Model args, extra_body, headers, betas; platform gates\", \"openai\": \"Provider options and API-specific fields\", \"azure\": \"Remaining constructor args via model_extras\"}]')",
+          "description": "Tabulates manually reviewed source-code findings; not live service tests. See linked provider implementations and report citations.",
+          "tables_used": [
+            "json_each(reviewed_source_findings)"
+          ]
+        }
+      }
+    ],
+    "tables": [
+      {
+        "id": "routes",
+        "title": "Provider and protocol routes",
+        "dataset": "routes",
+        "sourceId": "table-routes",
+        "defaultSort": {
+          "field": "route",
+          "direction": "asc"
+        },
+        "columns": [
+          {
+            "field": "route",
+            "label": "Target",
+            "type": "text"
+          },
+          {
+            "field": "selector",
+            "label": "Inspect selector",
+            "type": "text"
+          },
+          {
+            "field": "client",
+            "label": "Client",
+            "type": "text"
+          },
+          {
+            "field": "contract",
+            "label": "Protocol",
+            "type": "text"
+          },
+          {
+            "field": "caveat",
+            "label": "Boundary",
+            "type": "text"
+          }
+        ]
+      },
+      {
+        "id": "features",
+        "title": "Automatic mappings in reviewed Python adapters",
+        "dataset": "features",
+        "sourceId": "table-features",
+        "defaultSort": {
+          "field": "feature",
+          "direction": "asc"
+        },
+        "columns": [
+          {
+            "field": "feature",
+            "label": "Capability",
+            "type": "text"
+          },
+          {
+            "field": "anthropic",
+            "label": "Anthropic",
+            "type": "text"
+          },
+          {
+            "field": "openai",
+            "label": "OpenAI / Azure OpenAI",
+            "type": "text"
+          },
+          {
+            "field": "azure",
+            "label": "Azure inference",
+            "type": "text"
+          }
+        ]
+      }
+    ],
+    "charts": [
+      {
+        "id": "mapping-audit-chart",
+        "title": "Selected configuration mappings",
+        "subtitle": "Explicit request mappings among response_schema, reasoning_effort, and max_tokens; three fields checked per adapter",
+        "type": "bar",
+        "dataset": "mapping_audit",
+        "sourceId": "mapping-audit",
+        "encodings": {
+          "x": {
+            "field": "adapter",
+            "type": "nominal",
+            "label": "Adapter"
+          },
+          "y": {
+            "field": "mapped",
+            "type": "quantitative",
+            "label": "Mapped fields (out of 3)"
+          },
+          "tooltip": [
+            {
+              "field": "checked",
+              "type": "quantitative",
+              "label": "Fields checked"
+            }
+          ]
+        }
+      }
+    ],
+    "cards": []
+  },
+  "snapshot": {
+    "version": 1,
+    "generatedAt": "2026-09-07T18:47:17.896923+00:00",
+    "status": "ready",
+    "datasets": {
+      "routes": [
+        {
+          "route": "Claude on Microsoft Foundry",
+          "selector": "anthropic/azure/<deployment>",
+          "client": "AsyncAnthropicFoundry",
+          "contract": "Anthropic Messages",
+          "caveat": "Use the Anthropic endpoint; native Claude semantics and model-specific gates."
+        },
+        {
+          "route": "OpenAI on Azure",
+          "selector": "openai/azure/<deployment>",
+          "client": "AsyncAzureOpenAI",
+          "contract": "Chat Completions or Responses",
+          "caveat": "Endpoint/API version and deployment must support the selected API."
+        },
+        {
+          "route": "Azure model inference",
+          "selector": "azureai/<deployment>",
+          "client": "Azure AI Inference ChatCompletionsClient",
+          "contract": "Azure inference chat completions",
+          "caveat": "Upstream mapped configuration is narrower than the shared config type."
+        },
+        {
+          "route": "Claude direct",
+          "selector": "anthropic/<model>",
+          "client": "AsyncAnthropic",
+          "contract": "Anthropic Messages",
+          "caveat": "Direct-only features are explicitly gated in the adapter."
+        },
+        {
+          "route": "Claude on AWS / Google",
+          "selector": "anthropic/bedrock/<model> or anthropic/vertex/<model>",
+          "client": "AsyncAnthropicBedrock / AsyncAnthropicVertex",
+          "contract": "SDK adapts Messages to hosting service",
+          "caveat": "Hosting-specific authentication and feature availability."
+        },
+        {
+          "route": "Bedrock generic",
+          "selector": "bedrock/<model>",
+          "client": "AWS Bedrock runtime",
+          "contract": "Converse / ConverseStream",
+          "caveat": "Separate adapter from anthropic/bedrock; do not equate capabilities."
+        },
+        {
+          "route": "Google models",
+          "selector": "google/<model>",
+          "client": "Google GenAI client",
+          "contract": "GenerateContent",
+          "caveat": "Contents/parts and thinking config differ from OpenAI and Claude."
+        },
+        {
+          "route": "Compatible / local servers",
+          "selector": "openai-api/<model>, vllm/<model>, other registered providers",
+          "client": "Provider-specific client, often OpenAI-compatible",
+          "contract": "Advertised server API or local inference",
+          "caveat": "Compatibility does not imply native reasoning, tools, or schema enforcement."
+        }
+      ],
+      "features": [
+        {
+          "feature": "Reasoning controls",
+          "anthropic": "Budget/adaptive mappings with model-specific guards",
+          "openai": "Reasoning settings mapped by selected API/model",
+          "azure": "No normal reasoning_effort/reasoning_tokens mapping"
+        },
+        {
+          "feature": "Structured response schema",
+          "anthropic": "Legacy output_format + beta; schema transformed",
+          "openai": "response_format or text.format",
+          "azure": "No normal response_schema mapping"
+        },
+        {
+          "feature": "Thinking output",
+          "anthropic": "Typed summaries, signatures/data, replay state",
+          "openai": "API-dependent reasoning/summary representation",
+          "azure": "Normal output path does not expose equivalent rich reasoning"
+        },
+        {
+          "feature": "Custom tool calls",
+          "anthropic": "Native tool_use/tool_result translation",
+          "openai": "Function calls and outputs translated",
+          "azure": "Native tools or model-specific tool emulation"
+        },
+        {
+          "feature": "Usage accounting",
+          "anthropic": "Output/reasoning/cache detail where available",
+          "openai": "Provider-reported details by API",
+          "azure": "Prompt/completion/total; streaming usage can be absent"
+        },
+        {
+          "feature": "Provider escape hatches",
+          "anthropic": "Model args, extra_body, headers, betas; platform gates",
+          "openai": "Provider options and API-specific fields",
+          "azure": "Remaining constructor args via model_extras"
+        }
+      ],
+      "mapping_audit": [
+        {
+          "adapter": "Anthropic",
+          "mapped": 3,
+          "checked": 3,
+          "response_schema": 1,
+          "reasoning_effort": 1,
+          "max_tokens": 1
+        },
+        {
+          "adapter": "OpenAI Responses",
+          "mapped": 3,
+          "checked": 3,
+          "response_schema": 1,
+          "reasoning_effort": 1,
+          "max_tokens": 1
+        },
+        {
+          "adapter": "Azure inference",
+          "mapped": 1,
+          "checked": 3,
+          "response_schema": 0,
+          "reasoning_effort": 0,
+          "max_tokens": 1
+        }
+      ]
+    }
+  },
+  "sources": [
+    {
+      "id": "core",
+      "label": "Inspect model orchestration",
+      "url": "https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_model.py",
+      "path": "src/inspect_ai/model/_model.py"
+    },
+    {
+      "id": "config",
+      "label": "Generation configuration",
+      "url": "https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_generate_config.py",
+      "path": "src/inspect_ai/model/_generate_config.py"
+    },
+    {
+      "id": "messages",
+      "label": "Canonical chat messages",
+      "url": "https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_chat_message.py",
+      "path": "src/inspect_ai/model/_chat_message.py"
+    },
+    {
+      "id": "content",
+      "label": "Typed content and reasoning",
+      "url": "https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/_util/content.py",
+      "path": "src/inspect_ai/_util/content.py"
+    },
+    {
+      "id": "output",
+      "label": "Model output and usage",
+      "url": "https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_model_output.py",
+      "path": "src/inspect_ai/model/_model_output.py"
+    },
+    {
+      "id": "anthropic",
+      "label": "Anthropic provider implementation",
+      "url": "https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_providers/anthropic.py",
+      "path": "src/inspect_ai/model/_providers/anthropic.py"
+    },
+    {
+      "id": "azure",
+      "label": "Azure inference provider implementation",
+      "url": "https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_providers/azureai.py",
+      "path": "src/inspect_ai/model/_providers/azureai.py"
+    },
+    {
+      "id": "openai",
+      "label": "OpenAI and Azure OpenAI provider",
+      "url": "https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_providers/openai.py",
+      "path": "src/inspect_ai/model/_providers/openai.py"
+    },
+    {
+      "id": "responses",
+      "label": "OpenAI Responses translation",
+      "url": "https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_providers/openai_responses.py",
+      "path": "src/inspect_ai/model/_providers/openai_responses.py"
+    },
+    {
+      "id": "openaiutil",
+      "label": "OpenAI message and configuration utilities",
+      "url": "https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_openai.py",
+      "path": "src/inspect_ai/model/_openai.py"
+    },
+    {
+      "id": "google",
+      "label": "Google provider implementation",
+      "url": "https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_providers/google.py",
+      "path": "src/inspect_ai/model/_providers/google.py"
+    },
+    {
+      "id": "bedrock",
+      "label": "Bedrock Converse provider",
+      "url": "https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_providers/bedrock.py",
+      "path": "src/inspect_ai/model/_providers/bedrock.py"
+    },
+    {
+      "id": "registry",
+      "label": "Provider registrations",
+      "url": "https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_providers/providers.py",
+      "path": "src/inspect_ai/model/_providers/providers.py"
+    },
+    {
+      "id": "bridge",
+      "label": "Agent bridge documentation",
+      "url": "https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/docs/agent-bridge.qmd",
+      "path": "docs/agent-bridge.qmd"
+    },
+    {
+      "id": "abridge",
+      "label": "Anthropic bridge implementation",
+      "url": "https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/agent/_bridge/anthropic_api_impl.py",
+      "path": "src/inspect_ai/agent/_bridge/anthropic_api_impl.py"
+    },
+    {
+      "id": "reasoning",
+      "label": "Reasoning conversion utilities",
+      "url": "https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_reasoning.py",
+      "path": "src/inspect_ai/model/_reasoning.py"
+    },
+    {
+      "id": "providers",
+      "label": "Provider configuration documentation",
+      "url": "https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/docs/providers.qmd",
+      "path": "docs/providers.qmd"
+    },
+    {
+      "id": "routing-sources",
+      "label": "Provider routing review at pinned Inspect revision",
+      "url": "https://github.com/UKGovernmentBEIS/inspect_ai/blob/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_providers/providers.py",
+      "path": "src/inspect_ai/model/_providers/providers.py"
+    },
+    {
+      "id": "mapping-audit",
+      "label": "Source audit of three shared configuration fields",
+      "url": "https://github.com/UKGovernmentBEIS/inspect_ai/tree/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model",
+      "path": "source-notes.md",
+      "query": {
+        "description": "Counts manually reviewed code mappings at Inspect commit 3fea5104189022519d8e432950bc73f37103848e. Evidence: anthropic.py completion_config, openai_responses.py, azureai.py completion_params. Values are code-review observations, not service measurements.",
+        "language": "sql",
+        "sql": "WITH reviewed_mappings(adapter, response_schema, reasoning_effort, max_tokens) AS (\n VALUES ('Anthropic',1,1,1), ('OpenAI Responses',1,1,1), ('Azure inference',0,0,1)\n)\nSELECT adapter, response_schema + reasoning_effort + max_tokens AS mapped,\n       3 AS checked, response_schema, reasoning_effort, max_tokens\nFROM reviewed_mappings",
+        "tables_used": [
+          "reviewed_mappings"
+        ],
+        "engine": "sqlite",
+        "executed_at": "2026-09-07T18:47:17.896923+00:00"
+      }
+    },
+    {
+      "id": "table-routes",
+      "label": "Provider and protocol routes \u2014 pinned source review",
+      "path": "routes-audit.sql",
+      "url": "https://github.com/UKGovernmentBEIS/inspect_ai/tree/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_providers",
+      "query": {
+        "engine": "sqlite",
+        "language": "sql",
+        "sql": "SELECT json_extract(value, '$.route') AS route, json_extract(value, '$.selector') AS selector, json_extract(value, '$.client') AS client, json_extract(value, '$.contract') AS contract, json_extract(value, '$.caveat') AS caveat FROM json_each('[{\"route\": \"Claude on Microsoft Foundry\", \"selector\": \"anthropic/azure/<deployment>\", \"client\": \"AsyncAnthropicFoundry\", \"contract\": \"Anthropic Messages\", \"caveat\": \"Use the Anthropic endpoint; native Claude semantics and model-specific gates.\"}, {\"route\": \"OpenAI on Azure\", \"selector\": \"openai/azure/<deployment>\", \"client\": \"AsyncAzureOpenAI\", \"contract\": \"Chat Completions or Responses\", \"caveat\": \"Endpoint/API version and deployment must support the selected API.\"}, {\"route\": \"Azure model inference\", \"selector\": \"azureai/<deployment>\", \"client\": \"Azure AI Inference ChatCompletionsClient\", \"contract\": \"Azure inference chat completions\", \"caveat\": \"Upstream mapped configuration is narrower than the shared config type.\"}, {\"route\": \"Claude direct\", \"selector\": \"anthropic/<model>\", \"client\": \"AsyncAnthropic\", \"contract\": \"Anthropic Messages\", \"caveat\": \"Direct-only features are explicitly gated in the adapter.\"}, {\"route\": \"Claude on AWS / Google\", \"selector\": \"anthropic/bedrock/<model> or anthropic/vertex/<model>\", \"client\": \"AsyncAnthropicBedrock / AsyncAnthropicVertex\", \"contract\": \"SDK adapts Messages to hosting service\", \"caveat\": \"Hosting-specific authentication and feature availability.\"}, {\"route\": \"Bedrock generic\", \"selector\": \"bedrock/<model>\", \"client\": \"AWS Bedrock runtime\", \"contract\": \"Converse / ConverseStream\", \"caveat\": \"Separate adapter from anthropic/bedrock; do not equate capabilities.\"}, {\"route\": \"Google models\", \"selector\": \"google/<model>\", \"client\": \"Google GenAI client\", \"contract\": \"GenerateContent\", \"caveat\": \"Contents/parts and thinking config differ from OpenAI and Claude.\"}, {\"route\": \"Compatible / local servers\", \"selector\": \"openai-api/<model>, vllm/<model>, other registered providers\", \"client\": \"Provider-specific client, often OpenAI-compatible\", \"contract\": \"Advertised server API or local inference\", \"caveat\": \"Compatibility does not imply native reasoning, tools, or schema enforcement.\"}]')",
+        "description": "Tabulates manually reviewed source-code findings; not live service tests. See linked provider implementations and report citations.",
+        "tables_used": [
+          "json_each(reviewed_source_findings)"
+        ]
+      }
+    },
+    {
+      "id": "table-features",
+      "label": "Automatic mappings in reviewed Python adapters \u2014 pinned source review",
+      "path": "features-audit.sql",
+      "url": "https://github.com/UKGovernmentBEIS/inspect_ai/tree/3fea5104189022519d8e432950bc73f37103848e/src/inspect_ai/model/_providers",
+      "query": {
+        "engine": "sqlite",
+        "language": "sql",
+        "sql": "SELECT json_extract(value, '$.feature') AS feature, json_extract(value, '$.anthropic') AS anthropic, json_extract(value, '$.openai') AS openai, json_extract(value, '$.azure') AS azure FROM json_each('[{\"feature\": \"Reasoning controls\", \"anthropic\": \"Budget/adaptive mappings with model-specific guards\", \"openai\": \"Reasoning settings mapped by selected API/model\", \"azure\": \"No normal reasoning_effort/reasoning_tokens mapping\"}, {\"feature\": \"Structured response schema\", \"anthropic\": \"Legacy output_format + beta; schema transformed\", \"openai\": \"response_format or text.format\", \"azure\": \"No normal response_schema mapping\"}, {\"feature\": \"Thinking output\", \"anthropic\": \"Typed summaries, signatures/data, replay state\", \"openai\": \"API-dependent reasoning/summary representation\", \"azure\": \"Normal output path does not expose equivalent rich reasoning\"}, {\"feature\": \"Custom tool calls\", \"anthropic\": \"Native tool_use/tool_result translation\", \"openai\": \"Function calls and outputs translated\", \"azure\": \"Native tools or model-specific tool emulation\"}, {\"feature\": \"Usage accounting\", \"anthropic\": \"Output/reasoning/cache detail where available\", \"openai\": \"Provider-reported details by API\", \"azure\": \"Prompt/completion/total; streaming usage can be absent\"}, {\"feature\": \"Provider escape hatches\", \"anthropic\": \"Model args, extra_body, headers, betas; platform gates\", \"openai\": \"Provider options and API-specific fields\", \"azure\": \"Remaining constructor args via model_extras\"}]')",
+        "description": "Tabulates manually reviewed source-code findings; not live service tests. See linked provider implementations and report citations.",
+        "tables_used": [
+          "json_each(reviewed_source_findings)"
+        ]
+      }
+    }
+  ]
+}

@@ -7,6 +7,7 @@
     <ProjectReference Include="..\InspectAzureAI.Provider\InspectAzureAI.Provider.csproj" />
     <ProjectReference Include="..\InspectAzureAI.Eval\InspectAzureAI.Eval.csproj" />
     <ProjectReference Include="..\InspectAzureAI.Swe\InspectAzureAI.Swe.csproj" />
+    <ProjectReference Include="..\InspectAzureAI.Maf\InspectAzureAI.Maf.csproj" />
   </ItemGroup>
   <ItemGroup>
     <None Update="tasks/**;sandbox/**" CopyToOutputDirectory="PreserveNewest" />

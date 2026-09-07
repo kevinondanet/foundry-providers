@@ -46,7 +46,7 @@ internal static class Cli
 
         run options:
           --task <name>             hello-swe | pytest-fix | system-explorer (required)
-          --agent <name>            mini-swe | claude-code | basic (required)
+          --agent <name>            mini-swe | claude-code | basic | maf (required)
           --model <deployment>      Foundry deployment (default: $INSPECT_AZUREAI_MODEL or gpt-5.4-mini)
           --route models|anthropic  model-inference route (default) or the Anthropic Messages route; claude-* names
                                     take the Anthropic route automatically
@@ -65,7 +65,7 @@ internal static class Cli
           --model-arg key=value     repeatable; the Python -M model args (JSON values are parsed)
           --approval <policy>       tool-call approval: a JSON policy file ({"approvers": [{"name", "tools", ...}]}) or a
                                     registered approver name (auto, human); applied to mini-swe and basic bash calls and to
-                                    Claude Code's tool calls through the bridge
+                                    Claude Code's and the Agent Framework agent's tool calls through the bridge
           --cache <expiry|off>      Inspect's prompt cache for every model call (1W, 3D, 12h, ...; 'on' = 1W); a hit replays
                                     the cached output and is recorded as a cache read on the model event
           --compaction <strategy>   edit|summary|trim|auto[:threshold] — compact the conversation once it reaches the threshold
@@ -199,6 +199,7 @@ internal static class Cli
         Console.WriteLine("  mini-swe         native C# port of mini-swe-agent's bash tool-calling loop (inspect_swe mini_swe_agent)");
         Console.WriteLine("  claude-code      the Claude Code CLI inside the sandbox, its API calls bridged to the task model (inspect_swe claude_code)");
         Console.WriteLine("  basic            Inspect's basic_agent ReAct loop with the sandbox bash tool and a submit tool");
+        Console.WriteLine("  maf              a Microsoft Agent Framework ChatClientAgent with the sandbox bash tool, its model calls bridged in-process to the task model");
         Console.WriteLine();
         Console.WriteLine($"sandbox image: {Path.Combine(TaskData.SandboxDirectory, "Dockerfile")}");
         return 0;
