@@ -623,6 +623,7 @@ mapping and the fidelity notes.
 az login && export AZUREAI_BASE_URL=https://<resource>.services.ai.azure.com/models
 dotnet run --project src/InspectAzureAI.SweShowcase -- run --fake --sandbox local --task hello-swe --agent mini-swe   # offline smoke test
 dotnet run --project src/InspectAzureAI.SweShowcase -- run --task hello-swe --agent mini-swe                          # Docker sandbox, real model
+dotnet run --project src/InspectAzureAI.SweShowcase -- run --task ctf --agent basic                                 # capture-the-flag: setup scripts plant flags in the container
 dotnet run --project src/InspectAzureAI.SweShowcase -- run --task pytest-fix --agent claude-code --model claude-sonnet-4-6
 dotnet run --project src/InspectAzureAI.SweShowcase -- run --task pytest-fix --agent mini-swe --log-format json --cache 1W --compaction edit --approval policy.json --cost-limit 0.50 --hooks sample-log=hooks.log
 dotnet run --project src/InspectAzureAI.SweShowcase -- show logs/<timestamp>_hello-swe_<id>.eval

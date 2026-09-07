@@ -114,7 +114,7 @@ swe-showcase show <log.eval|log.json>
 
 | Flag | Meaning |
 |---|---|
-| `--task <name>` | `hello-swe`, `pytest-fix` or `system-explorer` (required). |
+| `--task <name>` | `hello-swe`, `pytest-fix`, `system-explorer` or `ctf` (required). |
 | `--agent <name>` | `mini-swe`, `claude-code` or `basic` (required). |
 | `--model <deployment>` | Foundry deployment; default `$INSPECT_AZUREAI_MODEL`, else `gpt-5.4-mini`. |
 | `--route models\|anthropic` | Model-inference route (default) or the Anthropic Messages route; `claude-*` names take the Anthropic route automatically. |
@@ -200,13 +200,13 @@ failure or Ctrl-C does. Exit codes: **0** every selected deployment completed (i
 not errors), **1** at least one deployment errored, **2** usage or missing prerequisite, **3** sign-in, Azure or
 runtime failure. The last full run is in [model-matrix-results.md](model-matrix-results.md).
 
-## The three tasks
+## The four tasks
 
 Task data lives under `src/InspectAzureAI.SweShowcase/tasks/<name>/dataset.json` (loaded with
 `Datasets.Json`, file references resolved relative to the dataset file) and is copied next to the executable;
 the C# task definitions are in `BuiltinTasks/` rather than the design's `Tasks/` because that name collides
 with the `tasks/` data directory on case-insensitive filesystems.
-All three set `fail_on_error=False` (a broken sample is recorded and reported through the exit code rather than
+All four set `fail_on_error=False` (a broken sample is recorded and reported through the exit code rather than
 aborting the demo), a 200-message limit and a 20-minute time limit per sample.
 
 | Task | Samples | Sandbox | Scorer |
@@ -214,6 +214,7 @@ aborting the demo), a 200-message limit and a 20-minute time limit per sample.
 | `hello-swe` | 1: create `hello.py` printing `Hello, Inspect!`; 2: add a `--reverse` flag to the provided `words.py`; 3: fix an off-by-one in the provided `stats.py` so it prints 35. | showcase Dockerfile | `exec_check`: runs the sample's `metadata.check` bash command in the sandbox; exit 0 → `C`, else `I`; explanation = the command output. |
 | `pytest-fix` | 1: `textkit.slugify` (does not lower-case or collapse whitespace); 2: `mathkit.is_prime` (misses perfect squares). Each ships a package and a failing pytest suite. | showcase Dockerfile | `exec_check` with `check = python3 -m pytest -q` (plus a guard that the tests are still there). |
 | `system-explorer` | The inspect_swe `examples/system_explorer` idea: 1: which Python version is installed; 2: how many CPU cores the machine reports. | showcase Dockerfile | `Scorers.ModelGradedQa()` — the task model is the judge (the default template, instructions and `GRADE:` regex of `scorer/_model.py`). |
+| `ctf` | The Capture the Flag task of the Inspect docs (`tasks.qmd`, `react-agent.qmd`): each sample's `setup` script plants a `picoCTF{...}` flag in the sandbox — 1: a dotfile under `challenge/.cache`; 2: a base64-encoded `challenge/encoded.txt`; 3: printable text inside the binary `challenge/vault.bin`. The docs' CTF system prompt is chained before the agent. | showcase Dockerfile | `Scorers.Includes()` — the submitted answer contains the flag (case-insensitive). |
 
 ## Verified against a live Foundry resource
 

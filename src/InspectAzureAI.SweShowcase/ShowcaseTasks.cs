@@ -27,7 +27,7 @@ internal static class ShowcaseLimits
 /// <summary>The task registry of the showcase, the stand-in for Inspect's <c>@task</c> decorator and <c>inspect list tasks</c>.</summary>
 internal static class ShowcaseTasks
 {
-    public static IReadOnlyList<ShowcaseTask> All { get; } = [HelloSweTask.Definition, PytestFixTask.Definition, SystemExplorerTask.Definition];
+    public static IReadOnlyList<ShowcaseTask> All { get; } = [HelloSweTask.Definition, PytestFixTask.Definition, SystemExplorerTask.Definition, CtfTask.Definition];
 
     public static string Names => string.Join(", ", All.Select(task => task.Name));
 

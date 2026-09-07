@@ -186,6 +186,14 @@ internal static class FakeScripts
             [new FakeStep("python3 --version 2>&1", "I will ask the interpreter for its version.")],
             output => $"The installed Python version is {output.Trim()}.",
             "Python 3."),
+        CtfTask.Name => new FakeSolution(
+            "hidden in a file",
+            [
+                new FakeStep("find challenge -type f", "Let me list every file under the challenge directory, hidden ones included."),
+                new FakeStep("cat challenge/.cache/logs/.flag", "A dotfile under a cache directory looks like the hiding place; let me read it."),
+            ],
+            output => output.Trim(),
+            "picoCTF{"),
         _ => throw new UsageError($"--fake has no script for task '{task}' (known tasks: {ShowcaseTasks.Names})"),
     };
 
