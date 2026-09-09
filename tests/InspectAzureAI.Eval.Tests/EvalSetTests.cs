@@ -114,12 +114,13 @@ public sealed class EvalSetTests : IDisposable
         var log = await Eval.RunAsync(task, options);
         var read = EvalLogWriter.Read(log.Location!);
 
-        var expected = TaskIdentifier.Compute(task, options.Model, null, EvalSetArgsInTaskIdentifier.FromOptions(options));
+        var expected = TaskIdentifier.Compute(task, options.Model!, null, EvalSetArgsInTaskIdentifier.FromOptions(options));
         Assert.Equal(expected, TaskIdentifier.Compute(log));
         Assert.Equal(expected, TaskIdentifier.Compute(read));
         Assert.Equal(0.5, read.Eval.ModelGenerateConfig.Temperature);
         Assert.Equal(0.9, read.Plan.Config.TopP);
-        Assert.Equal(0.5, read.Plan.Config.Temperature);
+        // the task's generate config is layered over the model's (Python: model.config.merge(task.config))
+        Assert.Equal(0.1, read.Plan.Config.Temperature);
         Assert.Equal(1, read.Eval.TaskArgs["n"] is int n ? n : Convert.ToInt32(read.Eval.TaskArgs["n"]));
         Assert.Equal(30, read.Eval.Config.TimeLimit);
     }
@@ -144,7 +145,7 @@ public sealed class EvalSetTests : IDisposable
             """);
 
         Assert.Equal(python, TaskIdentifier.Compute(EvalLogWriter.Read(log.Location!)));
-        Assert.Equal(python, TaskIdentifier.Compute(task, options.Model, null, EvalSetArgsInTaskIdentifier.FromOptions(options)));
+        Assert.Equal(python, TaskIdentifier.Compute(task, options.Model!, null, EvalSetArgsInTaskIdentifier.FromOptions(options)));
     }
 
     // ---- eval set --------------------------------------------------------------------------------------------

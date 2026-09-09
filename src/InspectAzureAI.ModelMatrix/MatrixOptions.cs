@@ -86,7 +86,7 @@ internal sealed record MatrixOptions
 
         if (run.Route is not null)
         {
-            throw new UsageError("model-matrix picks each deployment's route from its ARM model format; --route is not accepted");
+            throw new UsageError("model-matrix picks each deployment's route (models, anthropic or responses) from its ARM model format and capabilities; --route is not accepted");
         }
 
         if (arguments.Count > 0)

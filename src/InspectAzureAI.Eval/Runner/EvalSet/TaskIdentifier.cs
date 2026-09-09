@@ -15,7 +15,7 @@ using Model = InspectAzureAI.Eval.Model.Model;
 /// <summary>
 /// Port of <c>_eval/evalset.py</c> <c>EvalSetArgsInTaskIdentifier</c>: the eval-set level arguments that take part
 /// in a task's identity. <see cref="Config"/> is the eval-level generate config (in this port the config of the
-/// eval model, which the runner layers over the task's); a null limit keeps the task's own value.
+/// eval model, over which the runner layers the task's); a null limit keeps the task's own value.
 /// </summary>
 public sealed record EvalSetArgsInTaskIdentifier
 {
@@ -41,7 +41,7 @@ public sealed record EvalSetArgsInTaskIdentifier
         ArgumentNullException.ThrowIfNull(options);
         return new EvalSetArgsInTaskIdentifier
         {
-            Config = options.Model.Config,
+            Config = options.Model?.Config ?? new(),
             MessageLimit = options.MessageLimit,
             TokenLimit = options.TokenLimit,
             TurnLimit = options.TurnLimit,
@@ -89,7 +89,8 @@ public static class TaskIdentifier
         ArgumentNullException.ThrowIfNull(task);
         ArgumentNullException.ThrowIfNull(model);
         ArgumentNullException.ThrowIfNull(args);
-        var plan = Eval.ResolvePlan(task, task.Config.Merge(args.Config));
+        // the runner's plan config: the model's config with the task's layered over it (Eval.EvalModel)
+        var plan = Eval.ResolvePlan(task, args.Config.Merge(task.Config));
         var fields = new AdditionalHashFields(
             ModelArgs: new Dictionary<string, object?>(StringComparer.Ordinal),
             Version: task.Version,

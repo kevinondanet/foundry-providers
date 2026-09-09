@@ -25,7 +25,8 @@ public static partial class Scorers
                 cancellationToken).ConfigureAwait(false);
             var resolved = results.Where(score => score is not null).ToList();
             return resolved.Count == 0 ? Score.Unscored(reason: ScoreReason.ScoringFailed) : reducer(resolved);
-        }, metrics);
+        }, metrics)
+        { MetricsByKey = scorers.Count > 0 ? scorers[0].MetricsByKey : null };
     }
 
     /// <summary>Port of <c>multi_scorer(scorers, reducer)</c> with the reducer given by its registry name (see <see cref="Reducers.Create"/>).</summary>

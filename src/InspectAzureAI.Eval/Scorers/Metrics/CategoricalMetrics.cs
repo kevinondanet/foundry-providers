@@ -49,7 +49,10 @@ public static partial class Metrics
 
             return new ScoreValue.Dict(result);
         })
-        { Scores = MetricScores.Unreduced };
+        {
+            Scores = MetricScores.Unreduced,
+            Options = new Dictionary<string, object?>(StringComparer.Ordinal) { ["categories"] = declared, ["normalize"] = normalize },
+        };
     }
 
     /// <summary>Port of <c>categorical(categories)</c>: the default metrics of a categorical scorer, <c>[frequency(categories)]</c>.</summary>

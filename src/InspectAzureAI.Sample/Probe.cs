@@ -49,7 +49,7 @@ internal static partial class Cli
             {
                 ["name"] = r.Deployment.Name,
                 ["format"] = r.Deployment.Format,
-                ["route"] = IsAnthropicFormat(r.Deployment) ? "anthropic" : "models",
+                ["route"] = RouteFor(r.Deployment) == "anthropic" ? "anthropic" : "models",
                 ["params"] = r.Params,
             }).ToArray()),
         };
@@ -67,7 +67,7 @@ internal static partial class Cli
 
         foreach (var (deployment, entries) in results)
         {
-            Console.WriteLine($"{deployment.Name} ({deployment.Format}, {(IsAnthropicFormat(deployment) ? "/anthropic/v1/messages" : "/models/chat/completions")})  {Summary(entries)}");
+            Console.WriteLine($"{deployment.Name} ({deployment.Format}, {(RouteFor(deployment) == "anthropic" ? "/anthropic/v1/messages" : "/models/chat/completions")})  {Summary(entries)}");
             foreach (var entry in entries.OfType<JsonObject>())
             {
                 var verdict = entry["verdict"]!.GetValue<string>();
@@ -116,7 +116,9 @@ internal static partial class Cli
     /// </summary>
     internal static async Task<JsonArray> ProbeDeploymentAsync(AzureAIModelApi api, AzureAIClientSettings shared, FoundryDeployment deployment, HashSet<string>? filter, Action<string>? log)
     {
-        var anthropic = IsAnthropicFormat(deployment);
+        // TODO(responses route): the catalog probes chat-completions parameters, so OpenAI-format deployments are probed on
+        // the model-inference route even when test-all/capture would take them through /openai/v1/responses.
+        var anthropic = RouteFor(deployment) == "anthropic";
         var family = anthropic ? ModelFamilyHint.Anthropic : ReasoningParams.FamilyOf(deployment.Format, deployment.Name);
         var args = new Dictionary<string, object?>(ExtraModelArgs);
         var results = new JsonArray();
@@ -187,7 +189,7 @@ internal static partial class Cli
             args[key] = value;
         }
 
-        using var target = CreateCapturedTarget(api, shared, deployment, anthropic, args);
+        using var target = CreateCapturedTarget(api, shared, deployment, anthropic ? "anthropic" : "models", args);
         var config = new GenerateConfig { MaxTokens = spec.MaxTokens };   // no temperature: gpt-5 deployments reject anything but 1
         if (spec.Configure is not null)
         {

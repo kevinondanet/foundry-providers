@@ -90,7 +90,8 @@ public static class Eval
         }
 
         var reporter = options.Reporter;
-        var model = EvalModel(task, options);
+        var sourceModel = ResolveModel(task, options);
+        var model = EvalModel(task, sourceModel, options);
         var resolvedRoles = ModelRoles.Merge(ModelRoles.Resolve(task.ModelRoles), ModelRoles.Resolve(options.ModelRoles));
         using var modelRoles = ModelRoles.Begin(resolvedRoles);
         // Python: the eval-level policy replaces the task's (run.py), and init_tool_approval installs it (or none) for every sample
@@ -147,7 +148,7 @@ public static class Eval
             },
             Sandbox = task.Sandbox,
             Model = model.Name,
-            ModelGenerateConfig = options.Model.Config,
+            ModelGenerateConfig = sourceModel.Config,
             ModelRoles = ModelRolesConfig.ToConfig(resolvedRoles),
             Config = new EvalConfig
             {
@@ -301,7 +302,8 @@ public static class Eval
             task.Epochs?.Reducers,
             task.Metrics,
             earlyStopping: stoppingSummary,
-            completedSamples: evalSamples.Count(sample => sample.Error is null));
+            completedSamples: evalSamples.Count(sample => sample.Error is null),
+            metricsByKeyOverride: task.MetricsByKey);
         // Python's EvalLog validator recomputes tags/metadata on construction, so the returned log carries eval.metadata too
         var log = EvalLogEditing.RecomputeTagsAndMetadata(new EvalLog
         {
@@ -452,9 +454,12 @@ public static class Eval
     /// <summary>Port of <c>task.config.merge(eval config)</c>: the model's own (eval-level) config layers over the task's.</summary>
     /// <summary>
     /// Port of <c>resolve_plan</c> + <c>plan_to_eval_plan</c>: the plan the log records for <paramref name="task"/> under
-    /// <paramref name="config"/> (the task's generate config merged with the eval's). Solver delegates carry no registry
-    /// name, so the steps are named as the transcript spans are (<c>setup</c> when the task has one, then <c>solver</c>).
-    /// The eval-set task identifier hashes this same plan, so a task and the log it produced agree.
+    /// <paramref name="config"/>. Solver delegates carry no registry name, so the steps are named as the transcript
+    /// spans are (<c>setup</c> when the task has one, then <c>solver</c>). The eval-set task identifier hashes this
+    /// same plan, so a task and the log it produced agree. Deviation: Python records <c>task.config.merge(kwargs)</c>
+    /// (the task's config plus the eval-level generate kwargs, which this port has no separate surface for); the
+    /// runner records the effective config of <see cref="EvalModel"/> — the model's config with the task's layered
+    /// over it — so the plan shows what generation actually used.
     /// </summary>
     internal static EvalPlan ResolvePlan(EvalTask task, GenerateConfig config) => new()
     {
@@ -462,10 +467,24 @@ public static class Eval
         Config = config,
     };
 
-    private static Model EvalModel(EvalTask task, EvalOptions options)
+    /// <summary>
+    /// Port of <c>ResolvedTask.model = task.model or model</c> (<c>_eval/loader.py</c>): the task's own
+    /// <see cref="EvalTask.Model"/> wins, then the eval-level <see cref="EvalOptions.Model"/>; neither is an error
+    /// (Python's <c>get_model</c> raises <c>ValueError("No model specified ...")</c>).
+    /// </summary>
+    private static Model ResolveModel(EvalTask task, EvalOptions options) =>
+        task.Model
+        ?? options.Model
+        ?? throw new ArgumentException("No model specified: set EvalOptions.Model or the task's EvalTask.Model.");
+
+    /// <summary>
+    /// The model the samples generate with: <paramref name="source"/>'s api and retry policy under
+    /// <c>model.config.merge(task.config)</c> — Python's <c>Model.generate</c> layers the task's generate config over
+    /// the model's own (<c>_model.py</c> <c>base_config.merge(config)</c>), so a task value wins over the model's.
+    /// </summary>
+    private static Model EvalModel(EvalTask task, Model source, EvalOptions options)
     {
-        var source = options.Model;
-        var merged = new Model(source.Api, task.Config.Merge(source.Config), source.Retry) { AdaptiveConnections = options.AdaptiveConnections ?? source.AdaptiveConnections };
+        var merged = new Model(source.Api, source.Config.Merge(task.Config), source.Retry) { AdaptiveConnections = options.AdaptiveConnections ?? source.AdaptiveConnections };
         return source.EventSink is { } sink ? merged.WithEventSink(sink) : merged;
     }
 

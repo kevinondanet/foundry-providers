@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>InspectAzureAI.Examples</RootNamespace>
+    <AssemblyName>InspectAzureAI.Examples</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\src\InspectAzureAI.Provider\InspectAzureAI.Provider.csproj" />
+    <ProjectReference Include="..\src\InspectAzureAI.Eval\InspectAzureAI.Eval.csproj" />
+    <ProjectReference Include="..\src\InspectAzureAI.Swe\InspectAzureAI.Swe.csproj" />
+    <ProjectReference Include="..\src\InspectAzureAI.Maf\InspectAzureAI.Maf.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="InspectAzureAI.Examples.Tests" />
+  </ItemGroup>
+  <ItemGroup>
+    <!--
+      Every non-source file under an example folder (datasets, images, compose.yaml, Dockerfiles, scripts, skill
+      folders, approval policies, READMEs) travels to the output under the same relative path, so an example finds
+      its data in ExampleContext.ExampleDirectory (AppContext.BaseDirectory/<example name>). Eval logs written next
+      to the project (logs/) stay out.
+    -->
+    <None Remove="logs/**" />
+    <None Update="**/*" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

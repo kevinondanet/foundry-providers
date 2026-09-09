@@ -37,10 +37,14 @@ Verdict vocabulary used below:
 
 ## How a setting reaches the wire
 
-Two routes exist. Every deployment except Claude is served on the model-inference chat-completions
-route (`<endpoint>/models/chat/completions`, `AzureAIModelApi`). Claude deployments are served on the
+Three routes exist. Most deployments are served on the model-inference chat-completions route
+(`<endpoint>/models/chat/completions`, `AzureAIModelApi`). Claude deployments are served on the
 Anthropic Messages route (`<endpoint>/anthropic/v1/messages`, `AnthropicFoundryModelApi`) because the
-model-inference route answers `Requested API is currently not supported` for them.
+model-inference route answers `Requested API is currently not supported` for them. The gpt-5.6 family,
+gpt-5.4-pro and o-series names default to the OpenAI Responses route (`<endpoint>/openai/v1/responses`,
+`OpenAIResponsesModelApi`), because chat completions rejects function tools combined with
+`reasoning_effort` on gpt-5.6 and gpt-5.4-pro is not a chat deployment at all; `--route models` puts
+the gpt-5.6 family back on chat completions, which is where the verdicts below were measured.
 
 ### From `GenerateConfig`
 
@@ -59,9 +63,26 @@ model-inference route answers `Requested API is currently not supported` for the
 | Tool choice | `ToolChoice` argument | `auto`, `none`, `any` (sent as `required`), or a named function | `auto`, `any`, a named tool; `none` drops the tools from the request |
 | Streaming | `streaming` model arg, else on when an `onStream` consumer is installed | `stream: true`; usage arrives only if the deployment reports it (see per-model) | SSE stream; usage always reported |
 
+### The Responses route
+
+`OpenAIResponsesModelApi` bypasses the per-family `ReasoningParams` table and always speaks the Responses
+fields (`reasoning_effort` never appears in its requests):
+
+| Setting | Responses route |
+|---|---|
+| Max output tokens | `max_output_tokens` from `MaxTokens`; no default, the service decides |
+| Temperature, top-p | `temperature`, `top_p` only when reasoning is off (gpt-5.6 rejects them otherwise; dropped with a one-time warning) |
+| Reasoning effort | `reasoning.effort` verbatim (`none` included); `max` becomes `xhigh` for models before gpt-5.6; `reasoning.summary` only with `--reasoning-summary auto` (Python defaults to `auto`; the port keeps it off because other Azure organisations can get HTTP 400; the test resource accepted it and returned summary text) |
+| Reasoning budget | ignored |
+| Structured output, verbosity | `text.format` (`json_schema`) from `ResponseSchema`; `text.verbosity` |
+| Tool choice, parallel tool calls | `tool_choice` `none`, `required` or `{type: function, name}` (`auto` is not sent); `parallel_tool_calls` |
+| Stop sequences, seed, penalties, `n`, logprobs, `logit_bias`, fallback models | ignored with a one-time warning |
+| Storage | always `store: false` with `include: ["reasoning.encrypted_content"]` on reasoning models; the model arg `store=true` switches both off |
+| Model args | applied last, as on the other routes |
+
 ### Model args
 
-Any `-M key=value` (or `ModelArgs` entry from code) becomes a top-level body field on both routes, applied
+Any `-M key=value` (or `ModelArgs` entry from code) becomes a top-level body field on every route, applied
 after the derived fields so it wins on a key clash. On the chat-completions route the request carries
 `extra-parameters: pass-through` on streamed and non-streamed calls alike, otherwise the gateway rejects
 unknown fields. Four keys are reserved and never reach the body:
@@ -78,10 +99,13 @@ unknown fields. Four keys are reserved and never reach the body:
 - **Reasoning text** arrives as `ContentReasoning` items placed first on the assistant message; `Completion`
   and `Text` stay text-only. Streamed reasoning is a `StreamReasoningEvent`. On the Anthropic route thinking
   blocks carry a `signature` and are replayed unchanged on later turns; on the chat-completions route they are
-  not replayed (DeepSeek rejects an echoed `reasoning_content`).
+  not replayed (DeepSeek rejects an echoed `reasoning_content`). On the Responses route encrypted `reasoning`
+  items become redacted `ContentReasoning` (the item id as `signature`, plus a `summary` when one was asked
+  for) and are replayed through `encrypted_content`.
 - **Reasoning token counts** land in `ModelUsage.ReasoningTokens` from
   `usage.completion_tokens_details.reasoning_tokens`, or from the stream-only top-level `usage.reasoning_tokens`
-  that Kimi, DeepSeek and model-router report. The Anthropic route reports no separate count.
+  that Kimi, DeepSeek and model-router report, or from `output_tokens_details.reasoning_tokens` on the
+  Responses route. The Anthropic route reports no separate count.
 - **Multiple choices** (`n`) become `ModelOutput.Choices`.
 - **Logprobs** are not parsed into `ModelOutput`; they are only visible in the recorded raw response on the
   `ModelCall`.
@@ -96,6 +120,8 @@ saw with `--reasoning-effort medium`: `text` (reasoning text returned), `hidden`
 ### gpt-5.6-sol, gpt-5.6-luna, gpt-5.6-luna-2, gpt-5.6-terra (OpenAI, version 2026-07-09)
 
 The strictest deployments on the resource: they reason by default and refuse most sampling controls.
+These are chat-completions verdicts (`--route models`); by default these names are now served on the
+Responses route, because chat completions refuses function tools alongside `reasoning_effort`.
 
 | Feature | Verdict | Detail |
 |---|---|---|
@@ -116,6 +142,7 @@ The strictest deployments on the resource: they reason by default and refuse mos
 | verbosity | accepted | `verbosity=low` as a model arg |
 | Reasoning output | hidden | 30 to 53 reasoning tokens on the smoke check; the text is never returned |
 | Tools | yes | native `tool_calls` |
+| Tools + reasoning_effort | rejected | "Function tools with reasoning_effort are not supported for gpt-5.6-sol in /v1/chat/completions. To use function tools, use /v1/responses or set reasoning_effort to 'none'." The Responses route takes both, which is why it is now the default for these names |
 
 ### gpt-5.4-mini (OpenAI, version 2026-03-17)
 
@@ -369,7 +396,7 @@ set, so `n`, `logprobs`, `seed`, penalties and `response_format` do not exist he
 
 | Deployment | Format | What happens |
 |---|---|---|
-| gpt-5.4-pro | OpenAI | Responses-API only (`chatCompletion: false` in ARM): HTTP 400 "The requested operation is unsupported." |
+| gpt-5.4-pro | OpenAI | Responses-API only (`chatCompletion: false` in ARM): HTTP 400 "The requested operation is unsupported." on chat completions. Served on the Responses route, now its default (`--route responses`, `openai/gpt-5.4-pro`); a call can take minutes, so that route sets no HTTP timeout and the model layer's attempt timeout governs |
 | Cohere-parse-v5 | Cohere | document parsing model: HTTP 404 "Requested API is currently not supported" |
 | FLUX.2-pro | Black Forest Labs | image generation: HTTP 404 "Service request failed." on chat completions; ARM still marks it chat-capable, so use `--only` to exclude it |
 
@@ -398,7 +425,8 @@ Practical rules that fall out of the table:
 
 - **gpt-5.x**: never send `temperature` other than 1, `top_p`, `stop`, penalties or `logprobs` to gpt-5.6; gpt-5.4-mini
   takes all of those except `stop`. Both need `stream_options` for usage on a stream and `reasoning_effort` is the only
-  reasoning control.
+  reasoning control. gpt-5.6 refuses function tools together with `reasoning_effort` on chat completions; the
+  Responses route, now the default for those names, takes both.
 - **Switching reasoning off** works only on gpt-5.x (`reasoning_effort=none`). DeepSeek is off unless an effort is
   given. Kimi, Cohere, grok, MAI and model-router reason regardless of what is sent.
 - **Strict JSON schema** works everywhere on the chat-completions route except model-router and MAI-Thinking-1

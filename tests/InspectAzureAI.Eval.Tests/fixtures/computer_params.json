@@ -1,0 +1,159 @@
+{
+  "type": "object",
+  "properties": {
+    "action": {
+      "description": "The action to perform.\n- `key`: Press a key or key-combination on the keyboard.\n    - Example: execute(action=\"key\", text=\"ctrl+s\")\n    - Text can be any key name supported by xdotool's `key` such as:\n        \"Return\", \"Escape\", \"alt+Tab\", \"BackSpace\", \"Tab\", \"alt+Tab\", \"ctrl+s\", \"Up\", \"KP_0\" (for the numpad 0 key),\n        \"Insert\", \"Delete\", \"Home\", \"End\", \"Prior\", \"Next\", \"Left\", \"Up\", \"Right\", \"Down\",\n        \"F1\", \"F2\", \"F3\", \"F4\", \"F5\", \"F6\", \"F7\", \"F8\", \"F9\", \"F10\", \"F11\", \"F12\",\n        \"Shift_L\", \"Shift_R\", \"Control_L\", \"Control_R\", \"Alt_L\", \"Alt_R\", \"Scroll_Lock\", \"Num_Lock\", \"Caps_Lock\", \"Pause\",\n        \"KP_Multiply\", \"KP_Home\", \"KP_Up\", \"KP_Prior\", \"KP_Subtract\", \"KP_Left\", \"KP_Begin\", \"KP_Right\", \"KP_Add\", \"KP_End\",\"KP_Down\",\n        \"KP_Next\", \"KP_Insert\", \"KP_Delete\", \"KP_Enter\", \"KP_Divide\", \"KP_Equal\", \"KP_Decimal\",\n- 'hold_key': Hold down a key or multiple keys for a specified duration (in seconds). Supports the same syntax as `key`.\n- `type`: Type a string of text on the keyboard. If the text contains spaces, enclose it in quotes.\n    - Example: execute(action=\"type\", text=\"The crux of the biscuit is the apostrophe!\")\n- `cursor_position`: Get the current (x, y) pixel coordinate of the cursor on the screen.\n- `mouse_move`: Move the cursor to a specified (x, y) pixel coordinate on the screen.\n    - Example: execute(action=\"mouse_move\", coordinate=(100, 200))\n- `left_mouse_down`: Press the left mouse button.\n- `left_mouse_up`: Release the left mouse button.\n- `left_click`: Click the left mouse button.\n- `left_click_drag`: Click and drag the cursor to a specified (x, y) pixel coordinate on the screen.\n    - Example: execute(action=\"left_click_drag\", coordinate=(150, 250))\n- `right_click`: Click the right mouse button.\n- `middle_click`: Click the middle mouse button.\n- `back_click`: Click the 'back' mouse button.\n- `forward_click`: Click the 'forward' mouse button.\n- `double_click`: Double-click the left mouse button.\n- `triple_click`: Triple-click the left mouse button.\n- `wait`: Wait for a specified duration (in seconds).\n- `screenshot`: Take a screenshot.\n- `zoom`: Take a zoomed-in screenshot of a specified region at native resolution.\n    - Example: execute(action=\"zoom\", region=[100, 100, 500, 400])\n- `open_web_browser`: Open the web browser in full screen view.\n- `navigate`: Navigate to a URL in the browser.\n    - Example: execute(action=\"navigate\", text=\"https://example.com\")",
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "key",
+            "hold_key",
+            "type",
+            "cursor_position",
+            "mouse_move",
+            "left_mouse_down",
+            "left_mouse_up",
+            "left_click",
+            "left_click_drag",
+            "right_click",
+            "middle_click",
+            "back_click",
+            "forward_click",
+            "double_click",
+            "triple_click",
+            "scroll",
+            "wait",
+            "screenshot",
+            "zoom",
+            "open_web_browser",
+            "navigate"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "coordinate": {
+      "description": "The (x, y) pixel coordinate on the screen to which to move or drag. Required only by `action=mouse_move` and `action=left_click_drag`.",
+      "anyOf": [
+        {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "duration": {
+      "description": "The duration to wait or hold the key down for. Required only by `action=hold_key` and `action=wait`.",
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "region": {
+      "description": "The region to zoom into as [x0, y0, x1, y1] coordinates. Required only by `action=zoom`.",
+      "anyOf": [
+        {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "scroll_amount": {
+      "description": "The number of 'clicks' to scroll. Required only by `action=scroll`.",
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "scroll_direction": {
+      "description": "The direction to scroll the screen. Required only by `action=scroll`.",
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "up",
+            "down",
+            "left",
+            "right"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "start_coordinate": {
+      "description": "The (x, y) pixel coordinate on the screen from which to initiate a drag. Required only by `action=left_click_drag`.",
+      "anyOf": [
+        {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "text": {
+      "description": "The text to type or the key to press. Required when action is \"key\" or \"type\".",
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "press_enter": {
+      "description": "If True and action is \"type\", press Return after typing. Defaults to False.",
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "actions": {
+      "description": "A list of action dicts to execute sequentially (OpenAI multi-action format).",
+      "anyOf": [
+        {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": {}
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [],
+  "additionalProperties": false
+}

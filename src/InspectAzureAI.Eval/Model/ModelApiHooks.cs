@@ -2,6 +2,7 @@ using InspectAzureAI.Eval.Testing;
 using InspectAzureAI.Provider;
 using InspectAzureAI.Provider.Anthropic;
 using InspectAzureAI.Provider.Core;
+using InspectAzureAI.Provider.OpenAI;
 using InspectAzureAI.Provider.Util;
 
 namespace InspectAzureAI.Eval.Model;
@@ -16,6 +17,7 @@ internal static class ModelApiHooks
     {
         AzureAIModelApi azure => azure.ShouldRetry(ex),
         AnthropicFoundryModelApi anthropic => anthropic.ShouldRetry(ex),
+        OpenAIResponsesModelApi responses => responses.ShouldRetry(ex),
         ScriptedModelApi { ShouldRetry: { } scripted } => scripted(ex),
         FallbackModelApi fallback => ShouldRetry(fallback.Current, ex),
         _ => DefaultShouldRetry(ex),
@@ -26,8 +28,25 @@ internal static class ModelApiHooks
         AzureAIModelApi azure => azure.CollapseUserMessages(),
         // The Messages API requires strict user/assistant alternation.
         AnthropicFoundryModelApi => true,
+        // The Responses API takes any sequence of input items.
+        OpenAIResponsesModelApi => false,
         ScriptedModelApi scripted => scripted.CollapseUserMessages,
         FallbackModelApi fallback => CollapseUserMessages(fallback.Current),
+        _ => false,
+    };
+
+    /// <summary>
+    /// Port of <c>ModelAPI.supports_remote_mcp()</c>: whether the api executes remote MCP servers itself. Only the
+    /// Anthropic Messages route does (Python: anthropic and openai, except on Bedrock/Vertex); the model-inference
+    /// route has no MCP connector, the Responses route does not port the <c>mcp</c> built-in tool yet, and a
+    /// scripted api opts in with <see cref="ScriptedModelApi.SupportsRemoteMcp"/>.
+    /// </summary>
+    public static bool SupportsRemoteMcp(IModelApi api) => api switch
+    {
+        AnthropicFoundryModelApi => true,
+        OpenAIResponsesModelApi => false,
+        ScriptedModelApi scripted => scripted.SupportsRemoteMcp,
+        FallbackModelApi fallback => SupportsRemoteMcp(fallback.Current),
         _ => false,
     };
 
@@ -40,6 +59,7 @@ internal static class ModelApiHooks
     {
         AzureAIModelApi azure => $"{azure.EndpointUrl}:{azure.ModelName}",
         AnthropicFoundryModelApi anthropic => $"{anthropic.BaseUrl}:{anthropic.ModelName}",
+        OpenAIResponsesModelApi responses => $"{responses.BaseUrl}:{responses.ModelName}",
         _ => api.ConnectionKey(),
     };
 
@@ -48,6 +68,7 @@ internal static class ModelApiHooks
     {
         AzureAIModelApi azure => azure.EndpointUrl,
         AnthropicFoundryModelApi anthropic => anthropic.BaseUrl,
+        OpenAIResponsesModelApi responses => responses.BaseUrl,
         _ => null,
     };
 
@@ -60,6 +81,7 @@ internal static class ModelApiHooks
     {
         AzureAIModelApi azure => azure.IsAuthFailure(ex),
         AnthropicFoundryModelApi anthropic => anthropic.IsAuthFailure(ex),
+        OpenAIResponsesModelApi responses => responses.IsAuthFailure(ex),
         ScriptedModelApi => HttpRetryUtil.StatusCodeOf(ex) == 401,
         FallbackModelApi fallback => IsAuthFailure(fallback.Current, ex),
         _ => false,

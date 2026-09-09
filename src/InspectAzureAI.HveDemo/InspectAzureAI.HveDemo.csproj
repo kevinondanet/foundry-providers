@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>InspectAzureAI.HveDemo</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\InspectAzureAI.Provider\InspectAzureAI.Provider.csproj" />
+    <ProjectReference Include="..\InspectAzureAI.Eval\InspectAzureAI.Eval.csproj" />
+    <ProjectReference Include="..\InspectAzureAI.Swe\InspectAzureAI.Swe.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- The dataset, the per-sample workspaces, the vendored HVE Core plugin, the reference solutions (fake mode)
+         and the sandbox Dockerfile travel next to the executable. The explicit Include bypasses the default item
+         excludes, which would drop the dot-directories (.github, .copilot-tracking) the samples depend on. -->
+    <None Remove="hve/**" />
+    <None Include="hve/**" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="InspectAzureAI.HveDemo.Tests" />
+  </ItemGroup>
+</Project>

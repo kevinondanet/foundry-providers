@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>InspectAzureAI.Examples.Tests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\InspectAzureAI.Provider\InspectAzureAI.Provider.csproj" />
+    <ProjectReference Include="..\..\src\InspectAzureAI.Eval\InspectAzureAI.Eval.csproj" />
+    <ProjectReference Include="..\..\src\InspectAzureAI.Swe\InspectAzureAI.Swe.csproj" />
+    <ProjectReference Include="..\..\src\InspectAzureAI.Maf\InspectAzureAI.Maf.csproj" />
+    <ProjectReference Include="..\..\examples\InspectAzureAI.Examples.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      The examples' data files (approval/approval.json, datasets, compose files, ...) are linked into the test output
+      under the same relative paths as the examples project uses, so a test reads them from
+      Path.Combine(AppContext.BaseDirectory, "<example>", "<file>") exactly as ExampleContext.ExampleDirectory would.
+    -->
+    <None Include="..\..\examples\**\*"
+          Exclude="..\..\examples\**\*.cs;..\..\examples\**\*.csproj;..\..\examples\bin\**;..\..\examples\obj\**;..\..\examples\logs\**"
+          Link="%(RecursiveDir)%(Filename)%(Extension)"
+          CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

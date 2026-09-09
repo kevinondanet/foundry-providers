@@ -15,7 +15,11 @@ using Model = InspectAzureAI.Eval.Model.Model;
 /// </summary>
 public sealed record EvalOptions
 {
-    public required Model Model { get; init; }
+    /// <summary>
+    /// Port of <c>model</c>: the eval-level model. Optional because a task may carry its own <c>EvalTask.Model</c>,
+    /// which wins when set (Python's <c>ResolvedTask.model = task.model or model</c>); a run with neither is an error.
+    /// </summary>
+    public Model? Model { get; init; }
 
     /// <summary>Port of <c>limit</c>: run only the first N samples (ignored when <see cref="SampleIds"/> is given, as in Python).</summary>
     public int? Limit { get; init; }

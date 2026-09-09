@@ -8,6 +8,8 @@ using InspectAzureAI.Provider.Core;
 
 namespace InspectAzureAI.Eval.Tasks;
 
+using Model = InspectAzureAI.Eval.Model.Model;
+
 /// <summary>
 /// Port of <c>_eval/task/task.py</c> <c>Task</c> (the subset the runner consumes): dataset, setup and main
 /// solvers, scorers with optional metric overrides, generation config, sandbox, epochs, limits and identity.
@@ -26,7 +28,19 @@ public sealed record EvalTask
 
     public IReadOnlyList<ScorerDef> Scorers { get; init; } = [];
 
+    /// <summary>
+    /// Port of <c>Task.metrics</c> (<c>list[Metric | dict[str, list[Metric]]]</c>): when set, replaces the metrics every
+    /// scorer declares — its list part here, its dictionary part in <see cref="MetricsByKey"/>. Either one being set
+    /// replaces both of a scorer's <see cref="ScorerDef.Metrics"/> and <see cref="ScorerDef.MetricsByKey"/>.
+    /// </summary>
     public IReadOnlyList<MetricDef>? Metrics { get; init; }
+
+    /// <summary>
+    /// The dictionary part of a task-level <c>metrics</c> override (Python's <c>metrics={...}</c> or the trailing dict of
+    /// <c>metrics=[..., {...}]</c>): per-key metrics applied to every scorer, as <see cref="ScorerDef.MetricsByKey"/>.
+    /// Alone (no <see cref="Metrics"/>) it is the dictionary form, producing only per-key scores.
+    /// </summary>
+    public MetricDict? MetricsByKey { get; init; }
 
     public GenerateConfig Config { get; init; } = new();
 
@@ -70,6 +84,13 @@ public sealed record EvalTask
     /// tasks sharing a name are told apart by their args.
     /// </summary>
     public IReadOnlyDictionary<string, object?>? TaskArgs { get; init; }
+
+    /// <summary>
+    /// Port of <c>Task.model</c>: the default model for this task. Resolved as Python does
+    /// (<c>ResolvedTask.model = task.model or model</c>): when set it is used ahead of the eval-level
+    /// <c>EvalOptions.Model</c>; when null the eval-level model applies, and neither being set fails the run.
+    /// </summary>
+    public Model? Model { get; init; }
 
     /// <summary>Port of <c>Task.model_roles</c>: role name → a model name, a <c>Model</c>, or a list of these (eval-level roles override these per role).</summary>
     public IReadOnlyDictionary<string, object>? ModelRoles { get; init; }

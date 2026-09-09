@@ -1,4 +1,5 @@
 using InspectAzureAI.Eval.Context;
+using InspectAzureAI.Eval.Model.Cache;
 using InspectAzureAI.Eval.Tools;
 using InspectAzureAI.Provider.Core;
 
@@ -62,9 +63,12 @@ public static partial class Solvers
         };
     }
 
-    /// <summary>Port of the <c>generate()</c> solver: defers to the runner's <see cref="Generate"/> delegate.</summary>
-    public static Solver Generate(ToolCallsMode toolCalls = ToolCallsMode.Loop, GenerateConfig? config = null) =>
-        (state, generate, cancellationToken) => generate(state, toolCalls, config, cancellationToken);
+    /// <summary>
+    /// Port of the <c>generate()</c> solver: defers to the runner's <see cref="Generate"/> delegate.
+    /// <paramref name="cache"/> is Python's <c>cache</c> kwarg (<c>true</c> converts to <see cref="CachePolicy.Default"/>).
+    /// </summary>
+    public static Solver Generate(ToolCallsMode toolCalls = ToolCallsMode.Loop, GenerateConfig? config = null, CachePolicy? cache = null) =>
+        (state, generate, cancellationToken) => generate(state, toolCalls, config, cache, cancellationToken);
 
     /// <summary>Port of the <c>Chain</c> class; kept as an object so nested chains can be recognised and unrolled.</summary>
     private sealed class ChainSolver(IReadOnlyList<Solver> solvers)

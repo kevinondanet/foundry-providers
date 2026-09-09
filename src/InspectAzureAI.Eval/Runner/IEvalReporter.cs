@@ -45,7 +45,7 @@ public sealed class ConsoleEvalReporter(TextWriter? writer = null) : IEvalReport
         var outcome = sample.Error is { } error
             ? $"error: {FirstLine(error.Message)}"
             : sample.Scores is { Count: > 0 } scores
-                ? string.Join(", ", scores.Select(pair => $"{pair.Key}={pair.Value.Text}"))
+                ? string.Join(", ", scores.Select(pair => $"{pair.Key}={ScoreText(pair.Value.Value)}"))
                 : "no scores";
         if (sample.Limit is { } limit)
         {
@@ -56,6 +56,10 @@ public sealed class ConsoleEvalReporter(TextWriter? writer = null) : IEvalReport
     }
 
     public void Message(string text) => Write(text);
+
+    /// <summary>A score value for the progress line: scalars as their text, list and dict values as compact JSON (<c>ScoreValue.Text</c> throws for those).</summary>
+    private static string ScoreText(InspectAzureAI.Eval.Scorers.ScoreValue value) =>
+        value is InspectAzureAI.Eval.Scorers.ScoreValue.List or InspectAzureAI.Eval.Scorers.ScoreValue.Dict ? value.ToJson()?.ToJsonString() ?? "null" : value.Text;
 
     /// <summary>
     /// Port of the footer's <c>HTTP retries: N  out tok/s: R</c> counters plus the connection status entries:

@@ -21,6 +21,27 @@ public class MaxCompletionTokensTests
     }
 
     [Fact]
+    public void microsoft_family_sends_max_completion_tokens_without_the_arg()
+    {
+        using var env = EnvScope.Clean();
+        var byName = Fixtures.Api("MAI-Thinking-1");
+        var byFormat = Fixtures.Api("thinking-1", modelArgs: new Dictionary<string, object?> { ["model_format"] = "Microsoft" });
+
+        foreach (var api in new[] { byName, byFormat })
+        {
+            var parameters = api.CompletionParams(new GenerateConfig { MaxTokens = 100 });
+
+            Assert.False(api.ForceMaxCompletionTokens);
+            Assert.True(api.SendsMaxCompletionTokens);
+            Assert.Equal(100, parameters["max_completion_tokens"]!.GetValue<int>());
+            Assert.False(parameters.ContainsKey("max_tokens"));
+        }
+
+        Assert.False(Fixtures.Api("gpt-4o").SendsMaxCompletionTokens);
+        Assert.False(Fixtures.Api("DeepSeek-V4-Flash").SendsMaxCompletionTokens);
+    }
+
+    [Fact]
     public void false_model_arg_keeps_the_python_name_rule()
     {
         using var env = EnvScope.Clean();

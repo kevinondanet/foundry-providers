@@ -1,0 +1,139 @@
+{
+  "question": "How do developers use providers, and how do adapters handle Foundry's different model families and communication methods?",
+  "audience": "technical — explicitly requested provider/API usage and architecture",
+  "delivery": "portable HTML in Codex desktop; a local source artifact is supporting material, not a second delivery mode",
+  "spine": "Keep a shared application contract, select by operation and wire protocol, apply verified model/version-specific capabilities, preserve evidence, and migrate the legacy SDK integration deliberately.",
+  "required_structure_mapping": {
+    "Title": "title",
+    "Technical summary": "summary",
+    "Key findings with visual evidence": "routes, wire, families, ownership, rerun-results tables with adjacent prose",
+    "Scope, data, metric definitions": "scope and evidence-intro; moved before affected evidence",
+    "Methodology": "quickstart, csharp, translation-intro, capabilities, extension; adapted to a developer guide",
+    "Limitations and robustness": "scope, routes-notes, retry-details, evidence-limits, and per-family boundaries",
+    "Recommended next steps": "next-steps",
+    "Further questions": "last paragraph of next-steps; merged to keep the guide action-oriented"
+  },
+  "table_contracts": {
+    "routes": {
+      "type": "native table",
+      "source_ids": [
+        "azure",
+        "anthropic",
+        "sdk",
+        "endpoints",
+        "responses",
+        "models",
+        "flux",
+        "realtime",
+        "compute"
+      ],
+      "rows": 10,
+      "reason": "Exact categorical route/field/capability/responsibility/outcome lookup. No meaningful continuous numeric relationship; charts would obscure the needed details.",
+      "color_policy": "Shared reader neutral table styling; no outcome expressed by color alone.",
+      "qa": "Canonical packaged-reader verifier at desktop and narrow width; source-dialog and overflow checks."
+    },
+    "wire": {
+      "type": "native table",
+      "source_ids": [
+        "azure",
+        "anthropic",
+        "tools",
+        "responses",
+        "inference-rest"
+      ],
+      "rows": 9,
+      "reason": "Exact categorical route/field/capability/responsibility/outcome lookup. No meaningful continuous numeric relationship; charts would obscure the needed details.",
+      "color_policy": "Shared reader neutral table styling; no outcome expressed by color alone.",
+      "qa": "Canonical packaged-reader verifier at desktop and narrow width; source-dialog and overflow checks."
+    },
+    "families": {
+      "type": "native table",
+      "source_ids": [
+        "reasoning",
+        "azure",
+        "anthropic",
+        "messages",
+        "names",
+        "demo-azure"
+      ],
+      "rows": 10,
+      "reason": "Exact categorical route/field/capability/responsibility/outcome lookup. No meaningful continuous numeric relationship; charts would obscure the needed details.",
+      "color_policy": "Shared reader neutral table styling; no outcome expressed by color alone.",
+      "qa": "Canonical packaged-reader verifier at desktop and narrow width; source-dialog and overflow checks."
+    },
+    "ownership": {
+      "type": "native table",
+      "source_ids": [
+        "contract",
+        "runtime",
+        "azure",
+        "anthropic",
+        "auth",
+        "demo"
+      ],
+      "rows": 6,
+      "reason": "Exact categorical route/field/capability/responsibility/outcome lookup. No meaningful continuous numeric relationship; charts would obscure the needed details.",
+      "color_policy": "Shared reader neutral table styling; no outcome expressed by color alone.",
+      "qa": "Canonical packaged-reader verifier at desktop and narrow width; source-dialog and overflow checks."
+    },
+    "rerun-results": {
+      "type": "native table",
+      "source_ids": [
+        "rerun",
+        "rerun-audit"
+      ],
+      "rows": 7,
+      "reason": "Exact categorical route/field/capability/responsibility/outcome lookup. No meaningful continuous numeric relationship; charts would obscure the needed details.",
+      "color_policy": "Shared reader neutral table styling; no outcome expressed by color alone.",
+      "qa": "Canonical packaged-reader verifier at desktop and narrow width; source-dialog and overflow checks."
+    }
+  },
+  "chart_contract": {
+    "question": "Where did the 21 deployment checks finish or fail?",
+    "takeaway": "Most completed the chosen workflow; the failures separate route mismatch, timeout, and rate limits.",
+    "family": "Comparison & Ranking",
+    "type": "bar",
+    "data": "four outcome categories computed from the saved manifest and 16-model audit; denominator 21",
+    "numeric_axis": "deployment count, zero baseline",
+    "palette": "shared reader blue and neutral tokens; category labels distinguish outcomes without relying on color",
+    "footprint": "full-width report chart with adjacent definition and limitation",
+    "source": "rerun",
+    "reason_added": "Portable report contract requires a native chart; a factual outcome distribution supports the integration discussion without ranking model quality."
+  },
+  "analysis_notes": [
+    "No new model inference, deployment discovery, or reasoning parameter probes performed for this report.",
+    "Local source is a working tree with pre-existing uncommitted demo changes. Source was read, not edited.",
+    "Microsoft documentation is a current lookup, not a retroactive replacement of the September 7 observed results.",
+    "Do not confuse full-library retry classification with demo timeout/backoff behavior.",
+    "Current Azure message converter rejects audio/video despite common content types existing.",
+    "Current family comments contain historical probe claims; labeled as such, not independently revalidated.",
+    "Catalog/documentation variants can differ by new versus classic portal. Managed compute details use the dedicated current preview article.",
+    "Responses support for gpt-5.4-pro is documented but was not live-tested in this report.",
+    "The C# helper compiled without errors or warnings; compilation made no inference call.",
+    "No live ranking chart: three tiny samples with a known grader false positive do not support meaningful model rankings."
+  ],
+  "git_head": "bb1ea7745442a68e8a1d887c74124c9a7b006e22",
+  "source_sha256": {
+    "src/InspectAzureAI.Provider/AzureAIModelApi.cs": "93f7f79ac51bebc94e42193c340d47080209bbc765999bcd8f86624460a08638",
+    "src/InspectAzureAI.Provider/Anthropic/AnthropicFoundryModelApi.cs": "25d5a58c251efd5e112062948cddb33219233e865bd185d6d5bf7ba3dd6ed4d5",
+    "src/InspectAzureAI.Provider/Core/IModelApi.cs": "cc454df10287aa0f742c1609e10876ef5c353ad5d85d299239b0b990fbe85e97",
+    "src/InspectAzureAI.Provider/Util/ReasoningParams.cs": "88c8c9c4100e135026bdeb00ac094130a21af073990fa04ae7bd615d4ef180f4",
+    "src/InspectAzureAI.Provider/Util/OpenAIUtil.cs": "f42efbbdb2d023aa78d2e669017bd3c51d1703acba6dce5a18da916ca907dd66",
+    "src/InspectAzureAI.Provider/Tools/AzureMessageConversion.cs": "366e42a7901131d957d49638196268f1c232fcc0a9d8067e0a873dc243b6a060",
+    "src/InspectAzureAI.Provider/Tools/AzureToolConversion.cs": "80edc1196f1f986871092d1f6c42681d2632acb0139260dbfe28c2634f35b5d0",
+    "src/InspectAzureAI.Provider/Util/AzureHosting.cs": "0905bfa6f266ca4d506246d8eed93184ed5911eff31c7cfd8bfcb9b7640a9c13",
+    "src/InspectAzureAI.Provider/Foundry/FoundryCatalog.cs": "53a8039b2705ab0826d43aa828ff761382ab6d096f7b94b2617e43fac4483914",
+    "src/InspectAzureAI.ModelMatrix/DeploymentSelection.cs": "cb0fbaeeb22a429a82ed68c3b94ecc5851cc41b8bb28775586c65606a6192860",
+    "src/InspectAzureAI.Eval/Model/FoundryModels.cs": "97feeb4c345616cf1cf684c97e614262383ac31bc3dda42bbf09c5c35bb7127d",
+    "src/InspectAzureAI.Eval/Model/Model.cs": "e9fe0af9a87b9715e78d392d9a072974a7977c0e29f7fdcd791ce5516f761b8a",
+    "src/InspectAzureAI.Provider/Foundry/ParameterProbes.cs": "006858b3e955342549a12ee284f38a965a09d03b36c5c6287a1ca4ba65a41dbf",
+    "src/InspectAzureAI.Sample/Program.cs": "a1a184196df4d5049a360a0ff92b884cf1cea304efa04b2051af220d3a0ca4c8",
+    "src/InspectAzureAI.LayersDemo/README.md": "f5846712095f5bec5cd19395e8ed985c544e1ee3d91281c8263cbe18c97a77ba",
+    "src/InspectAzureAI.LayersDemo/Layer6_Providers/AzureAIProvider.cs": "11e1c00231975c370aec4871af62d982fbb49e9c2667786e37c75b0493a114fe",
+    "src/InspectAzureAI.LayersDemo/Layer5_Model/Model.cs": "787126f6b71ce9f6b850e3040471b2eed3872ebaeae3b09108d9abef5b362f8a",
+    "src/logs/expenses-astra-2026-09-07/run-manifest.json": "987dbb60003fdbb232f3ffe4fc293966cb2ef607f16b358dd8a536b930681a3e",
+    "src/logs/expenses-astra-2026-09-07/main-audit.json": "d9875f4d68c00aa5755dd092cd0eae785ea7b9450ae08693449697ffbf972a21",
+    "src/logs/expenses-astra-2026-09-07/SUMMARY.md": "f3723ea1866d7bac532652602e4c50c77ebac20fd4250c162317244241bfd100"
+  },
+  "docs_retrieved_utc": "2026-09-08T14:02:27.641223+00:00"
+}

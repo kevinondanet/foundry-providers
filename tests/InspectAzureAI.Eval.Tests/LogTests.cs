@@ -30,7 +30,7 @@ public class LogTests
     {
         var toolCall = new ToolCall("call_1", "bash", new JsonObject { ["cmd"] = "ls" });
         var assistant = new ChatMessageAssistant(
-            new Content[] { new ContentReasoning("let me look", "sig", false), new ContentText("Listing files.") },
+            new Content[] { new ContentReasoning("let me look", "sig", false) { Summary = "looking" }, new ContentText("Listing files.") },
             toolCalls: [toolCall],
             model: "gpt",
             source: "generate");
@@ -216,6 +216,7 @@ public class LogTests
         var reasoning = Assert.IsType<ContentReasoning>(assistant.Content.Items![0]);
         Assert.Equal("let me look", reasoning.Reasoning);
         Assert.Equal("sig", reasoning.Signature);
+        Assert.Equal("looking", reasoning.Summary);
         Assert.Equal("Listing files.", assistant.Text);
         var call = Assert.Single(assistant.ToolCalls!);
         Assert.Equal("call_1", call.Id);

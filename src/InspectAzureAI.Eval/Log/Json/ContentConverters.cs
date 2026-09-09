@@ -21,7 +21,10 @@ internal sealed class ContentConverterFactory : JsonConverterFactory
         return type switch
         {
             "text" => new ContentText(GetString(element, "text") ?? "") { Refusal = GetBool(element, "refusal"), Citations = ReadCitations(element) },
-            "reasoning" => new ContentReasoning(GetString(element, "reasoning") ?? "", GetString(element, "signature"), GetBool(element, "redacted") ?? false),
+            "reasoning" => new ContentReasoning(GetString(element, "reasoning") ?? "", GetString(element, "signature"), GetBool(element, "redacted") ?? false)
+            {
+                Summary = GetString(element, "summary"),
+            },
             "image" => new ContentImage(GetString(element, "image") ?? "", GetString(element, "detail") ?? "auto"),
             "audio" => new ContentAudio(GetString(element, "audio") ?? "", GetString(element, "format") ?? ""),
             "video" => new ContentVideo(GetString(element, "video") ?? "", GetString(element, "format") ?? ""),
@@ -67,6 +70,11 @@ internal sealed class ContentConverterFactory : JsonConverterFactory
                 }
 
                 writer.WriteBoolean("redacted", reasoning.Redacted);
+                if (reasoning.Summary is { } summary)
+                {
+                    writer.WriteString("summary", summary);
+                }
+
                 break;
             case ContentImage image:
                 writer.WriteString("image", image.Image);

@@ -54,16 +54,17 @@ public static class Scorers
 
     /// <summary>
     /// Ask a model whether the answer contains the facts in the target
-    /// (Python: model_graded_fact()). The grader is the eval's own model,
-    /// found through get_model() with no name; a task may pass a different
-    /// one in Python, but the mechanism is the same: a scorer holds a Model
-    /// and calls generate() on it, and layer 5 records the ModelEvent.
+    /// (Python: model_graded_fact()). The grader is whatever the run bound to
+    /// the "grader" role (`--model-role grader=...`), else the eval's own
+    /// model; either way the scorer asks get_model() and never names a
+    /// provider. It holds a Model, calls generate() on it, and layer 5
+    /// records the ModelEvent like any other call.
     /// </summary>
     [Scorer("model_graded_fact")]
     public static Scorer model_graded_fact() => async (state, target) =>
     {
         var answer = state.Output?.Message.Content ?? "";
-        var grader = Models.get_model();   // -> layer 5: the active model, whichever provider it came from
+        var grader = Models.get_model(role: "grader");   // -> layer 5: the bound grader, else the active model
         Display.Step("L4 scorer", $"model_graded_fact: asking {grader.Name} to compare the answer with the target");
 
         var prompt = $"""

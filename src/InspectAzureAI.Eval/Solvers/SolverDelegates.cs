@@ -1,3 +1,4 @@
+using InspectAzureAI.Eval.Model.Cache;
 using InspectAzureAI.Provider.Core;
 
 namespace InspectAzureAI.Eval.Solvers;
@@ -15,11 +16,16 @@ public enum ToolCallsMode
     None,
 }
 
-/// <summary>Port of <c>solver/_solver.py</c> <c>Generate</c>: generate with the task model and add the assistant message (and any tool results) to the state.</summary>
+/// <summary>
+/// Port of <c>solver/_solver.py</c> <c>Generate</c>: generate with the task model and add the assistant message
+/// (and any tool results) to the state. <paramref name="cache"/> is Python's <c>cache</c> kwarg (<c>true</c>
+/// converts to <see cref="CachePolicy.Default"/>); null leaves the choice to <see cref="GenerateConfig.Cache"/>.
+/// </summary>
 public delegate Task<TaskState> Generate(
     TaskState state,
     ToolCallsMode toolCalls = ToolCallsMode.Loop,
     GenerateConfig? config = null,
+    CachePolicy? cache = null,
     CancellationToken cancellationToken = default);
 
 /// <summary>Port of <c>solver/_solver.py</c> <c>Solver</c>: transforms a <see cref="TaskState"/>, optionally calling <paramref name="generate"/>.</summary>

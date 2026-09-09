@@ -1,0 +1,95 @@
+{
+  "minimum": 3,
+  "expected_verdict": "request_changes",
+  "patch": ".copilot-tracking/pr/pr-reference.patch",
+  "defects": [
+    {
+      "id": "tier-boundary",
+      "file": "shop/cart.py",
+      "lines": [
+        27,
+        29
+      ],
+      "patterns": [
+        ">=",
+        "\\bboundar",
+        "off[- ]by[- ]one",
+        "\\bexactly (10|5)\\b",
+        "quantity > minimum",
+        "\\binclusive\\b",
+        "\\bstrict(ly)? greater\\b"
+      ],
+      "description": "Uses > instead of >= so a cart with exactly 10 (or 5) items gets no discount, violating the documented contract."
+    },
+    {
+      "id": "empty-cart-division",
+      "file": "shop/cart.py",
+      "lines": [
+        33,
+        35
+      ],
+      "patterns": [
+        "zero ?division",
+        "divi(de|sion) by zero",
+        "\\bempty\\b",
+        "len\\(lines\\)",
+        "\\bno lines\\b"
+      ],
+      "description": "Divides by len(lines) with no guard; an empty cart raises ZeroDivisionError."
+    },
+    {
+      "id": "mutable-default-shared-state",
+      "file": "shop/cart.py",
+      "lines": [
+        38,
+        41
+      ],
+      "patterns": [
+        "mutable default",
+        "default (argument|parameter|value)",
+        "\\bshared\\b",
+        "accumulat",
+        "extra\\.append",
+        "\\bmutat"
+      ],
+      "description": "extra=[] default is mutated (extra.append) so lines accumulate across calls."
+    },
+    {
+      "id": "tax-before-discount",
+      "file": "shop/cart.py",
+      "lines": [
+        57,
+        59
+      ],
+      "patterns": [
+        "\\btax\\b.*\\b(before|prior to|first|pre-?discount)\\b",
+        "\\bdiscount\\b.*\\b(after|before)\\b.*\\btax\\b",
+        "discounted amount",
+        "order of operations",
+        "\\btax(ed)?\\b.*\\bsubtotal\\b"
+      ],
+      "description": "Tax is applied to the pre-discount subtotal; the contract says tax is charged on the discounted amount."
+    },
+    {
+      "id": "swallowed-exception",
+      "file": "shop/cart.py",
+      "lines": [
+        60,
+        61
+      ],
+      "patterns": [
+        "except Exception",
+        "\\bswallow",
+        "return(s|ing)? 0\\.0",
+        "\\bsilent",
+        "\\bmask",
+        "\\bhides?\\b",
+        "broad except",
+        "catch-?all",
+        "bare except",
+        "free order"
+      ],
+      "description": "Broad except returns 0.0, hiding real errors (a total of 0 looks like a free order)."
+    }
+  ]
+}

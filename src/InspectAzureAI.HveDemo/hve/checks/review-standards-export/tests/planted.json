@@ -1,0 +1,109 @@
+{
+  "minimum": 4,
+  "expected_verdict": "request_changes",
+  "patch": ".copilot-tracking/pr/pr-reference.patch",
+  "defects": [
+    {
+      "id": "hard-coded-secret",
+      "file": "reporting/export.py",
+      "lines": [
+        6,
+        6
+      ],
+      "patterns": [
+        "\\bsecret",
+        "api[_ ]?token",
+        "hard-?coded",
+        "credential"
+      ],
+      "description": "Hard-coded secret token (python-foundational section 6)."
+    },
+    {
+      "id": "eval-untrusted",
+      "file": "reporting/export.py",
+      "lines": [
+        17,
+        18
+      ],
+      "patterns": [
+        "\\beval\\b",
+        "code (injection|execution)",
+        "arbitrary code"
+      ],
+      "description": "eval on filter expressions (python-foundational section 6)."
+    },
+    {
+      "id": "bare-except",
+      "file": "reporting/export.py",
+      "lines": [
+        15,
+        16
+      ],
+      "patterns": [
+        "bare\\s+`?except",
+        "except:",
+        "broad except",
+        "\\bsilent",
+        "\\bswallow",
+        "catch-?all"
+      ],
+      "description": "Bare except with silent failure (python-foundational section 5)."
+    },
+    {
+      "id": "mutable-default",
+      "file": "reporting/export.py",
+      "lines": [
+        9,
+        9
+      ],
+      "patterns": [
+        "mutable default",
+        "filters=\\[\\]",
+        "default (argument|parameter|value)"
+      ],
+      "description": "Mutable default argument (python-foundational section 2)."
+    },
+    {
+      "id": "print-logging",
+      "file": "reporting/export.py",
+      "lines": null,
+      "patterns": [
+        "\\bprint\\b",
+        "\\blogging\\b",
+        "\\blogger\\b"
+      ],
+      "description": "print instead of structured logging (python-foundational section 7)."
+    },
+    {
+      "id": "os-path-and-no-with",
+      "file": "reporting/export.py",
+      "lines": [
+        23,
+        26
+      ],
+      "patterns": [
+        "pathlib",
+        "os\\.path",
+        "with statement",
+        "context manager",
+        "\\bwith\\b.*\\bopen\\b",
+        "f\\.close",
+        "unmanaged",
+        "file handle"
+      ],
+      "description": "os.path instead of pathlib and open() without with (python-foundational section 2)."
+    },
+    {
+      "id": "missing-type-hints",
+      "file": "reporting/export.py",
+      "lines": null,
+      "patterns": [
+        "type hint",
+        "annotation",
+        "\\btyped\\b",
+        "\\buntyped\\b"
+      ],
+      "description": "Public functions lack type hints (python-foundational section 4)."
+    }
+  ]
+}

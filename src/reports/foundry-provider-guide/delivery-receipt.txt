@@ -1,0 +1,5 @@
+
+> datascience-mcp-widgets@0.2.10 report:deliver
+> node skills/build-report/scripts/deliver_portable_artifact.mjs --input /Users/kevinburrowes/Documents/code/inspect-azureai-dotnet/src/reports/foundry-provider-guide/artifact.json --output /Users/kevinburrowes/Documents/code/inspect-azureai-dotnet/src/reports/foundry-provider-guide/report.html
+
+{"ok":true,"html":"/Users/kevinburrowes/Documents/code/inspect-azureai-dotnet/src/reports/foundry-provider-guide/report.html","stages":{"validation":"passed","package":"passed","verification":"passed"},"counts":{"blocks":24,"charts":1,"html":0,"metrics":0,"tables":5},"sourceDialog":"passed","sourceInteraction":"keyboard_menu_semantic_click","viewports":[1440,390],"timings":{"validateAndPackageMs":1778.8,"staticChartExtractionMs":1671.5,"browserRunMs":868.4,"readerReadyMs":81.4,"contentChecksMs":32.1,"sourceDialogMs":32,"responsiveChecksMs":32,"verificationMs":890.3,"totalMs":2675}}

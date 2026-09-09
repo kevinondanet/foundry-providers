@@ -1,0 +1,136 @@
+[
+  {
+    "id": "implement-slugify",
+    "input": "Implement `slugify(text: str, *, max_length: int | None = None) -> str` in `textkit/slug.py` so that `python3 -m unittest discover -s tests` passes. Follow this repository's Python instructions (`.github/instructions/python-script.instructions.md`: type hints, docstrings, pathlib, no print) and load the `python-foundational` skill as your checklist before writing code. The sandbox has python3, bash, git and coreutils; uv is not installed, so use python3 directly and do not create a virtual environment. Do not ask questions; finish the task.",
+    "target": "textkit/slug.py exists, is importable, and tests/test_slugify.py passes (7 tests: lowercase, hyphenation, separator collapsing, accent stripping, digits, max_length word-boundary cut, empty input, TypeError on non-str).",
+    "metadata": {
+      "kind": "implement",
+      "agent": null,
+      "artefact": "textkit/slug.py",
+      "hve_components": [
+        "instructions/python-script",
+        "skill/python-foundational"
+      ],
+      "check": "python3 -m unittest discover -s tests -q",
+      "rubric": "Full credit when the check passes. Deduct when the module has no type hints or docstring, uses print, or ignores the keyword-only max_length contract."
+    }
+  },
+  {
+    "id": "implement-config-loader-rpi",
+    "input": "Use automatic mode for the current task and make ordinary Research, Plan, Review, and follow-up decisions; this is explicit mode authorization, do not ask for mode confirmation. Task: implement `configkit` so that `from configkit import Config, ConfigError, load_config` works and `python3 -m unittest discover -s tests` passes. `load_config(path, env=None)` reads a TOML file (stdlib `tomllib`) into a frozen `Config` dataclass with `server` (host, port:int) and `logging` (level, normalised to upper case) sections, applies `APP_<SECTION>_<KEY>` overrides from `env` with type coercion, and raises `ConfigError` (naming the file) for a missing file or a non-integer port. Follow the repository Python instructions. Keep the RPI tracking artifacts under `.copilot-tracking/`. The sandbox has python3, bash, git and coreutils; uv is not installed, so use python3 directly and do not create a virtual environment. Do not ask questions; finish the task.",
+    "target": "configkit package exposing Config, ConfigError, load_config; tests/test_config.py passes (5 tests). .copilot-tracking/ contains RPI research, plan and changes artifacts produced by the rpi-agent lifecycle.",
+    "metadata": {
+      "kind": "implement",
+      "agent": "hve-core:rpi-agent",
+      "artefact": "configkit/__init__.py",
+      "hve_components": [
+        "agent/rpi-agent",
+        "skill/rpi-research",
+        "skill/rpi-plan",
+        "skill/rpi-implement",
+        "skill/rpi-review",
+        "instructions/python-script",
+        "instructions/copilot-tracking"
+      ],
+      "check": "python3 -m unittest discover -s tests -q",
+      "rubric": "Full credit when the check passes. Partial credit when the RPI artifacts (.copilot-tracking/research, plans, changes) exist and describe the work even if a test fails. Deduct when the agent stops to ask a question instead of proceeding in automatic mode."
+    }
+  },
+  {
+    "id": "implement-rotate-logs-sh",
+    "input": "Create `scripts/rotate-logs.sh` following `.github/instructions/bash.instructions.md` (shebang `#!/usr/bin/env bash`, header comment, `set -euo pipefail`, a `main` function invoked as `main \"$@\"`, ShellCheck-clean). Usage: `rotate-logs.sh <dir> <keep>` deletes all but the newest `<keep>` `*.log` files in `<dir>` (by modification time), prints `deleted: <path>` for each removed file, leaves non-log files alone, and exits non-zero with a message on stderr when `<dir>` does not exist or arguments are missing. Make it executable. Run `bash tests/test_rotate.sh` to verify. The sandbox has python3, bash, git and coreutils; uv is not installed, so use python3 directly and do not create a virtual environment. Do not ask questions; finish the task.",
+    "target": "scripts/rotate-logs.sh is executable, passes bash -n, contains the strict-mode line and a main function, and tests/test_rotate.sh prints PASS.",
+    "metadata": {
+      "kind": "implement",
+      "agent": null,
+      "artefact": "scripts/rotate-logs.sh",
+      "hve_components": [
+        "instructions/bash"
+      ],
+      "check": "bash tests/test_rotate.sh",
+      "rubric": "Full credit when the check passes. Deduct for missing header comment, missing usage function, or unquoted variables."
+    }
+  },
+  {
+    "id": "review-functional-cart",
+    "input": "You are running as the Code Review Functional perspective in workflow (automation) mode; do not pause for a human. The orchestrator has already prepared `.copilot-tracking/reviews/code-reviews/feat-volume-discounts/diff-state.json` and the diff at the `diffPatchPath` it names (a unified diff of `shop/cart.py`; the full file is also in the workspace). Follow your Skill Reference Contract: load the `code-review` skill and read `SKILL.md`, `references/lens-checklists.md`, `references/depth-tiers.md`, `references/severity-taxonomy.md` and `references/output-formats.md` from it, then review the diff for functional correctness (logic, edge cases, error handling, concurrency, contract) at the `depthTier` in diff-state.json and write `<findingsFolder>/functional-findings.json` using the output contract. Set every finding's `skill` to null. Do not write a markdown report.",
+    "target": "functional-findings.json in the findings folder with verdict request_changes and findings covering at least 3 of: (1) discount_rate uses > instead of >= so exactly 10 or 5 items get no discount; (2) average_unit_price divides by zero on an empty cart; (3) merge_lines mutates its extra=[] default so lines accumulate across calls; (4) total applies tax before the discount, contradicting the documented contract; (5) total swallows every exception and returns 0.0.",
+    "metadata": {
+      "kind": "review",
+      "agent": "hve-core:code-review-functional",
+      "artefact": ".copilot-tracking/reviews/code-reviews/feat-volume-discounts/functional-findings.json",
+      "hve_components": [
+        "agent/code-review-functional",
+        "skill/code-review"
+      ],
+      "check": "python3 tests/check_findings.py .copilot-tracking/reviews/code-reviews/feat-volume-discounts/functional-findings.json null tests/planted.json",
+      "rubric": "Score by planted defects found (tests/planted.json lists five; three is the pass bar). Findings must use only Critical/High/Medium/Low severities and the verdict vocabulary from severity-taxonomy.md, cite file and line range, quote current_code from the diff, and keep skill null. Penalise findings outside the functional lane (naming, formatting) and any invented output fields."
+    }
+  },
+  {
+    "id": "review-standards-export",
+    "input": "You are running as the Code Review Standards perspective in workflow (automation) mode; do not pause for a human. The orchestrator has prepared `.copilot-tracking/reviews/code-reviews/feat-filtered-exports/diff-state.json` and the diff at its `diffPatchPath` (`reporting/export.py`). Follow your Skill Reference Contract: load the `code-review` skill and read its SKILL.md and the lens-checklists, depth-tiers, severity-taxonomy and output-formats references, discover the `coding-standards` skills that match `.py` (load `python-foundational`), apply its checklist to the diff, and write `<findingsFolder>/standards-findings.json` per the output contract with each finding's `skill` set to the originating skill name. Do not write a markdown report.",
+    "target": "standards-findings.json with verdict request_changes, every finding's skill == \"python-foundational\", covering at least 4 of: hard-coded API_TOKEN secret; eval on filter expressions; bare except with silent print; mutable default filters=[]; print instead of logging; os.path/unmanaged open() instead of pathlib and with; missing type hints on public functions.",
+    "metadata": {
+      "kind": "review",
+      "agent": "hve-core:code-review-standards",
+      "artefact": ".copilot-tracking/reviews/code-reviews/feat-filtered-exports/standards-findings.json",
+      "hve_components": [
+        "agent/code-review-standards",
+        "skill/code-review",
+        "skill/python-foundational"
+      ],
+      "check": "python3 tests/check_findings.py .copilot-tracking/reviews/code-reviews/feat-filtered-exports/standards-findings.json python-foundational tests/planted.json",
+      "rubric": "Score by planted defects found (seven listed in tests/planted.json; four is the pass bar). Every finding must trace to python-foundational by exact skill name; findings about logic bugs belong to the functional lane and count against the lane boundary. Severity must follow the python-foundational rubric (High only for runtime/security impact)."
+    }
+  },
+  {
+    "id": "skill-commit-message",
+    "input": "The repository has staged changes (also saved verbatim in `staged.diff`). Use the `git-commit-message.prompt` skill to generate a conventional commit message for them following `.github/instructions/commit-message.instructions.md`, and save exactly the commit message (no code fence) to `COMMIT_MSG.txt` in the repository root. Do not commit.",
+    "target": "COMMIT_MSG.txt: line 1 `<type>(<scope>): <description>` with type in feat|fix|refactor|perf|style|test|docs|build|ops|chore (feat or fix expected, scope notify or sender), imperative mood, under 100 bytes; optional body of at most 5 bullets under 300 bytes after a blank line; footer after a blank line containing an emoji and ending with `- Generated by Copilot`.",
+    "metadata": {
+      "kind": "skill",
+      "agent": null,
+      "artefact": "COMMIT_MSG.txt",
+      "hve_components": [
+        "prompt/git-commit-message",
+        "instructions/commit-message"
+      ],
+      "setup": "bash setup.sh",
+      "check": "python3 tests/check_commit_message.py COMMIT_MSG.txt",
+      "rubric": "Full credit when the check passes and the description reflects the actual change (retry with backoff in notify.sender plus a test). Deduct for a type of docs/chore, a description over 100 bytes, a missing emoji or footer, or a fenced block written into the file."
+    }
+  },
+  {
+    "id": "skill-doc-guide",
+    "input": "Use the `documentation` skill in `author` mode with its `templates/guide.md` template to write `docs/guides/rotate-logs.md`, a how-to guide for `tools/rotate.py` (read the tool first). Keep the template's section headings in order, document the `--keep` and `--dry-run` options and the exit codes, and follow `.github/instructions/markdown.instructions.md` (one H1, ATX headings without level skips, fenced code blocks with a language, no trailing whitespace).",
+    "target": "docs/guides/rotate-logs.md with exactly one H1 and the H2 sections Purpose, When to use this guide, Prerequisites, Steps, Expected outcome, Troubleshooting in that order; mentions tools/rotate.py and --keep; fenced blocks carry a language; no heading level skips.",
+    "metadata": {
+      "kind": "skill",
+      "agent": null,
+      "artefact": "docs/guides/rotate-logs.md",
+      "hve_components": [
+        "skill/documentation",
+        "instructions/markdown"
+      ],
+      "check": "python3 tests/check_guide.py docs/guides/rotate-logs.md",
+      "rubric": "Full credit when the check passes and the Steps section shows real invocations of tools/rotate.py. Deduct for invented options, a missing Troubleshooting entry for the not-a-directory error, or markdown lint violations."
+    }
+  },
+  {
+    "id": "implement-slug-tests",
+    "input": "Write `tests/test_slug.py` covering `textkit.slug.slugify` (read it first) following `.github/instructions/python-tests.instructions.md`: BDD-style test names, Arrange/Act/Assert sections separated by blank lines and `# Arrange` / `# Act` / `# Assert` comments, at least five tests including the `max_length` word-boundary cut and the `TypeError` for non-string input, no direct `unittest.mock` import. Use `unittest.TestCase` so `python3 -m unittest discover -s tests` runs them (pytest is not installed). Run the suite before finishing.",
+    "target": "tests/test_slug.py with at least 5 passing test methods named test_*, AAA comments, coverage of max_length and TypeError, no direct unittest.mock import.",
+    "metadata": {
+      "kind": "implement",
+      "agent": null,
+      "artefact": "tests/test_slug.py",
+      "hve_components": [
+        "instructions/python-tests",
+        "instructions/python-script"
+      ],
+      "check": "python3 tests/check_tests.py",
+      "rubric": "Full credit when the check passes. Deduct for tests that merely assert the function runs, for missing AAA structure, or for duplicated fixtures the instructions say to share."
+    }
+  }
+]

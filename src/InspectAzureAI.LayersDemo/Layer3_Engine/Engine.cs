@@ -36,7 +36,7 @@ using inspect_ai.util;
 namespace inspect_ai._eval;
 
 /// <summary>What the CLI hands the engine (a slice of Python's eval() keyword arguments).</summary>
-internal sealed record EvalOptions(string Task, string Model, string LogDir, int MaxSamples);
+internal sealed record EvalOptions(string Task, string Model, string LogDir, int MaxSamples, IReadOnlyDictionary<string, string>? ModelRoles = null);
 
 internal sealed record SampleResult(string Id, TaskState State, Score Score, Transcript Transcript);
 
@@ -59,9 +59,11 @@ internal static class EvalRunner
         var task = Registry.Create<EvalTask>(RegistryType.Task, options.Task);
 
         // 2. Model by name. Layer 5 resolves the provider; the engine holds only a
-        //    Model, and makes it ambient so model-graded scorers can find it.
+        //    Model, and makes it ambient so model-graded scorers can find it. Role
+        //    bindings (Python: --model-role grader=...) are resolved the same way.
         var model = Models.get_model(options.Model);
-        using var activeModel = Models.BeginActive(model);
+        var roles = (options.ModelRoles ?? new Dictionary<string, string>()).ToDictionary(r => r.Key, r => Models.get_model(r.Value));
+        using var activeModel = Models.BeginActive(model, roles);
 
         // 3. Samples, at most MaxSamples at once — all on the one event loop.
         var generate = TaskGenerate.create(model, cancel);
@@ -166,7 +168,7 @@ internal static class LogWriter
             }),
         };
 
-        var fileName = $"{started:yyyy-MM-ddTHH-mm-ss}_{options.Task}.json";
+        var fileName = $"{started:yyyy-MM-ddTHH-mm-ss}_{options.Task}_{options.Model.Replace('/', '-')}.json";
         var location = FileSystems.Join(options.LogDir, fileName);
         FileSystems.WriteText(location, JsonSerializer.Serialize(document, Options));
         return location;

@@ -1,0 +1,174 @@
+{
+  "as_of": "2026-09-08",
+  "scope": "Determine whether Microsoft's Foundry evaluation offerings provide an Inspect-style common model/provider abstraction, especially for C# and heterogeneous model protocols.",
+  "gap_matrix": [
+    {
+      "question": "Microsoft .NET provider equivalent used by evaluators?",
+      "status": "resolved",
+      "evidence": "IChatClient; MEAI evaluation; Agent Framework evaluation docs and source"
+    },
+    {
+      "question": "Subject model vs judge client?",
+      "status": "resolved",
+      "evidence": "IEvaluator.EvaluateAsync accepts ChatResponse plus separate ChatConfiguration"
+    },
+    {
+      "question": "Native Claude C# route and adapter ownership?",
+      "status": "resolved",
+      "evidence": "Anthropic C# SDK provides IChatClient; Microsoft wrapper provides AsAIAgent"
+    },
+    {
+      "question": "Cloud can invoke targets?",
+      "status": "resolved",
+      "evidence": "Sep 7 cloud-evaluation-targets guide supports models/agents; model-router target only"
+    },
+    {
+      "question": "All catalog models, all protocols?",
+      "status": "bounded limitation",
+      "evidence": "No blanket compatibility guarantee found; connected-model guide explicitly requires Chat Completions"
+    },
+    {
+      "question": "Local Python BYO judge public API?",
+      "status": "resolved",
+      "evidence": "Public AzureOpenAI/OpenAI configuration, service-internal BYO structure"
+    },
+    {
+      "question": "How project can adopt?",
+      "status": "resolved as architectural recommendation",
+      "evidence": "Existing InspectChatClient bridges AgentBridge; no new runtime integration test performed"
+    }
+  ],
+  "claims": [
+    {
+      "id": "C1",
+      "claim": "IChatClient is closest Microsoft .NET provider abstraction",
+      "refs": [
+        1,
+        2
+      ],
+      "support": "Primary docs directly describe abstraction and evaluation dependence",
+      "confidence": "high"
+    },
+    {
+      "id": "C2",
+      "claim": "Agent Framework integrates evaluation as well as providers",
+      "refs": [
+        3,
+        16
+      ],
+      "support": "Evaluation guide; FoundryEvals source verified",
+      "confidence": "high"
+    },
+    {
+      "id": "C3",
+      "claim": "Candidate response and judge connection are separate",
+      "refs": [
+        12
+      ],
+      "support": "IEvaluator.EvaluateAsync signature",
+      "confidence": "high"
+    },
+    {
+      "id": "C4",
+      "claim": "Chat and Responses use separate adapters",
+      "refs": [
+        4
+      ],
+      "support": "OpenAIClientExtensions source; Responses experimental annotation verified",
+      "confidence": "high"
+    },
+    {
+      "id": "C5",
+      "claim": "Native Anthropic SDK supplies IChatClient; Microsoft wraps in agent",
+      "refs": [
+        5,
+        9,
+        10
+      ],
+      "support": "Microsoft guide and Anthropic SDK docs; Microsoft source",
+      "confidence": "high"
+    },
+    {
+      "id": "C6",
+      "claim": "Cloud can invoke model/agent targets and model-router is target only",
+      "refs": [
+        7
+      ],
+      "support": "Current Sep 7 target guide verified",
+      "confidence": "high"
+    },
+    {
+      "id": "C7",
+      "claim": "Admin-connected cloud model support requires Chat Completions",
+      "refs": [
+        11
+      ],
+      "support": "Explicit primary documentation restriction verified",
+      "confidence": "high"
+    },
+    {
+      "id": "C8",
+      "claim": "Python target callable supplies model integration; BYO judge config internal",
+      "refs": [
+        8,
+        13
+      ],
+      "support": "API and internal configuration source",
+      "confidence": "high"
+    },
+    {
+      "id": "C9",
+      "claim": "Local InspectChatClient bridge already exists, streaming synthesized",
+      "refs": [
+        14
+      ],
+      "support": "Local full source and project file read",
+      "confidence": "high"
+    },
+    {
+      "id": "C10",
+      "claim": "Selective adapter adoption and retaining runner recommended",
+      "refs": [
+        1,
+        12,
+        14,
+        15
+      ],
+      "support": "Architectural synthesis; no integration experiment performed",
+      "confidence": "recommendation"
+    },
+    {
+      "id": "C11",
+      "claim": "No blanket all-model protocol guarantee established",
+      "refs": [
+        4,
+        5,
+        6,
+        7,
+        11
+      ],
+      "support": "Bounded evidence gap, not claim of absolute absence",
+      "confidence": "scoped limitation"
+    }
+  ],
+  "contradictions": [
+    {
+      "issue": "Stale search snippet said model-router not supported by Foundry Evaluation",
+      "resolution": "Do not cite snippet; current target guide explicitly permits model-router as target only"
+    },
+    {
+      "issue": "Foundry SDK overview says native C# Anthropic SDK absent",
+      "resolution": "Current official Anthropic SDK docs, Microsoft provider guide and wrapper source establish native SDK path"
+    },
+    {
+      "issue": "Agent Framework guide FoundryEvals ChatConfiguration constructor differs from current source",
+      "resolution": "Report mismatch; do not offer unverified executable constructor"
+    },
+    {
+      "issue": "BYO judge SDK changelog broader than public API",
+      "resolution": "Source explicitly marks BYO config internal; public vs cloud preview distinction retained"
+    }
+  ],
+  "method": "Primary-source research and local inspection. No new live model runs or code migrations.",
+  "artifact": "output/pdf/microsoft-foundry-evaluation-provider-layer.pdf"
+}

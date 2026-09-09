@@ -98,7 +98,7 @@ public static partial class Solvers
             var originalQuestion = state.UserPrompt.Text;
             SetUserPromptText(state, FormatMultipleChoicePrompt(originalQuestion, state.Choices, template));
 
-            state = await generate(state, ToolCallsMode.Loop, config, cancellationToken).ConfigureAwait(false);
+            state = await generate(state, ToolCallsMode.Loop, config, cancellationToken: cancellationToken).ConfigureAwait(false);
 
             var answers = ParseAnswers(state, multipleCorrect);
             if (answers.Count > 0)

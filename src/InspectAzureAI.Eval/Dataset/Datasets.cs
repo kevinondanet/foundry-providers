@@ -9,7 +9,7 @@ namespace InspectAzureAI.Eval.Dataset;
 /// <c>csv_dataset</c> for local files. Both follow the Python order: map records → resolve relative file
 /// references → shuffle → limit. Only local paths are supported (no S3 / HTTP).
 /// </summary>
-public static class Datasets
+public static partial class Datasets
 {
     /// <summary>
     /// Port of <c>json_dataset</c>: a <c>.jsonl</c> file (one object per line) or a <c>.json</c> file holding an

@@ -11,6 +11,7 @@ using System.Diagnostics;
 using InspectAzureAI.Provider.Core;
 using InspectAzureAI.Provider.Anthropic;
 using InspectAzureAI.Provider.Foundry;
+using InspectAzureAI.Provider.OpenAI;
 using InspectAzureAI.Provider.Testing;
 using InspectAzureAI.Provider.Util;
 using InspectAzureAI.Sample;
@@ -111,6 +112,19 @@ if (reasoningTokensArg is not null)
     }
 
     Cli.ReasoningTokens = reasoningTokens;
+}
+
+var reasoningSummaryArg = TakeOption(arguments, "--reasoning-summary");
+if (reasoningSummaryArg is not null)
+{
+    var summary = reasoningSummaryArg.Trim().ToLowerInvariant();
+    if (summary is not ("none" or "concise" or "detailed" or "auto"))
+    {
+        Console.Error.WriteLine($"--reasoning-summary expects one of none|concise|detailed|auto, got '{reasoningSummaryArg}'\n\n{Cli.Help}");
+        return 2;
+    }
+
+    Cli.ReasoningSummary = summary;
 }
 
 if (arguments.Count == 0 || arguments[0] is "--help" or "-h" or "help")
@@ -223,7 +237,8 @@ namespace InspectAzureAI.Sample
               models                    discover the Foundry resource behind AZUREAI_BASE_URL through Azure
                                         Resource Manager and list its model deployments (--json for machines)
               test-all                  smoke-test every healthy chat deployment: chat, stream, native tools; Anthropic
-                                        deployments go through the Messages route automatically
+                                        deployments go through the Messages route and Responses-only OpenAI
+                                        deployments through the Responses route automatically
                                         (--only a,b  --include-failed  --skip-tools  --json); exit 1 on any chat failure
               capture                   like test-all, but record every HTTP exchange (request line, headers with the
                                         bearer token redacted, body; response status, headers, body) as JSON for the
@@ -247,11 +262,16 @@ namespace InspectAzureAI.Sample
                                         family's field: reasoning_effort (OpenAI, grok, MAI), thinking {type} (DeepSeek,
                                         Kimi, Cohere), adaptive thinking + output_config.effort (Claude); none = off
               --reasoning-tokens <n>    Inspect's reasoning_tokens budget (Claude budget_tokens, Cohere token_budget)
+              --reasoning-summary <s>   Inspect's reasoning_summary (none|concise|detailed|auto): reasoning.summary on the
+                                        Responses route (opt-in; other routes ignore it)
               --model-arg key=value     repeatable; the Python -M model args: max_completion_tokens=true (MAI-Thinking-1),
                                         streaming, model_format=<vendor>, anthropic_beta=<list>, or any pass-through body
                                         field; JSON values are parsed, e.g. thinking={"type":"enabled"}
-              --route models|anthropic  chat/stream/tools/image: the model-inference route (default) or the
-                                        Anthropic Messages route (/anthropic/v1/messages) for Claude deployments
+              --route models|anthropic|responses
+                                        chat/stream/tools/image: the model-inference route (default), the Anthropic
+                                        Messages route (/anthropic/v1/messages) for Claude deployments or the OpenAI
+                                        Responses route (/openai/v1/responses) for gpt-5.6* / o-series / -pro / codex
+                                        deployments
 
             environment:
               AZURE_ENDPOINT_URL / AZUREAI_ENDPOINT_URL / AZUREAI_BASE_URL   endpoint (in that order)
@@ -260,6 +280,7 @@ namespace InspectAzureAI.Sample
               AZURE_TENANT_ID / AZURE_CLIENT_ID                     Azure.Identity: tenant pin / user-assigned managed identity
               AZUREAI_RESOURCE_ID / AZURE_SUBSCRIPTION_ID           models/test-all: skip or narrow the ARM search
               AZUREAI_ANTHROPIC_BASE_URL / AZURE_ANTHROPIC_BASE_URL  Anthropic route base URL; derived from AZUREAI_BASE_URL when unset
+              AZUREAI_OPENAI_BASE_URL / AZURE_OPENAI_BASE_URL        Responses route base URL; derived from AZUREAI_BASE_URL when unset
 
             Authentication is Entra ID only (DefaultAzureCredential): sign in with `az login` (and `az account set`),
             then run `token` to confirm which identity the credential resolves to. No API key variables are read.
@@ -318,7 +339,7 @@ namespace InspectAzureAI.Sample
             }
         }
 
-        /// <summary>Creates the provider for the selected route: model-inference (default) or the Anthropic Messages route.</summary>
+        /// <summary>Creates the provider for the selected route: model-inference (default), the Anthropic Messages route or the OpenAI Responses route.</summary>
         public static IModelApi CreateModelApi(string? route, string? model, string? streaming, bool fake)
         {
             if (route is null || route.Equals("models", StringComparison.OrdinalIgnoreCase))
@@ -326,19 +347,23 @@ namespace InspectAzureAI.Sample
                 return CreateApi(model, streaming, fake);
             }
 
-            if (!route.Equals("anthropic", StringComparison.OrdinalIgnoreCase))
+            var anthropic = route.Equals("anthropic", StringComparison.OrdinalIgnoreCase);
+            if (!anthropic && !route.Equals("responses", StringComparison.OrdinalIgnoreCase))
             {
-                throw new UsageError($"--route expects models or anthropic, got '{route}'");
+                throw new UsageError($"--route expects models, anthropic or responses, got '{route}'");
             }
 
             if (fake)
             {
-                throw new UsageError("--route anthropic has no --fake endpoint");
+                throw new UsageError($"--route {route.ToLowerInvariant()} has no --fake endpoint");
             }
 
             try
             {
-                return new AnthropicFoundryModelApi(model ?? Environment.GetEnvironmentVariable("INSPECT_AZUREAI_MODEL") ?? "claude-sonnet-4-6", streaming: streaming, modelArgs: ExtraModelArgs);
+                model ??= Environment.GetEnvironmentVariable("INSPECT_AZUREAI_MODEL");
+                return anthropic
+                    ? new AnthropicFoundryModelApi(model ?? "claude-sonnet-4-6", streaming: streaming, modelArgs: ExtraModelArgs)
+                    : new OpenAIResponsesModelApi(model ?? "gpt-5.6-sol", streaming: streaming, modelArgs: ExtraModelArgs);
             }
             catch (ArgumentException ex)
             {
@@ -390,6 +415,7 @@ namespace InspectAzureAI.Sample
 
             Console.WriteLine();
             Console.WriteLine("claude-* deployments are served on the Anthropic Messages route (--route anthropic), not the model-inference route.");
+            Console.WriteLine("gpt-5.6* / o-series / -pro / codex deployments prefer the OpenAI Responses route (--route responses); the model-inference route rejects some of their requests.");
             return 0;
         }
 
@@ -410,6 +436,7 @@ namespace InspectAzureAI.Sample
             api.MaxTokens() is null && !MaxTokensSet ? "(not sent: max_tokens() is null)"
             : api.ForceMaxCompletionTokens ? "max_completion_tokens (forced by -M max_completion_tokens=true)"
             : OpenAIUtil.NeedsMaxCompletionTokens(api.ModelFamily()) ? "max_completion_tokens (gpt-5 / o-series rule)"
+            : api.SendsMaxCompletionTokens ? "max_completion_tokens (Microsoft family rule)"
             : "max_tokens";
 
         public static async Task<int> Chat(IModelApi api, string prompt)
@@ -431,9 +458,15 @@ namespace InspectAzureAI.Sample
         public static async Task<int> ToolLoop(IModelApi api, string prompt)
         {
             var input = new List<ChatMessage> { new ChatMessageUser(Prompt(prompt, "What is the weather like in Paris right now? Use the get_weather tool.")) };
+            var wire = api switch
+            {
+                AzureAIModelApi => "native tool_calls, model-inference route",
+                OpenAIResponsesModelApi => "function_call items, OpenAI Responses route",
+                _ => "tool_use blocks, Anthropic Messages route",
+            };
             for (var turn = 0; turn < 5; turn++)
             {
-                Console.WriteLine($"== turn {turn + 1} ({(api is AzureAIModelApi ? "native tool_calls, model-inference route" : "tool_use blocks, Anthropic Messages route")}) ==");
+                Console.WriteLine($"== turn {turn + 1} ({wire}) ==");
                 var result = await api.GenerateAsync(input, [WeatherTool], ToolChoice.Auto, DefaultConfig(api));
                 Report(result);
                 var output = result.OutputOrThrow();
@@ -564,7 +597,7 @@ namespace InspectAzureAI.Sample
             ("chat", "Reply with exactly: ok", null),
             ("stream", "Count from 1 to 3 on one line.", null),
             ("tools", "What is the weather in Oslo right now? Use the get_weather tool.", null),
-            ("reasoning", ReasoningPrompt, c => c with { ReasoningEffort = ReasoningEffort ?? "medium", ReasoningTokens = ReasoningTokens }),
+            ("reasoning", ReasoningPrompt, c => c with { ReasoningEffort = ReasoningEffort ?? "medium", ReasoningTokens = ReasoningTokens, ReasoningSummary = ReasoningSummary }),
         ];
 
         private static readonly string[] ReasoningRequestKeys = ["reasoning_effort", "thinking", "output_config", "reasoning"];
@@ -620,13 +653,20 @@ namespace InspectAzureAI.Sample
             }
         }
 
-        private static CapturedTarget CreateCapturedTarget(AzureAIModelApi api, AzureAIClientSettings shared, FoundryDeployment deployment, bool anthropic, IReadOnlyDictionary<string, object?> args)
+        private static CapturedTarget CreateCapturedTarget(AzureAIModelApi api, AzureAIClientSettings shared, FoundryDeployment deployment, string route, IReadOnlyDictionary<string, object?> args)
         {
-            if (anthropic)
+            if (route == "anthropic")
             {
                 var handler = new HttpCaptureHandler();
                 var claude = new AnthropicFoundryModelApi(deployment.Name, AnthropicFoundryModelApi.DeriveBaseUrl(api.EndpointUrl), streaming: api.Streaming, modelArgs: args, settings: shared, handler: handler);
                 return new CapturedTarget(claude, handler.Exchanges, handler);
+            }
+
+            if (route == "responses")
+            {
+                var handler = new HttpCaptureHandler();
+                var responses = new OpenAIResponsesModelApi(deployment.Name, OpenAIResponsesModelApi.DeriveBaseUrl(api.EndpointUrl), streaming: api.Streaming, modelArgs: args, settings: shared, handler: handler);
+                return new CapturedTarget(responses, handler.Exchanges, handler);
             }
 
             var capture = new HttpCapturePolicy();
@@ -704,19 +744,19 @@ namespace InspectAzureAI.Sample
 
                 var row = new SmokeRow(deployment);
                 rows.Add(row);
-                if (!includeFailed && (!deployment.IsSucceeded || !deployment.SupportsChat))
+                var route = RouteFor(deployment);
+                if (!includeFailed && (!deployment.IsSucceeded || (!deployment.SupportsChat && route != "responses")))
                 {
                     row.Skipped = !deployment.IsSucceeded ? $"provisioningState={deployment.State}" : "chatCompletion=false";
                     if (!json) Console.WriteLine($"{deployment.Name,-22} skipped ({row.Skipped})");
                     continue;
                 }
 
-                var anthropic = IsAnthropicFormat(deployment);
                 var args = new Dictionary<string, object?>(ExtraModelArgs);
-                var target = CreateCapturedTarget(api, shared, deployment, anthropic, args);
-                if (anthropic)
+                var target = CreateCapturedTarget(api, shared, deployment, route, args);
+                if (RouteNote(route) is { } note)
                 {
-                    row.Notes.Add("Anthropic Messages route (/anthropic/v1/messages)");
+                    row.Notes.Add(note);
                 }
 
                 try
@@ -731,13 +771,13 @@ namespace InspectAzureAI.Sample
                         }
 
                         var status = await SmokeAsync(target, check, prompt, configure, row);
-                        if (status == "fail" && !anthropic && !forcedMaxCompletionTokens
+                        if (status == "fail" && route == "models" && !forcedMaxCompletionTokens
                             && row.Errors.GetValueOrDefault(check, "").Contains("max_completion_tokens", StringComparison.OrdinalIgnoreCase))
                         {
                             // Reasoning models (e.g. MAI-Thinking-1) reject max_tokens; Python's name rule does not know them.
                             args["max_completion_tokens"] = true;
                             target.Dispose();
-                            target = CreateCapturedTarget(api, shared, deployment, anthropic, args);
+                            target = CreateCapturedTarget(api, shared, deployment, route, args);
                             forcedMaxCompletionTokens = true;
                             row.Notes.Add("needs --model-arg max_completion_tokens=true");
                             row.Errors.Remove(check);
@@ -817,6 +857,7 @@ namespace InspectAzureAI.Sample
                 ["resource"] = new JsonObject { ["name"] = resource.Name, ["kind"] = resource.Kind, ["location"] = resource.Location, ["resourceGroup"] = resource.ResourceGroup },
                 ["endpoint"] = api.EndpointUrl,
                 ["anthropicEndpoint"] = AnthropicFoundryModelApi.DeriveBaseUrl(api.EndpointUrl) + "/v1/messages",
+                ["responsesEndpoint"] = OpenAIResponsesModelApi.DeriveBaseUrl(api.EndpointUrl) + "/responses",
                 ["credential"] = AzureHosting.Describe(api.Credential),
                 ["deployments"] = entries,
             };
@@ -828,7 +869,7 @@ namespace InspectAzureAI.Sample
                     continue;
                 }
 
-                var anthropic = IsAnthropicFormat(deployment);
+                var route = RouteFor(deployment);
                 var checks = new JsonArray();
                 var entry = new JsonObject
                 {
@@ -840,12 +881,12 @@ namespace InspectAzureAI.Sample
                     ["capacity"] = deployment.Capacity,
                     ["state"] = deployment.State,
                     ["chatCapable"] = deployment.SupportsChat,
-                    ["route"] = anthropic ? "anthropic" : "models",
+                    ["route"] = route,
                     ["capabilities"] = new JsonObject(deployment.Capabilities.Select(kv => KeyValuePair.Create(kv.Key, (JsonNode?)kv.Value))),
                     ["checks"] = checks,
                 };
                 entries.Add(entry);
-                if (!includeFailed && (!deployment.IsSucceeded || !deployment.SupportsChat))
+                if (!includeFailed && (!deployment.IsSucceeded || (!deployment.SupportsChat && route != "responses")))
                 {
                     entry["skipped"] = !deployment.IsSucceeded ? $"provisioningState={deployment.State}" : "chatCompletion=false";
                     Console.Error.WriteLine($"{deployment.Name,-30} skipped ({entry["skipped"]})");
@@ -856,15 +897,15 @@ namespace InspectAzureAI.Sample
                 var summary = new List<string>();
                 foreach (var (check, prompt, configure) in SmokeChecks)
                 {
-                    var result = await CaptureCheckAsync(api, shared, deployment, anthropic, check, prompt, configure, args);
+                    var result = await CaptureCheckAsync(api, shared, deployment, route, check, prompt, configure, args);
                     checks.Add(result);
                     var error = result["error"]?.ToString() ?? "";
-                    if (!anthropic && !args.ContainsKey("max_completion_tokens") && error.Contains("max_completion_tokens", StringComparison.OrdinalIgnoreCase))
+                    if (route == "models" && !args.ContainsKey("max_completion_tokens") && error.Contains("max_completion_tokens", StringComparison.OrdinalIgnoreCase))
                     {
                         // Reasoning models (e.g. MAI-Thinking-1) reject max_tokens; keep the rejection on record, then retry.
                         args["max_completion_tokens"] = true;
                         result["note"] = "rejected max_tokens; retried with -M max_completion_tokens=true (next entry)";
-                        result = await CaptureCheckAsync(api, shared, deployment, anthropic, check, prompt, configure, args);
+                        result = await CaptureCheckAsync(api, shared, deployment, route, check, prompt, configure, args);
                         result["note"] = "retry with max_completion_tokens=true";
                         checks.Add(result);
                     }
@@ -903,10 +944,10 @@ namespace InspectAzureAI.Sample
         }
 
         private static async Task<JsonObject> CaptureCheckAsync(
-            AzureAIModelApi api, AzureAIClientSettings shared, FoundryDeployment deployment, bool anthropic, string check, string prompt,
+            AzureAIModelApi api, AzureAIClientSettings shared, FoundryDeployment deployment, string route, string check, string prompt,
             Func<GenerateConfig, GenerateConfig>? configure, Dictionary<string, object?> args)
         {
-            using var target = CreateCapturedTarget(api, shared, deployment, anthropic, args);
+            using var target = CreateCapturedTarget(api, shared, deployment, route, args);
             var result = new JsonObject { ["check"] = check, ["prompt"] = prompt, ["ok"] = false };
             var watch = Stopwatch.StartNew();
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
@@ -973,8 +1014,22 @@ namespace InspectAzureAI.Sample
             };
         }
 
-        private static bool IsAnthropicFormat(FoundryDeployment deployment) =>
-            string.Equals(deployment.Format, "Anthropic", StringComparison.OrdinalIgnoreCase);
+        /// <summary>
+        /// The route a discovered deployment takes: ARM's Anthropic format speaks the Messages API; an OpenAI-format
+        /// deployment without chat completions (gpt-5.4-pro, codex) or whose name prefers it (gpt-5.6*, o-series) speaks
+        /// the Responses API; everything else the model-inference route.
+        /// </summary>
+        private static string RouteFor(FoundryDeployment deployment) =>
+            string.Equals(deployment.Format, "Anthropic", StringComparison.OrdinalIgnoreCase) ? "anthropic"
+            : string.Equals(deployment.Format, "OpenAI", StringComparison.OrdinalIgnoreCase) && (!deployment.SupportsChat || OpenAIUtil.PrefersResponsesRoute(deployment.Name)) ? "responses"
+            : "models";
+
+        private static string? RouteNote(string route) => route switch
+        {
+            "anthropic" => "Anthropic Messages route (/anthropic/v1/messages)",
+            "responses" => "OpenAI Responses route (/openai/v1/responses)",
+            _ => null,
+        };
 
         private static string ReasoningCell(SmokeRow row)
         {
@@ -1074,11 +1129,14 @@ namespace InspectAzureAI.Sample
         /// <summary>--reasoning-tokens: Inspect's reasoning_tokens budget (Claude budget_tokens, Cohere token_budget).</summary>
         public static int? ReasoningTokens { get; set; }
 
+        /// <summary>--reasoning-summary: Inspect's reasoning_summary (none|concise|detailed|auto), sent as <c>reasoning.summary</c> on the Responses route.</summary>
+        public static string? ReasoningSummary { get; set; }
+
         /// <summary>--model-arg key=value pairs merged into every created provider (the Python -M args).</summary>
         public static Dictionary<string, object?> ExtraModelArgs { get; } = new();
 
         private static GenerateConfig DefaultConfig(IModelApi api) =>
-            new() { MaxTokens = MaxTokensSet ? MaxTokens : api.MaxTokens(), Temperature = Temperature, ReasoningEffort = ReasoningEffort, ReasoningTokens = ReasoningTokens };
+            new() { MaxTokens = MaxTokensSet ? MaxTokens : api.MaxTokens(), Temperature = Temperature, ReasoningEffort = ReasoningEffort, ReasoningTokens = ReasoningTokens, ReasoningSummary = ReasoningSummary };
 
         private static string Prompt(string prompt, string fallback = "This is a test string. What are you?") =>
             string.IsNullOrWhiteSpace(prompt) ? fallback : prompt;

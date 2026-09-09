@@ -3,6 +3,7 @@ using InspectAzureAI.Eval.Approval;
 using InspectAzureAI.Eval.Context;
 using InspectAzureAI.Eval.Scorers;
 using InspectAzureAI.Eval.Tools;
+using InspectAzureAI.Eval.Tools.Mcp;
 using InspectAzureAI.Provider.Core;
 using InspectAzureAI.Provider.Util;
 
@@ -32,7 +33,12 @@ public static partial class Agents
     /// System prompt pieces; null is Python's default <see cref="AgentPrompt"/>, <see cref="AgentPrompt.None"/>
     /// is Python's <c>prompt=None</c> (no system message) and a string is Python's <c>prompt="instructions"</c>.
     /// </param>
-    /// <param name="tools">Tools available to the agent (handoff tools included).</param>
+    /// <param name="tools">
+    /// Tools and tool sources available to the agent (Python's <c>Sequence[Tool | ToolDef | ToolSource]</c>; a plain
+    /// tool list converts covariantly): <see cref="ToolDef"/>s, handoff tools, and <see cref="IToolSource"/>s such as
+    /// <see cref="Mcp.McpTools"/> or an <see cref="McpServer"/>. Sources are resolved on every turn and the MCP
+    /// servers behind them stay connected for the whole loop (Python's <c>mcp_connection(tools)</c>).
+    /// </param>
     /// <param name="model">Model to generate with (defaults to the sample's active model).</param>
     /// <param name="modelAgent">Python's <c>model=Agent</c>: a generation agent used in place of <paramref name="model"/>; compaction is then that agent's business.</param>
     /// <param name="attempts">Multiple scored attempts (defaults to one, unscored).</param>
@@ -51,7 +57,7 @@ public static partial class Agents
         string? name = null,
         string? description = null,
         AgentPrompt? prompt = null,
-        IReadOnlyList<ToolDef>? tools = null,
+        IReadOnlyList<IToolSource>? tools = null,
         Model? model = null,
         AgentModel? modelAgent = null,
         AgentAttempts? attempts = null,
@@ -94,16 +100,17 @@ public static partial class Agents
                 nameof(onContinue));
         }
 
-        var resolvedTools = (tools ?? []).ToList();
+        var agentTools = (tools ?? []).ToList();
         ToolDef? submitTool = null;
         if (resolvedSubmit.Enabled)
         {
             submitTool = ResolveSubmitTool(resolvedSubmit);
-            resolvedTools.Add(submitTool);
+            agentTools.Add(submitTool);
         }
 
-        var systemMessage = PromptToSystemMessage(resolvedPrompt, resolvedTools, submitTool?.Name);
-        var loop = new ReactLoop(resolvedTools, systemMessage, model, modelAgent, resolvedAttempts, resolvedSubmit, submitTool, onContinue, onContinueFn, retryRefusals, compaction, truncation, approval);
+        // Python's has_handoff looks at the direct entries only; tool sources are not resolved for the prompt.
+        var systemMessage = PromptToSystemMessage(resolvedPrompt, agentTools.OfType<ToolDef>().ToArray(), submitTool?.Name);
+        var loop = new ReactLoop(agentTools, systemMessage, model, modelAgent, resolvedAttempts, resolvedSubmit, submitTool, onContinue, onContinueFn, retryRefusals, compaction, truncation, approval);
         return new AgentDef(name ?? ReactName, description ?? "", loop.ExecuteAsync);
     }
 
@@ -224,7 +231,7 @@ public static partial class Agents
 
     /// <summary>The state of one <c>react()</c> configuration; <see cref="ExecuteAsync"/> is the agent.</summary>
     private sealed class ReactLoop(
-        IReadOnlyList<ToolDef> tools,
+        IReadOnlyList<IToolSource> tools,
         ChatMessageSystem? systemMessage,
         Model? model,
         AgentModel? modelAgent,
@@ -249,7 +256,11 @@ public static partial class Agents
             }
 
             var generator = modelAgent is null ? model ?? SampleContext.Require().ActiveModel : null;
-            var compact = CreateCompaction(state.Messages);
+
+            // Python: async with mcp_connection(tools) -- the servers behind the tool sources stay connected for the
+            // whole loop, so a stateful MCP server keeps its state from one turn to the next.
+            await using var connection = await McpConnection.ConnectAsync(tools, cancellationToken).ConfigureAwait(false);
+            var compact = compaction is null ? null : CreateCompaction(state.Messages, await ResolveToolsAsync(cancellationToken).ConfigureAwait(false));
             var attemptCount = 0;
             var consecutiveContentFilter = 0;
             var submitName = submitTool?.Name;
@@ -257,7 +268,10 @@ public static partial class Agents
             while (true)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                state = await GenerateAsync(generator, state, compact, cancellationToken).ConfigureAwait(false);
+
+                // Python resolves the tool sources on every turn (an MCP server may change the tools it offers).
+                var resolvedTools = await ResolveToolsAsync(cancellationToken).ConfigureAwait(false);
+                state = await GenerateAsync(generator, state, resolvedTools, compact, cancellationToken).ConfigureAwait(false);
 
                 if (!state.Output.Empty && state.Output.StopReason == StopReason.ModelLength)
                 {
@@ -286,7 +300,7 @@ public static partial class Agents
 
                 if (HasToolCalls(state))
                 {
-                    var results = await ToolExecutor.ExecuteToolsAsync(state.Messages, tools, cancellationToken: cancellationToken, approval: approval).ConfigureAwait(false);
+                    var results = await ToolExecutor.ExecuteToolsAsync(state.Messages, resolvedTools, cancellationToken: cancellationToken, approval: approval).ConfigureAwait(false);
                     state.Messages.AddRange(results.Messages);
                     if (results.Output is { } output)
                     {
@@ -355,6 +369,9 @@ public static partial class Agents
 
         private static bool HasToolCalls(AgentState state) => !state.Output.Empty && state.Output.Message.ToolCalls is { Count: > 0 };
 
+        /// <summary>Port of the tool resolution of <c>_agent_generate</c>: the tools the agent's sources currently provide, in list order.</summary>
+        private Task<IReadOnlyList<ToolDef>> ResolveToolsAsync(CancellationToken cancellationToken) => ToolSources.ResolveAsync(tools, cancellationToken);
+
         /// <summary>Port of <c>submission()</c>: the text of the first error-free submit tool result.</summary>
         private static string? Submission(IReadOnlyList<ChatMessage> toolResults, string submitName) =>
             toolResults.OfType<ChatMessageTool>().FirstOrDefault(result => result.Function == submitName && result.Error is null)?.Text;
@@ -413,7 +430,7 @@ public static partial class Agents
         }
 
         /// <summary>Port of <c>_agent_compact</c>: the compaction for this run, preserving the system messages and sample input.</summary>
-        private AgentCompaction? CreateCompaction(IReadOnlyList<ChatMessage> messages)
+        private AgentCompaction? CreateCompaction(IReadOnlyList<ChatMessage> messages, IReadOnlyList<ToolDef> resolvedTools)
         {
             if (compaction is null)
             {
@@ -427,15 +444,15 @@ public static partial class Agents
             }
 
             var partitioned = MessageFilters.PartitionMessages(messages);
-            return compaction([.. partitioned.System, .. partitioned.Input], tools, model);
+            return compaction([.. partitioned.System, .. partitioned.Input], resolvedTools, model);
         }
 
         /// <summary>Port of <c>_agent_generate</c> / <c>_model_generate</c>: one assistant turn, with input compaction and refusal retries.</summary>
-        private async Task<AgentState> GenerateAsync(Model? generator, AgentState state, AgentCompaction? compact, CancellationToken cancellationToken)
+        private async Task<AgentState> GenerateAsync(Model? generator, AgentState state, IReadOnlyList<ToolDef> resolvedTools, AgentCompaction? compact, CancellationToken cancellationToken)
         {
             if (modelAgent is not null)
             {
-                return await modelAgent(state, tools, cancellationToken).ConfigureAwait(false);
+                return await modelAgent(state, resolvedTools, cancellationToken).ConfigureAwait(false);
             }
 
             IReadOnlyList<ChatMessage> input;
@@ -456,7 +473,7 @@ public static partial class Agents
             var refusals = 0;
             while (true)
             {
-                var output = await generator!.GenerateAsync(input, tools, cancellationToken: cancellationToken).ConfigureAwait(false);
+                var output = await generator!.GenerateAsync(input, resolvedTools, cancellationToken: cancellationToken).ConfigureAwait(false);
                 if (!output.Empty && output.StopReason == StopReason.ContentFilter && retryRefusals is { } limit && refusals < limit)
                 {
                     refusals++;

@@ -1,4 +1,5 @@
 using InspectAzureAI.Provider.Foundry;
+using InspectAzureAI.Provider.Util;
 
 namespace InspectAzureAI.ModelMatrix;
 
@@ -15,12 +16,18 @@ internal static class DeploymentSelection
 
     public const string AnthropicRoute = "anthropic";
 
+    public const string ResponsesRoute = "responses";
+
     /// <summary>
-    /// ARM's <c>Format</c> decides the route: Anthropic deployments speak the Messages API, everything else the
-    /// model-inference route (the showcase's <c>claude-*</c> name heuristic is not needed when the catalog is at hand).
+    /// ARM's <c>Format</c> decides the route: Anthropic deployments speak the Messages API; OpenAI deployments without
+    /// chat completions (gpt-5.4-pro, codex) or whose name prefers it (gpt-5.6*, o-series; see
+    /// <see cref="OpenAIUtil.PrefersResponsesRoute"/>) speak the Responses API; everything else takes the model-inference
+    /// route (the showcase's <c>claude-*</c> name heuristic is not needed when the catalog is at hand).
     /// </summary>
     public static string RouteFor(FoundryDeployment deployment) =>
-        string.Equals(deployment.Format, "Anthropic", StringComparison.OrdinalIgnoreCase) ? AnthropicRoute : ModelsRoute;
+        string.Equals(deployment.Format, "Anthropic", StringComparison.OrdinalIgnoreCase) ? AnthropicRoute
+        : string.Equals(deployment.Format, "OpenAI", StringComparison.OrdinalIgnoreCase) && (!deployment.SupportsChat || OpenAIUtil.PrefersResponsesRoute(deployment.Name)) ? ResponsesRoute
+        : ModelsRoute;
 
     /// <summary>The matrix's rows: every deployment (or just the <c>--only</c> ones), each either selected or skipped with a reason.</summary>
     public static IReadOnlyList<SelectedDeployment> Select(IEnumerable<FoundryDeployment> deployments, MatrixOptions options)
@@ -59,7 +66,8 @@ internal static class DeploymentSelection
             return $"provisioningState={deployment.State}";
         }
 
-        if (!deployment.SupportsChat && !includeNonChat)
+        // A Responses-only OpenAI deployment (chatCompletion=false) is still runnable, over the Responses route.
+        if (!deployment.SupportsChat && !includeNonChat && RouteFor(deployment) != ResponsesRoute)
         {
             return "chatCompletion=false";
         }

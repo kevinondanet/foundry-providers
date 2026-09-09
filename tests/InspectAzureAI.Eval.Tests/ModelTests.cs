@@ -423,7 +423,15 @@ public class ModelTests
         Assert.Equal("gpt-4o", gpt.ModelName);
         Assert.Equal(FoundryModels.DefaultModel, defaulted.ModelName);
         Assert.Equal(3, model.Config.MaxTokens);
-        Assert.Throws<ArgumentException>(() => FoundryModels.CreateApi("gpt-4o", route: "responses", settings: settings));
+        using var responses = Assert.IsType<InspectAzureAI.Provider.OpenAI.OpenAIResponsesModelApi>(FoundryModels.CreateApi("gpt-5.6-sol", settings: settings));
+        using var pro = Assert.IsType<InspectAzureAI.Provider.OpenAI.OpenAIResponsesModelApi>(FoundryModels.CreateApi("gpt-5.4-pro", settings: settings));
+        var overridden = Assert.IsType<AzureAIModelApi>(FoundryModels.CreateApi("gpt-5.6-sol", route: "models", settings: settings));
+        var mini = Assert.IsType<AzureAIModelApi>(FoundryModels.CreateApi("gpt-5.4-mini", settings: settings));
+        using var explicitResponses = Assert.IsType<InspectAzureAI.Provider.OpenAI.OpenAIResponsesModelApi>(FoundryModels.CreateApi("gpt-4o", route: "Responses", settings: settings));
+        Assert.Equal("https://example.com/openai/v1", responses.BaseUrl);
+        Assert.Equal("gpt-5.6-sol", overridden.ModelName);
+        Assert.Equal("gpt-5.4-mini", mini.ModelName);
+        Assert.Throws<ArgumentException>(() => FoundryModels.CreateApi("gpt-4o", route: "completions", settings: settings));
     }
 
     [Fact]

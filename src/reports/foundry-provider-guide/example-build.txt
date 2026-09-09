@@ -1,0 +1,12 @@
+  Determining projects to restore...
+CSSM_ModuleLoad(): One or more parameters passed to a function were not valid.
+  Restored /tmp/foundry-provider-guide-check/ProviderExample.csproj (in 166 ms).
+  Restored /Users/kevinburrowes/Documents/code/inspect-azureai-dotnet/src/InspectAzureAI.Provider/InspectAzureAI.Provider.csproj (in 159 ms).
+  InspectAzureAI.Provider -> /Users/kevinburrowes/Documents/code/inspect-azureai-dotnet/src/InspectAzureAI.Provider/bin/Debug/net10.0/InspectAzureAI.Provider.dll
+  ProviderExample -> /tmp/foundry-provider-guide-check/bin/Debug/net10.0/ProviderExample.dll
+
+Build succeeded.
+    0 Warning(s)
+    0 Error(s)
+
+Time Elapsed 00:00:23.08
