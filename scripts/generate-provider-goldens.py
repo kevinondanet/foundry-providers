@@ -56,7 +56,7 @@ async def main():
         cases.append(await anthropic_case(model, config))
     cases.append(await anthropic_case("claude-opus-5", {"reasoning_effort":"high"}, "tools_images"))
     cases.append(await anthropic_case("claude-sonnet-4-6", {"response_schema":SCHEMA,"reasoning_effort":"high","reasoning_tokens":2048}, "simple"))
-    cases.append(await anthropic_case("claude-opus-4", {"reasoning_effort":"high"}))
+    cases.append(await anthropic_case("claude-opus-4-20250514", {"reasoning_effort":"high"}))
     import inspect_ai
     source = Path(inspect_ai.__file__).resolve().parents[2]
     revision = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
