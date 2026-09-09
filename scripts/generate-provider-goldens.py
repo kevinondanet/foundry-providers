@@ -49,4 +49,42 @@ async def main():
     output = {"python_revision": revision, "notes": ["Caching disabled: provider-native caching is outside this port.", "Transport-only stream=false and request tracing headers omitted."], "cases": cases}
     (ROOT / "tests/InspectAzureAI.Tests/Fixtures/anthropic-requests.json").write_text(json.dumps(output, indent=2) + "\n")
 
-asyncio.run(main())
+async def openai_case(model, config_args, model_args):
+    import httpx
+    from inspect_ai.model._providers.openai import OpenAIAPI
+    captured = {}
+    def capture(request):
+        captured["body"] = json.loads(request.content)
+        captured["headers"] = {k: v for k, v in request.headers.items() if k in ("openai-organization", "openai-project")}
+        return httpx.Response(200, json={"id":"resp_1", "object":"response", "model":model,"status":"completed", "output":[], "usage":{"input_tokens":1,"output_tokens":0,"total_tokens":1}, "created_at":0})
+    client = httpx.AsyncClient(transport=httpx.MockTransport(capture))
+    config = GenerateConfig(**config_args)
+    api = OpenAIAPI(model, api_key="fixture-key", base_url="https://fixture.invalid/v1", http_client=client, streaming=False, config=config, **model_args)
+    api._reasoning_summaries = False  # deliberate opt-in summaries policy; no live capability probe
+    try:
+        await api.generate([ChatMessageSystem(content="Be brief."), ChatMessageUser(content="hi")], [], "auto", config)
+    finally:
+        await api.aclose()
+    return {"provider":"openai", "model":model, "config":config_args, "model_args":model_args, **captured}
+
+async def openai_main():
+    cases = []
+    for model, config, args in [
+        ("gpt-5.6-sol", {}, {}),
+        ("gpt-5.4-mini", {"reasoning_effort":"max", "temperature":0.2}, {}),
+        ("gpt-5.6-sol", {"reasoning_effort":"max", "reasoning_summary":"detailed"}, {}),
+        ("gpt-4", {"temperature":0.3}, {"responses_api":True}),
+        ("gpt-5.6-sol", {"num_choices":1}, {"responses_api":True}),
+        ("gpt-5.4-pro", {}, {}),
+        ("o3-deep-research", {}, {}),
+        ("gpt-5.6-sol", {}, {"responses_store":True, "organization":"org-fixture", "project":"proj-fixture", "safety_identifier":"safe-fixture"}),
+    ]:
+        cases.append(await openai_case(model, config, args))
+    import inspect_ai
+    revision = subprocess.check_output(["git", "-C", str(Path(inspect_ai.__file__).resolve().parents[2]), "rev-parse", "HEAD"], text=True).strip()
+    output = {"python_revision":revision, "notes":["Reasoning summaries disabled unless explicit: no live verification probe.", "Responses store=true is sent explicitly by C#, equivalent to the Python SDK default."], "cases":cases}
+    (ROOT / "tests/InspectAzureAI.Tests/Fixtures/openai-responses-requests.json").write_text(json.dumps(output, indent=2) + "\n")
+
+if __name__ == "__main__":
+    asyncio.run(main())
+    asyncio.run(openai_main())
