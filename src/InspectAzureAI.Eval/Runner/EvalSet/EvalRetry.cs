@@ -123,7 +123,7 @@ public static class EvalRetry
             StreamIdleTimeout = options.StreamIdleTimeout ?? spec.ModelGenerateConfig.StreamIdleTimeout,
             MaxConnections = options.MaxConnections ?? spec.ModelGenerateConfig.MaxConnections,
         };
-        var resolveModel = options.ResolveModel ?? (recorded => FoundryModels.Create(recorded.Model, modelArgs: recorded.ModelArgs));
+        var resolveModel = options.ResolveModel ?? (recorded => Models.Create(recorded.Model, baseUrl: recorded.ModelBaseUrl, modelArgs: recorded.ModelArgs));
         var model = resolveModel(spec).WithConfig(config);
         var reporter = options.Reporter;
         return new EvalOptions

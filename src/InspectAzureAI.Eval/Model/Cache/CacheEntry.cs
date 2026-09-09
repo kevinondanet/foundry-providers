@@ -24,7 +24,7 @@ public sealed class CacheEntry
         CachePolicy policy,
         ToolChoice? toolChoice,
         IReadOnlyList<ToolInfo> tools,
-        int? epoch = null)
+        int? epoch = null, IReadOnlyDictionary<string, object?>? providerArgs = null)
     {
         ArgumentNullException.ThrowIfNull(config);
         ArgumentNullException.ThrowIfNull(input);
@@ -39,11 +39,14 @@ public sealed class CacheEntry
         ToolChoice = toolChoice;
         Tools = tools;
         Epoch = epoch;
+        ProviderArgs = providerArgs;
         Key = CacheKey.Compute(this);
     }
 
     /// <summary>The base URL of the model API, if any.</summary>
     public string? BaseUrl { get; }
+
+    public IReadOnlyDictionary<string, object?>? ProviderArgs { get; }
 
     /// <summary>The configuration used to generate the output.</summary>
     public GenerateConfig Config { get; }
@@ -107,6 +110,8 @@ public static class CacheKey
         {
             config.Remove(field);
         }
+
+        if (entry.ProviderArgs is { Count: > 0 }) config["provider_args"] = JsonSerializer.SerializeToNode(ModelArgumentSanitizer.ForLog(entry.ProviderArgs), options);
 
         var messages = new JsonArray();
         foreach (var message in entry.Input)

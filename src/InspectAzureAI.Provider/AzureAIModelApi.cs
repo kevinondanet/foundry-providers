@@ -61,6 +61,8 @@ public sealed class AzureAIModelApi : IModelApi
         IReadOnlyDictionary<string, object?>? modelArgs = null,
         AzureAIClientSettings? settings = null)
     {
+        ModelArgsForLog = ModelArgumentSanitizer.ForLog(modelArgs);
+        ModelArgumentSanitizer.RejectCredentials(System.Text.Json.JsonSerializer.SerializeToNode(modelArgs));
         Streaming = ProviderUtil.NormalizeStreamArg(streaming, "streaming");
 
         if (modelName.Contains('/'))
@@ -117,6 +119,8 @@ public sealed class AzureAIModelApi : IModelApi
     public string? BaseUrl { get; }
 
     /// <summary>Config passed at construction (the Python base class does not store it; kept for the sample).</summary>
+    public IReadOnlyDictionary<string, object?> ModelArgsForLog { get; }
+    public GenerateConfig DefaultConfig => Config;
     public GenerateConfig Config { get; }
 
     /// <summary>Host settings (transport, credential).</summary>

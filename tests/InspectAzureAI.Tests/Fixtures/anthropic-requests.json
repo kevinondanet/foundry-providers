@@ -337,6 +337,111 @@
         "anthropic-version": "2023-06-01",
         "anthropic-beta": "output-128k-2025-02-19,interleaved-thinking-2025-05-14"
       }
+    },
+    {
+      "provider": "anthropic",
+      "scenario": "simple",
+      "model": "claude-sonnet-4-6",
+      "config": {
+        "response_schema": {
+          "name": "result",
+          "json_schema": {
+            "type": "object",
+            "properties": {
+              "answer": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "answer"
+            ],
+            "additionalProperties": false
+          },
+          "strict": true
+        },
+        "reasoning_effort": "high",
+        "reasoning_tokens": 2048
+      },
+      "body": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ],
+        "system": [
+          {
+            "type": "text",
+            "text": "Be brief."
+          }
+        ],
+        "tools": [],
+        "model": "claude-sonnet-4-6",
+        "max_tokens": 48000,
+        "output_config": {
+          "effort": "high"
+        },
+        "thinking": {
+          "type": "adaptive",
+          "display": "summarized"
+        },
+        "output_format": {
+          "type": "json_schema",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "answer": {
+                "type": "string",
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "answer"
+            ]
+          }
+        }
+      },
+      "headers": {
+        "anthropic-version": "2023-06-01",
+        "anthropic-beta": "output-128k-2025-02-19,structured-outputs-2025-11-13,interleaved-thinking-2025-05-14"
+      }
+    },
+    {
+      "provider": "anthropic",
+      "scenario": "simple",
+      "model": "claude-opus-4",
+      "config": {
+        "reasoning_effort": "high"
+      },
+      "body": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ],
+        "system": [
+          {
+            "type": "text",
+            "text": "Be brief."
+          }
+        ],
+        "tools": [],
+        "model": "claude-opus-4",
+        "max_tokens": 48000,
+        "output_config": {
+          "effort": "high"
+        },
+        "thinking": {
+          "type": "adaptive",
+          "display": "summarized"
+        }
+      },
+      "headers": {
+        "anthropic-version": "2023-06-01",
+        "anthropic-beta": "output-128k-2025-02-19,interleaved-thinking-2025-05-14"
+      }
     }
   ]
 }

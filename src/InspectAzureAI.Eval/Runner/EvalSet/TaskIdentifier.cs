@@ -7,6 +7,7 @@ using InspectAzureAI.Eval.Log;
 using InspectAzureAI.Eval.Model;
 using InspectAzureAI.Eval.Tasks;
 using InspectAzureAI.Provider.Core;
+using InspectAzureAI.Provider.Util;
 
 namespace InspectAzureAI.Eval.Runner.EvalSet;
 
@@ -92,7 +93,7 @@ public static class TaskIdentifier
         // the runner's plan config: the model's config with the task's layered over it (Eval.EvalModel)
         var plan = Eval.ResolvePlan(task, args.Config.Merge(task.Config));
         var fields = new AdditionalHashFields(
-            ModelArgs: new Dictionary<string, object?>(StringComparer.Ordinal),
+            ModelArgs: model.Api.ModelArgsForLog,
             Version: task.Version,
             MessageLimit: args.MessageLimit ?? task.MessageLimit,
             TokenLimit: TokenLimitHashValue(args.TokenLimit ?? task.TokenLimit, null),
@@ -104,7 +105,7 @@ public static class TaskIdentifier
             taskFile: "",
             taskName: task.Name,
             taskArgs: task.TaskArgs ?? new Dictionary<string, object?>(StringComparer.Ordinal),
-            model: model.Name,
+            model: ModelIdentity.ForLog(model.Api),
             modelGenerateConfig: model.Config,
             modelRoles: ModelRolesConfig.ToConfig(modelRoles),
             plan: plan,
@@ -117,7 +118,7 @@ public static class TaskIdentifier
         ArgumentNullException.ThrowIfNull(log);
         var spec = log.Eval;
         var fields = new AdditionalHashFields(
-            ModelArgs: spec.ModelArgs,
+            ModelArgs: ModelArgumentSanitizer.ForLog(spec.ModelArgs),
             Version: spec.TaskVersion,
             MessageLimit: spec.Config.MessageLimit,
             TokenLimit: TokenLimitHashValue(spec.Config.TokenLimit, spec.Config.TokenLimitType),
@@ -226,7 +227,7 @@ public static class TaskIdentifier
         {
             ["model"] = config.Model,
             ["config"] = PydanticJson.GenerateConfigNode(config.Config, GenerateConfigFieldsToExclude),
-            ["args"] = JsonSerializer.SerializeToNode(config.Args, EvalLogWriter.Options) ?? new JsonObject(),
+            ["args"] = JsonSerializer.SerializeToNode(ModelArgumentSanitizer.ForLog(config.Args), EvalLogWriter.Options) ?? new JsonObject(),
         };
     }
 
@@ -286,11 +287,10 @@ public static class ModelRolesConfig
             return null;
         }
 
-        modelFactory ??= name => FoundryModels.Create(name);
         var result = new Dictionary<string, object>(StringComparer.Ordinal);
         foreach (var (role, configs) in roles)
         {
-            var models = configs.Select(config => modelFactory(config.Model).WithConfig(config.Config)).ToList();
+            var models = configs.Select(config => modelFactory is null ? Models.Create(config.Model, config.Config, config.BaseUrl, modelArgs: config.Args) : modelFactory(config.Model).WithConfig(config.Config)).ToList();
             result[role] = models.Count == 1 ? models[0] : models;
         }
 
@@ -308,7 +308,7 @@ public static class ModelRolesConfig
         var result = new Dictionary<string, IReadOnlyList<ModelConfig>>(StringComparer.Ordinal);
         foreach (var (role, models) in roles)
         {
-            result[role] = models.Select(model => new ModelConfig(model.Name) { Config = model.Config, BaseUrl = ModelApiHooks.BaseUrl(model.Api) }).ToArray();
+            result[role] = models.Select(model => new ModelConfig(ModelIdentity.ForLog(model.Api)) { Config = model.Config, BaseUrl = model.Api.BaseUrl, Args = model.Api.ModelArgsForLog }).ToArray();
         }
 
         return result;

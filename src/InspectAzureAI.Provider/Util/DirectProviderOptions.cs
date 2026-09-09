@@ -46,10 +46,11 @@ internal sealed class DirectProviderOptions
         if (!string.IsNullOrEmpty(uri.UserInfo)) throw new PrerequisiteError("Do not put credentials in base_url; use api_key.");
         if (IsAzureUrl(BaseUrl)) throw new PrerequisiteError($"An Azure endpoint requires {provider}/azure/<deployment>, not {provider}/<model>.");
         Streaming = ProviderUtil.NormalizeStreamArg(streaming ?? (Values["streaming"] is JsonValue v ? v.ToString() : null), "streaming");
-        Timeout = Number("client_timeout") ?? Number("timeout");
+        Timeout = Number("client_timeout") ?? Number("timeout") ?? (provider == "openai" && String("service_tier") == "flex" ? 900 : null);
         MaxRetries = Number("max_retries") is { } retries ? checked((int)retries) : null;
         if (Timeout is <= 0 || MaxRetries is < 0) throw new PrerequisiteError("Timeout must be positive and max_retries must be nonnegative.");
         if (Values["default_headers"] is JsonObject headers) foreach (var pair in headers) Headers[pair.Key] = pair.Value?.ToString() ?? "";
+        if (Headers.Keys.Any(ModelArgumentSanitizer.IsSecret)) throw new PrerequisiteError("Authentication headers are not accepted in default_headers. Use api_key or DirectClientSettings.ApiKeyOverride.");
         ExtraBody = Values["extra_body"]?.DeepClone().AsObject() ?? new();
         ModelArgumentSanitizer.RejectCredentials(ExtraBody);
         ForLog = ModelArgumentSanitizer.ForLog(modelArgs);

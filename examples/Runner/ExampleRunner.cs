@@ -344,7 +344,7 @@ public static class ExampleRunner
         context = context with { Sandbox = sandbox };
 
         // The model: the example's script under --fake, else the Foundry deployment on its route.
-        var model = fake ? example.CreateFakeModel(context) : FoundryModels.Create(options.Model, route: options.Route);
+        var model = fake ? example.CreateFakeModel(context) : InspectAzureAI.Eval.Model.Models.Create(options.Model, route: options.Route);
         context = context with { ResolvedModel = model };
 
         // The approval policy: the flag, else the example's (a file relative to its folder, or an approver name).

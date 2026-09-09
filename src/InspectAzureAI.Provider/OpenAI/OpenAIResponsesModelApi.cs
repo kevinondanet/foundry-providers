@@ -71,6 +71,8 @@ public sealed class OpenAIResponsesModelApi : IModelApi, IDisposable
         ModelName = modelName;
         var parts = modelName.Split('/', 2);
         DeploymentName = parts.Length == 2 && parts[0] == "azure" ? parts[1] : modelName;   // openai/azure/<deployment>
+        ModelArgsForLog = ModelArgumentSanitizer.ForLog(modelArgs);
+        ModelArgumentSanitizer.RejectCredentials(System.Text.Json.JsonSerializer.SerializeToNode(modelArgs));
         Streaming = ProviderUtil.NormalizeStreamArg(streaming, "streaming");
         Config = config ?? new GenerateConfig();
         Settings = settings ?? new AzureAIClientSettings();
@@ -109,6 +111,8 @@ public sealed class OpenAIResponsesModelApi : IModelApi, IDisposable
     /// <summary>Normalised <c>streaming</c> arg: null means auto.</summary>
     public bool? Streaming { get; }
 
+    public IReadOnlyDictionary<string, object?> ModelArgsForLog { get; }
+    public GenerateConfig DefaultConfig => Config;
     public GenerateConfig Config { get; }
 
     public AzureAIClientSettings Settings { get; }

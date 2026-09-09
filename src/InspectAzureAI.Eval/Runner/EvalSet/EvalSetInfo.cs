@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using InspectAzureAI.Eval.Log;
+using InspectAzureAI.Eval.Model;
 using InspectAzureAI.Provider.Core;
 using InspectAzureAI.Provider.Util;
 
@@ -53,6 +54,7 @@ public sealed record EvalSetInfo
         ArgumentException.ThrowIfNullOrEmpty(evalSetId);
         ArgumentNullException.ThrowIfNull(tasks);
         ArgumentNullException.ThrowIfNull(logs);
+        logs = TaskIdentityMatcher.Associate(logs, tasks);
         var infos = new List<EvalSetTaskInfo>(tasks.Count);
         foreach (var task in tasks)
         {
@@ -62,9 +64,10 @@ public sealed record EvalSetInfo
                 Name = task.Task.Name,
                 TaskId = existingTaskId ?? task.Id,
                 TaskArgs = task.Task.TaskArgs ?? new Dictionary<string, object?>(StringComparer.Ordinal),
-                Model = task.Model.Name,
+                Model = ModelIdentity.ForLog(task.Model.Api),
+                ModelArgs = task.Model.Api.ModelArgsForLog,
                 ModelRoles = task.ModelRoles is { Count: > 0 } roles
-                    ? roles.ToDictionary(pair => pair.Key, pair => string.Join(",", pair.Value.Select(model => model.Name)), StringComparer.Ordinal)
+                    ? roles.ToDictionary(pair => pair.Key, pair => string.Join(",", pair.Value.Select(model => ModelIdentity.ForLog(model.Api))), StringComparer.Ordinal)
                     : null,
                 Sequence = task.Sequence,
             });

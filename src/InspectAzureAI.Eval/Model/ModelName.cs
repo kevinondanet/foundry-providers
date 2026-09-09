@@ -108,29 +108,7 @@ public sealed class ModelName : IEquatable<ModelName>
     public static string ProviderName(IModelApi api)
     {
         ArgumentNullException.ThrowIfNull(api);
-        return api switch
-        {
-            AzureAIModelApi => "azureai",
-            AnthropicFoundryModelApi => "anthropic",
-            InspectAzureAI.Provider.OpenAI.OpenAIResponsesModelApi => "openai",
-            FallbackModelApi fallback => ProviderName(fallback.Primary),
-            _ => FromTypeName(api.GetType().Name),
-        };
-    }
-
-    private static string FromTypeName(string typeName)
-    {
-        var name = typeName;
-        foreach (var suffix in new[] { "ModelApi", "Api" })
-        {
-            if (name.Length > suffix.Length && name.EndsWith(suffix, StringComparison.Ordinal))
-            {
-                name = name[..^suffix.Length];
-                break;
-            }
-        }
-
-        return name.ToLowerInvariant();
+        return api.ProviderName;
     }
 
     /// <summary>Port of <c>ModelName._parse_model</c>: <c>api/name</c> splits on the first slash; no slash means no api.</summary>

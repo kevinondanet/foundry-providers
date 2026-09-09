@@ -134,6 +134,7 @@ public static partial class EvalSetLogs
     {
         ArgumentNullException.ThrowIfNull(tasks);
         ArgumentNullException.ThrowIfNull(logs);
+        logs = TaskIdentityMatcher.Associate(logs, tasks);
         var complete = new List<EvalSetLog>();
         var incomplete = new List<EvalSetLog>();
         foreach (var log in LatestCompletedTaskEvalLogs(logs, cleanupOlder, warn))
@@ -166,7 +167,7 @@ public static partial class EvalSetLogs
             return false;
         }
 
-        var task = tasks.FirstOrDefault(candidate => candidate.Identifier == log.TaskIdentifier)
+        var task = TaskIdentityMatcher.Match(log, tasks)
             ?? throw new PrerequisiteError($"Could not find task for log '{log.Path}'.");
         var epochCount = epochs ?? task.Task.Epochs?.Count ?? 1;
         var reducers = EpochsReducerNames(task.Task.Epochs);
@@ -288,6 +289,7 @@ public static partial class EvalSetLogs
             }
         }
 
+        logs = TaskIdentityMatcher.Associate(logs, tasks);
         if (logDirAllowDirty)
         {
             return logs.Where(log => identifiers.Contains(log.TaskIdentifier)).ToList();

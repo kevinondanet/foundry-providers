@@ -48,7 +48,7 @@ public sealed class ModelRoles : IReadOnlyDictionary<string, IReadOnlyList<Model
     /// <summary>
     /// Port of <c>resolve_model_roles</c>. Each value is a model name, a <see cref="Model"/>, or a non-empty
     /// sequence of these (an <c>IEnumerable</c> of <c>string</c> / <see cref="Model"/>); names are created with
-    /// <paramref name="modelFactory"/> (default: <c>FoundryModels.Create(name)</c>),
+    /// <paramref name="modelFactory"/> (default: <c>Models.Create(name)</c>),
     /// and every entry becomes a distinct <see cref="Model"/> copy bound to its role (<see cref="Model.WithRole"/>).
     /// Returns null for null input. Any other value or an empty list is a <see cref="PrerequisiteError"/>, with Python's messages.
     /// </summary>
@@ -59,7 +59,7 @@ public sealed class ModelRoles : IReadOnlyDictionary<string, IReadOnlyList<Model
             return null;
         }
 
-        modelFactory ??= name => FoundryModels.Create(name);
+        modelFactory ??= name => Models.Create(name);
         var resolved = new Dictionary<string, IReadOnlyList<Model>>(StringComparer.Ordinal);
         foreach (var (role, value) in roles)
         {
@@ -157,7 +157,7 @@ public sealed class ModelRoles : IReadOnlyDictionary<string, IReadOnlyList<Model
             throw new InvalidOperationException("No model specified (and no model environment variable defined)");
         }
 
-        return FoundryModels.Create(name, config);
+        return Models.Create(name, config);
     }
 
     /// <summary>The first model bound to <paramref name="role"/>, or null.</summary>

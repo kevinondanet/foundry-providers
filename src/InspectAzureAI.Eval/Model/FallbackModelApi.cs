@@ -80,6 +80,7 @@ public sealed class FallbackModelApi : IModelApi
     public IReadOnlyDictionary<string, object?> ModelArgsForLog => Primary.ModelArgsForLog;
     public int? MaxTokensForConfig(GenerateConfig config) => Current.MaxTokensForConfig(config);
     public RetryDecision ShouldRetry(Exception ex) => Current.ShouldRetry(ex);
+    public GenerateConfig DefaultConfig => Primary.DefaultConfig;
     public bool IsAuthFailure(Exception ex) => Current.IsAuthFailure(ex);
     public bool CollapseUserMessages() => Current.CollapseUserMessages();
     public bool SupportsRemoteMcp() => Current.SupportsRemoteMcp();

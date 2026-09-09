@@ -147,7 +147,9 @@ public static class Eval
                 Shuffled = task.Dataset.Shuffled,
             },
             Sandbox = task.Sandbox,
-            Model = model.Name,
+            Model = ModelIdentity.ForLog(model.Api),
+            ModelArgs = model.Api.ModelArgsForLog,
+            ModelBaseUrl = model.Api.BaseUrl,
             ModelGenerateConfig = sourceModel.Config,
             ModelRoles = ModelRolesConfig.ToConfig(resolvedRoles),
             Config = new EvalConfig

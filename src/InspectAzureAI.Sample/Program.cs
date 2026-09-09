@@ -342,6 +342,7 @@ namespace InspectAzureAI.Sample
         /// <summary>Creates the provider for the selected route: model-inference (default), the Anthropic Messages route or the OpenAI Responses route.</summary>
         public static IModelApi CreateModelApi(string? route, string? model, string? streaming, bool fake)
         {
+            if (!fake) return InspectAzureAI.Eval.Model.Models.CreateApi(model, route: route, streaming: streaming, modelArgs: ExtraModelArgs);
             if (route is null || route.Equals("models", StringComparison.OrdinalIgnoreCase))
             {
                 return CreateApi(model, streaming, fake);
