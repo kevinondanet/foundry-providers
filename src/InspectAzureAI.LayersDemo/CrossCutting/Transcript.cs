@@ -42,9 +42,9 @@ public sealed record StepEvent(string Source, string Name, string Action) : Even
 /// <summary>One call to the model, including the exact bytes sent and received.</summary>
 public sealed record ModelEvent(
     string Source, string Model, int InputMessages, string StopReason,
-    string Request, string Response, int Retries) : Event(Source)
+    string Request, string Response, int Retries, int InputTokens = 0, int OutputTokens = 0) : Event(Source)
 {
-    public override string Summary => $"{Model}: {InputMessages} msgs -> stop={StopReason}" + (Retries > 0 ? $" after {Retries} retry(s)" : "");
+    public override string Summary => $"{Model}: {InputMessages} msgs -> stop={StopReason}, {InputTokens}/{OutputTokens} tokens" + (Retries > 0 ? $" after {Retries} retry(s)" : "");
 }
 
 public sealed record ToolEvent(string Source, string Function, string Arguments, string Result) : Event(Source)

@@ -1,0 +1,10 @@
+{"summary":"Volume discount change has four functional defects.","verdict":"request_changes",
+ "severity_counts":{"critical":0,"high":3,"medium":1,"low":0},
+ "changed_files":[{"file":"shop/cart.py","lines_changed":"discount tiers, averages, merge, total","risk":"Medium","issue_count":4}],
+ "findings":[
+  {"number":1,"title":"Discount tier boundary uses > instead of >=","severity":"High","category":"Logic","skill":null,"file":"shop/cart.py","lines":"27-29","problem":"A cart with exactly 10 items gets no discount; the contract says exactly 10 gets 10%. Off-by-one at the boundary.","current_code":"if quantity > minimum:","suggested_fix":"if quantity >= minimum:"},
+  {"number":2,"title":"average_unit_price divides by zero on an empty cart","severity":"High","category":"Edge Cases","skill":null,"file":"shop/cart.py","lines":"33-35","problem":"len(lines) is 0 for an empty cart so ZeroDivisionError is raised.","current_code":"return sum(line.unit_price for line in lines) / len(lines)","suggested_fix":"if not lines: return 0.0"},
+  {"number":3,"title":"Tax applied before discount","severity":"High","category":"Contract","skill":null,"file":"shop/cart.py","lines":"56-58","problem":"Tax is computed on the pre-discount subtotal, contradicting the documented contract that tax is charged on the discounted amount.","current_code":"taxed = subtotal(lines) * (1 + tax_rate)","suggested_fix":"discounted = subtotal(lines) * (1 - discount_rate(lines)); return round(discounted * (1 + tax_rate), 2)"},
+  {"number":4,"title":"Broad except returns 0.0","severity":"Medium","category":"Error Handling","skill":null,"file":"shop/cart.py","lines":"59-60","problem":"Any exception is swallowed and a zero total returned, which looks like a free order.","current_code":"except Exception:\n    return 0.0","suggested_fix":"remove the try/except"}
+ ],
+ "positive_changes":[],"testing_recommendations":["boundary tests at 5 and 10 items"],"recommended_actions":["fix and add tests"],"out_of_scope_observations":[],"risk_assessment":"Medium"}

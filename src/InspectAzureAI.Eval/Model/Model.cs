@@ -7,6 +7,7 @@ using InspectAzureAI.Eval.Model.Cache;
 using InspectAzureAI.Eval.Model.Compaction;
 using InspectAzureAI.Eval.Model.Cost;
 using InspectAzureAI.Eval.Tools;
+using InspectAzureAI.Eval.Tools.Mcp;
 using InspectAzureAI.Provider.Core;
 
 namespace InspectAzureAI.Eval.Model;
@@ -18,7 +19,7 @@ using Concurrency = InspectAzureAI.Eval.Concurrency.Concurrency;
 /// consecutive-user-message collapsing when the api needs it, sample limit checks, the retry loop of
 /// <c>model/_retry.py</c>, and a <see cref="ModelEvent"/> per attempt on the transcript and event sinks.
 /// </summary>
-public sealed class Model
+public sealed partial class Model
 {
     private static readonly Func<TimeSpan, CancellationToken, Task> SleepDelay = (delay, cancellationToken) => Task.Delay(delay, cancellationToken);
 
@@ -111,7 +112,8 @@ public sealed class Model
         CachePolicy? cache = null,
         StreamHandler? onStream = null,
         CancellationToken cancellationToken = default) =>
-        GenerateAsync(input, tools.Select(t => t.ToInfo()).ToArray(), toolChoice, config, cache, onStream, cancellationToken);
+        // Python (Model.generate): apply any tool model_input handlers before the provider sees the conversation.
+        GenerateAsync(ToolModelInput.Resolve(tools, input, ToolModelInput.HintsFor(Api)), tools.Select(t => t.ToInfo()).ToArray(), toolChoice, config, cache, onStream, cancellationToken);
 
     /// <summary>
     /// Port of <c>Model.generate</c>. <paramref name="cache"/> enables the prompt cache (<c>true</c> selects
@@ -152,6 +154,19 @@ public sealed class Model
 
         var resolvedTools = tools ?? [];
         var resolvedChoice = toolChoice ?? ToolChoice.Auto;
+
+        // Python: raise error if we don't support remote_mcp and we have an mcp server
+        if (!ModelApiHooks.SupportsRemoteMcp(Api))
+        {
+            foreach (var tool in resolvedTools)
+            {
+                if (McpServerRemote.IsMcpServerTool(tool))
+                {
+                    throw new InvalidOperationException($"Remote MCP execution is not supported for {Name}. Please use \"local\" execution instead.");
+                }
+            }
+        }
+
         if (resolvedChoice is ToolFunction function)
         {
             resolvedTools = resolvedTools.Where(t => t.Name == function.Name).ToArray();

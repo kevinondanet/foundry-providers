@@ -38,6 +38,9 @@ internal static class FakeScripts
             AgentChoice.ClaudeCodeName => throw new UsageError(
                 "--fake cannot drive claude-code: the Claude Code CLI runs inside a real sandbox and needs a real model served through the bridge. "
                 + "Use --agent mini-swe or --agent basic with --fake, or drop --fake."),
+            AgentChoice.CopilotName => throw new UsageError(
+                "--fake cannot drive copilot: the Copilot CLI runs inside a real sandbox and needs a real model served through the bridge. "
+                + "Use --agent mini-swe or --agent basic with --fake, or drop --fake."),
             _ => throw new UsageError($"--agent expects {string.Join("|", AgentChoice.Names)}, got '{agent}'"),
         };
         return new ScriptedModelApi(Enumerable.Repeat(ScriptedTurn.From(respond), TurnBudget), modelName);

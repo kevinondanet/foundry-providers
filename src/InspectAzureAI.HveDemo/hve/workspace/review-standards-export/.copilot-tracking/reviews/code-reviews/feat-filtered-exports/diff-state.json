@@ -1,0 +1,24 @@
+{
+  "branch": "feat/filtered-exports",
+  "base": "main",
+  "files": [
+    "reporting/export.py"
+  ],
+  "untrackedFiles": [],
+  "extensions": [
+    ".py"
+  ],
+  "diffPatchPath": ".copilot-tracking/pr/pr-reference.patch",
+  "findingsFolder": ".copilot-tracking/reviews/code-reviews/feat-filtered-exports/",
+  "reviewStateProvenance": {
+    "scope": "automation-derived",
+    "hotspots": "automation-derived",
+    "outOfScope": "automation-derived"
+  },
+  "depthTier": "standard",
+  "depthRationale": "Automation-derived default for a workflow-mode review.",
+  "hotspots": [
+    "reporting/export.py"
+  ],
+  "outOfScope": []
+}

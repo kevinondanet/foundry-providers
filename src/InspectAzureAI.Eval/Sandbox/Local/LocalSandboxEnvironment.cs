@@ -11,7 +11,7 @@ namespace InspectAzureAI.Eval.Sandbox.Local;
 /// ignored; a timeout kills the whole process tree. Processes run through the same <see cref="ProcessRunner"/>
 /// as the docker CLI, so pipe draining, output caps and kill handling live in one place.
 /// </summary>
-public sealed class LocalSandboxEnvironment : ISandboxEnvironment, IDisposable
+public sealed partial class LocalSandboxEnvironment : ISandboxEnvironment, IDisposable
 {
     private static readonly UTF8Encoding Utf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: false);
 

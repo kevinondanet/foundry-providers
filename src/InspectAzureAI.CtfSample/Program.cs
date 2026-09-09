@@ -28,8 +28,9 @@ internal static class Program
           --fake                 drive the eval with a scripted model (no network, deterministic); default when
                                  AZUREAI_BASE_URL is not set
           --model <name>         Foundry deployment name (default: $INSPECT_AZUREAI_MODEL or gpt-5.4-mini)
-          --route models|anthropic
-                                 Foundry route; claude-* models pick anthropic automatically
+          --route models|anthropic|responses
+                                 Foundry route; claude-* models pick anthropic and gpt-5.6* / o-series / -pro / codex
+                                 models pick responses automatically
           --sandbox docker|local docker (default) builds ctf/Dockerfile; local runs in a temp directory on this host
           --category <name>      only the challenges of one category (forensics, encoding, compression)
           --limit <n>            first n samples

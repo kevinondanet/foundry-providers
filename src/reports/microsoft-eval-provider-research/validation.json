@@ -1,0 +1,18 @@
+{
+  "artifact": "/Users/kevinburrowes/Documents/code/inspect-azureai-dotnet/src/output/pdf/microsoft-foundry-evaluation-provider-layer.pdf",
+  "pages": 5,
+  "source_sha256": "651af04158a478e05d66d34c895d98f00958a8f729d97862f434eb5e20b468a8",
+  "page_word_counts": [
+    327,
+    323,
+    410,
+    421,
+    241
+  ],
+  "link_annotations": 74,
+  "source_references": 16,
+  "visual_review": "passed: all five pages inspected; final render matches inspected pages pixel-for-pixel",
+  "internal_citations_valid": true,
+  "external_citations_use_https": true,
+  "reviewed_on": "2026-09-08"
+}

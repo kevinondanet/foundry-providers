@@ -42,6 +42,9 @@ public sealed class AzureAIModelApi : IModelApi
 
     private readonly Dictionary<string, object?> _modelArgs;
 
+    /// <summary>The boolean <c>max_completion_tokens</c> model arg as given (null when absent).</summary>
+    private readonly bool? _maxCompletionTokensArg;
+
     /// <summary>
     /// Port of <c>AzureAIAPI.__init__</c>, minus the API-key resolution. <paramref name="streaming"/>
     /// accepts <c>true</c>/<c>false</c> or the strings <c>"auto"</c>/<c>"true"</c>/<c>"false"</c> (as
@@ -73,12 +76,13 @@ public sealed class AzureAIModelApi : IModelApi
         _modelArgs = modelArgs is null ? new Dictionary<string, object?>() : new Dictionary<string, object?>(modelArgs);
 
         // Port-only model arg: -M max_completion_tokens=true sends config.MaxTokens as max_completion_tokens
-        // for any model family (reasoning models such as MAI-Thinking-1 reject max_tokens). Python decides by
-        // name only (gpt-5 / o-series); a non-boolean value is left in model_extras as a body field.
+        // for any model family; false keeps Python's name-only rule (gpt-5 / o-series). Absent, the Microsoft
+        // family (MAI-Thinking-1, which rejects max_tokens) is added to that rule. A non-boolean value is left
+        // in model_extras as a body field.
         if (_modelArgs.TryGetValue("max_completion_tokens", out var forceMct) && forceMct is bool force)
         {
             _modelArgs.Remove("max_completion_tokens");
-            ForceMaxCompletionTokens = force;
+            _maxCompletionTokensArg = force;
         }
 
         // Port-only model arg: -M model_format=<ARM Format> names the vendor when the deployment name does not
@@ -127,7 +131,17 @@ public sealed class AzureAIModelApi : IModelApi
     public AudienceTokenCredential Credential { get; }
 
     /// <summary>Port-only: <c>max_completion_tokens=true</c> model arg, forcing <c>max_completion_tokens</c> for every family (README fidelity note 13).</summary>
-    public bool ForceMaxCompletionTokens { get; }
+    public bool ForceMaxCompletionTokens => _maxCompletionTokensArg == true;
+
+    /// <summary>
+    /// Whether <c>config.MaxTokens</c> goes out as <c>max_completion_tokens</c>: forced by the model arg, Python's
+    /// gpt-5 / o-series name rule, or (port-only, unless the arg is explicitly false) the Microsoft family, whose
+    /// reasoning deployments reject <c>max_tokens</c> (README fidelity note 13).
+    /// </summary>
+    public bool SendsMaxCompletionTokens =>
+        ForceMaxCompletionTokens
+        || OpenAIUtil.NeedsMaxCompletionTokens(ModelFamily())
+        || (_maxCompletionTokensArg is null && FamilyHint == ModelFamilyHint.Microsoft);
 
     /// <summary>Port-only: the deployment's vendor (the ARM <c>Format</c> string) from the <c>model_format</c> model arg, when given.</summary>
     public string? ModelFormat { get; }
@@ -231,8 +245,8 @@ public sealed class AzureAIModelApi : IModelApi
 
     /// <summary>
     /// Port of <c>completion_params</c>: the forwarded <see cref="GenerateConfig"/> fields in Python order.
-    /// <c>max_tokens</c> is emitted as <c>max_completion_tokens</c> for gpt-5 / o-series families, or when
-    /// <see cref="ForceMaxCompletionTokens"/> is set. Port-only: the family's reasoning fields for
+    /// <c>max_tokens</c> is emitted as <c>max_completion_tokens</c> when <see cref="SendsMaxCompletionTokens"/>
+    /// (gpt-5 / o-series, the Microsoft family, or the forcing model arg). Port-only: the family's reasoning fields for
     /// <c>ReasoningEffort</c> / <c>ReasoningTokens</c> follow (<see cref="ReasoningRequestParams"/>).
     /// Every other config field is silently ignored.
     /// </summary>
@@ -261,7 +275,7 @@ public sealed class AzureAIModelApi : IModelApi
 
         if (config.MaxTokens is not null)
         {
-            parameters[ForceMaxCompletionTokens || OpenAIUtil.NeedsMaxCompletionTokens(ModelFamily()) ? "max_completion_tokens" : "max_tokens"] = config.MaxTokens;
+            parameters[SendsMaxCompletionTokens ? "max_completion_tokens" : "max_tokens"] = config.MaxTokens;
         }
 
         if (config.StopSeqs is not null)

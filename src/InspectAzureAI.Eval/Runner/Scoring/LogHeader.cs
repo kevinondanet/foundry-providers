@@ -51,7 +51,7 @@ internal static class LogHeader
     /// <summary>
     /// Port of <c>metric_from_log</c> for the built-in metrics: <c>accuracy</c>, <c>mean</c>, <c>stderr</c> (<c>cluster</c>),
     /// <c>std</c>, <c>var</c>, <c>bootstrap_stderr</c> (<c>num_samples</c>), <c>ci_wilson</c> (<c>level</c>, <c>cluster</c>),
-    /// <c>perplexity_per_token</c> and <c>perplexity_per_seq</c>. An <c>inspect_ai/</c> prefix is accepted. Any other metric,
+    /// <c>perplexity_per_token</c>, <c>perplexity_per_seq</c> and <c>frequency</c> (<c>categories</c>, <c>normalize</c>). An <c>inspect_ai/</c> prefix is accepted. Any other metric,
     /// or an option the table does not cover, is a <see cref="NotSupportedException"/> rather than a silently different metric.
     /// </summary>
     public static MetricDef MetricFromLog(string name, JsonObject? options)
@@ -71,6 +71,7 @@ internal static class LogHeader
             "ci_wilson" => Only(opts, name, ["level", "cluster"], () => Metrics.CiWilson(Dbl(opts, "level") ?? 0.95, cluster: Str(opts, "cluster"))),
             "perplexity_per_token" => Only(opts, name, [], Metrics.PerplexityPerToken),
             "perplexity_per_seq" => Only(opts, name, [], Metrics.PerplexityPerSeq),
+            "frequency" => Only(opts, name, ["categories", "normalize"], () => Metrics.Frequency(StrList(opts, "categories"), Bool(opts, "normalize") ?? true)),
             _ => throw new NotSupportedException($"The metric '{name}' recorded in the log header cannot be re-created by this port; pass the metrics explicitly."),
         };
     }
@@ -101,7 +102,8 @@ internal static class LogHeader
     /// <summary>
     /// Port of <c>resolve_eval_scorers([as_scorer_spec(s) ...])</c>: the <see cref="EvalScorer"/> header entries for the scorers
     /// applied. A <see cref="ScorerDef"/> carries no instantiation arguments or metadata, so <c>options</c> and <c>metadata</c>
-    /// are the empty dicts Python writes for an argument-less scorer.
+    /// are the empty dicts Python writes for an argument-less scorer. Per-key metrics (<see cref="ScorerDef.MetricsByKey"/>)
+    /// are written in Python's dictionary shape (<see cref="MetricDictResults.HeaderMetrics"/>).
     /// </summary>
     public static IReadOnlyList<EvalScorer> ToEvalScorers(IEnumerable<ScorerDef> scorers)
     {
@@ -109,7 +111,7 @@ internal static class LogHeader
         return scorers.Select(scorer => new EvalScorer(scorer.Name)
         {
             Options = new Dictionary<string, object?>(StringComparer.Ordinal),
-            Metrics = new JsonArray(scorer.Metrics.Select(metric => (JsonNode)new JsonObject { ["name"] = metric.Name, ["options"] = new JsonObject() }).ToArray()),
+            Metrics = MetricDictResults.HeaderMetrics(scorer),
             Metadata = new Dictionary<string, object?>(StringComparer.Ordinal),
         }).ToList();
     }
@@ -128,6 +130,11 @@ internal static class LogHeader
     }
 
     private static string? Str(JsonObject options, string key) => options[key] is JsonValue value && value.TryGetValue<string>(out var text) ? text : null;
+
+    private static bool? Bool(JsonObject options, string key) => options[key] is JsonValue value && value.TryGetValue<bool>(out var flag) ? flag : null;
+
+    private static IReadOnlyList<string>? StrList(JsonObject options, string key) =>
+        options[key] is JsonArray items ? items.Select(item => item is JsonValue value && value.TryGetValue<string>(out var text) ? text : item?.ToJsonString() ?? "null").ToList() : null;
 
     private static int? Int(JsonObject options, string key) => options[key] is JsonValue value && value.TryGetValue<int>(out var number) ? number : null;
 

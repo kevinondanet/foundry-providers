@@ -71,6 +71,33 @@ public class OptionsAndSelectionTests
     }
 
     [Fact]
+    public void responses_only_and_responses_preferring_openai_deployments_take_the_responses_route()
+    {
+        Assert.Equal("responses", DeploymentSelection.RouteFor(Deployment("gpt-5.4-pro", chat: false)));
+        Assert.Equal("responses", DeploymentSelection.RouteFor(Deployment("gpt-5.6-sol")));
+        Assert.Equal("responses", DeploymentSelection.RouteFor(Deployment("o4-mini")));
+        Assert.Equal("models", DeploymentSelection.RouteFor(Deployment("gpt-5.4-mini")));
+        Assert.Equal("models", DeploymentSelection.RouteFor(Deployment("gpt-5.6-lookalike", "Mistral AI")));
+    }
+
+    [Fact]
+    public void responses_only_openai_deployments_are_selected_while_other_non_chat_deployments_are_skipped()
+    {
+        var deployments = new[]
+        {
+            Deployment("gpt-5.4-pro", chat: false),
+            Deployment("image", "Black Forest Labs", chat: false),
+            Deployment("gpt-5.4-mini"),
+        };
+
+        var selected = DeploymentSelection.Select(deployments, Parse());
+        Assert.Equal(["gpt-5.4-mini", "gpt-5.4-pro"], selected.Where(s => s.Selected).Select(s => s.Deployment.Name));
+        Assert.Equal("responses", selected.Single(s => s.Deployment.Name == "gpt-5.4-pro").Route);
+        Assert.Equal("models", selected.Single(s => s.Deployment.Name == "gpt-5.4-mini").Route);
+        Assert.Equal("chatCompletion=false", selected.Single(s => s.Deployment.Name == "image").SkipReason);
+    }
+
+    [Fact]
     public void selection_applies_every_skip_rule_and_sorts_by_name()
     {
         var deployments = new[]

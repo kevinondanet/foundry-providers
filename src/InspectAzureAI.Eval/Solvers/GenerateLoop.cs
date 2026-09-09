@@ -1,4 +1,5 @@
 using InspectAzureAI.Eval.Context;
+using InspectAzureAI.Eval.Model.Cache;
 using InspectAzureAI.Eval.Tools;
 using InspectAzureAI.Provider.Core;
 
@@ -21,7 +22,7 @@ public static class GenerateLoop
     public static Generate Create(Model model, int? maxToolOutput = null)
     {
         ArgumentNullException.ThrowIfNull(model);
-        return (state, toolCalls, config, cancellationToken) => RunAsync(model, state, toolCalls, config, maxToolOutput, cancellationToken);
+        return (state, toolCalls, config, cache, cancellationToken) => RunAsync(model, state, toolCalls, config, cache, maxToolOutput, cancellationToken);
     }
 
     /// <summary>
@@ -70,6 +71,7 @@ public static class GenerateLoop
         TaskState state,
         ToolCallsMode toolCalls,
         GenerateConfig? config,
+        CachePolicy? cache,
         int? maxToolOutput,
         CancellationToken cancellationToken)
     {
@@ -83,7 +85,7 @@ public static class GenerateLoop
             CheckMessageLimit(state);
 
             // Snapshots: the model records its input on the transcript, and the state's lists keep mutating.
-            var output = await model.GenerateAsync(state.Messages.ToArray(), state.Tools.ToArray(), toolChoice, config, cancellationToken: cancellationToken).ConfigureAwait(false);
+            var output = await model.GenerateAsync(state.Messages.ToArray(), state.Tools.ToArray(), toolChoice, config, cache, cancellationToken: cancellationToken).ConfigureAwait(false);
             CheckTokenLimit(state);
             state.Output = output;
 

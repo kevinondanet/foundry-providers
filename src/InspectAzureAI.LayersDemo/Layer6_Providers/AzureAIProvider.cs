@@ -14,29 +14,23 @@
 //    - the wire format: OpenAI-style chat completions, plus Foundry's
 //      api-version query and `extra-parameters: pass-through` header;
 //    - vendor quirks: gpt-5 and o-series deployments take
-//      max_completion_tokens and reject temperature;
+//      max_completion_tokens and reject temperature, and Foundry hosts many
+//      other vendors' models behind the same route with their own quirks, so
+//      the provider also learns a deployment's dialect from its first 400
+//      and resends once;
 //    - which failures are transient (429, 5xx, timeouts) and so retryable.
 //
-//  It is also the only file in the app with an external dependency
-//  (Azure.Identity); no other layer needs to know how tokens are minted.
+//  Token minting is shared with the Anthropic provider (EntraToken.cs).
 // ============================================================================
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using Azure.Core;
-using Azure.Identity;
 using inspect_ai._util.display;
 using inspect_ai.model;
 
 namespace inspect_ai.model._providers;
-
-/// <summary>A non-2xx reply. Layer 5 never sees the type; it only asks ShouldRetry.</summary>
-internal sealed class AzureAIHttpException(HttpStatusCode status, string message) : Exception(message)
-{
-    public HttpStatusCode Status { get; } = status;
-}
 
 internal static class AzureAIProviderRegistration
 {
@@ -50,19 +44,16 @@ internal sealed class AzureAIModelAPI : ModelAPI
     private const string Tag = "L6 _providers/azureai";
     private const string ApiVersion = "2024-05-01-preview";
     private const string BaseUrlVar = "AZUREAI_BASE_URL";
-    private const string AudienceVar = "AZUREAI_AUDIENCE";
-    private const string DefaultAudience = "https://cognitiveservices.azure.com/.default";
 
-    // Module-level state with no locks: one HttpClient (one connection pool)
-    // and one token request per process, touched only from the event-loop
-    // thread. Caching the *task* rather than the token means concurrent samples
-    // that all need a token at start-up share a single request.
-    private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(120) };
-    private static readonly TokenCredential Credential = new DefaultAzureCredential();
-    private static Task<AccessToken>? _tokenTask;
+    // One HttpClient (one connection pool) per process; module-level state with no lock.
+    private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(180) };
 
     private readonly Uri _endpoint;
-    private readonly bool _reasoningFamily;
+
+    // The deployment's dialect. Seeded from the name, corrected by the first
+    // 400 that names the offending parameter (per instance, no lock).
+    private bool _maxCompletionTokens;
+    private bool _noTemperature;
 
     public AzureAIModelAPI(string modelName) : base(modelName)
     {
@@ -72,7 +63,7 @@ internal sealed class AzureAIModelAPI : ModelAPI
                 $"The azureai provider needs {BaseUrlVar} (e.g. https://<resource>.services.ai.azure.com/models) and an `az login` session for the token.");
 
         _endpoint = new Uri($"{baseUrl.TrimEnd('/')}/chat/completions?api-version={ApiVersion}");
-        _reasoningFamily = IsReasoningFamily(modelName);
+        _maxCompletionTokens = _noTemperature = IsReasoningFamily(modelName);
         Display.Step(Tag, $"endpoint {_endpoint.Host}{_endpoint.AbsolutePath}, deployment '{modelName}', bearer token from DefaultAzureCredential");
     }
 
@@ -83,14 +74,46 @@ internal sealed class AzureAIModelAPI : ModelAPI
 
     public override bool ShouldRetry(Exception ex) => ex switch
     {
-        AzureAIHttpException http => http.Status is HttpStatusCode.TooManyRequests
+        FoundryHttpException http => http.Status is HttpStatusCode.TooManyRequests
             or HttpStatusCode.InternalServerError or HttpStatusCode.BadGateway
-            or HttpStatusCode.ServiceUnavailable or HttpStatusCode.GatewayTimeout,
-        HttpRequestException or TaskCanceledException => true,   // connection reset, DNS blip, client timeout
+            or HttpStatusCode.ServiceUnavailable or HttpStatusCode.GatewayTimeout,   // not 408: our own timeout, fail fast
+        HttpRequestException => true,   // connection reset, DNS blip
         _ => false,
     };
 
+    public override TimeSpan? RetryAfter(Exception ex) => (ex as FoundryHttpException)?.RetryAfter;
+
     public override async Task<ModelOutput> Generate(IReadOnlyList<ChatMessage> input, IReadOnlyList<ToolInfo> tools, GenerateConfig config)
+    {
+        // A 400 that names a parameter this deployment does not take is not an
+        // error to report; it is the deployment telling us its dialect. Adjust
+        // and resend, at most once per parameter. Concurrent samples all get the
+        // same 400: one learns, the others see the dialect changed under them.
+        for (var attempt = 1; ; attempt++)
+        {
+            var dialect = (_maxCompletionTokens, _noTemperature);
+            try
+            {
+                return await Send(input, tools, config);
+            }
+            catch (FoundryHttpException ex) when (ex.Status == HttpStatusCode.BadRequest && attempt <= 3
+                                                  && (LearnDialect(ex.Message) || dialect != (_maxCompletionTokens, _noTemperature)))
+            {
+                Display.Step(Tag, "400 named a parameter this deployment rejects; resending in its dialect");
+            }
+        }
+    }
+
+    private bool LearnDialect(string error)
+    {
+        if (!_maxCompletionTokens && error.Contains("max_completion_tokens"))
+            return _maxCompletionTokens = true;
+        if (!_noTemperature && error.Contains("temperature"))
+            return _noTemperature = true;
+        return false;
+    }
+
+    private async Task<ModelOutput> Send(IReadOnlyList<ChatMessage> input, IReadOnlyList<ToolInfo> tools, GenerateConfig config)
     {
         // 1. Inspect messages -> the vendor wire format.
         var body = new JsonObject
@@ -99,15 +122,8 @@ internal sealed class AzureAIModelAPI : ModelAPI
             ["messages"] = new JsonArray(input.Select(MessageToWire).ToArray()),
         };
         if (tools.Count > 0) body["tools"] = new JsonArray(tools.Select(ToolToWire).ToArray());
-        if (_reasoningFamily)
-        {
-            body["max_completion_tokens"] = config.MaxTokens;
-        }
-        else
-        {
-            body["max_tokens"] = config.MaxTokens;
-            body["temperature"] = config.Temperature;
-        }
+        body[_maxCompletionTokens ? "max_completion_tokens" : "max_tokens"] = config.MaxTokens;
+        if (!_noTemperature) body["temperature"] = config.Temperature;
         var request = body.ToJsonString();
         Display.Step(Tag, $"POST {_endpoint.AbsolutePath} ({request.Length} bytes)");
 
@@ -117,15 +133,15 @@ internal sealed class AzureAIModelAPI : ModelAPI
         {
             Content = new StringContent(request, Encoding.UTF8, "application/json"),
         };
-        message.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await Token());
+        message.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await EntraToken.Get());
         message.Headers.Add("extra-parameters", "pass-through");   // Foundry: forward vendor-specific fields untouched
 
-        using var http = await Http.SendAsync(message);
+        using var http = await Post(Http, message, Tag);
         var response = await http.Content.ReadAsStringAsync();
         if (!http.IsSuccessStatusCode)
         {
             Display.Step(Tag, $"HTTP {(int)http.StatusCode} {http.ReasonPhrase}");
-            throw new AzureAIHttpException(http.StatusCode, $"{(int)http.StatusCode} {http.ReasonPhrase}: {Truncate(response)}");
+            throw new FoundryHttpException(http.StatusCode, $"{(int)http.StatusCode} {http.ReasonPhrase}: {Truncate(response)}", FoundryHttpException.RetryAfterOf(http));
         }
 
         // 3. Vendor wire format -> Inspect's ModelOutput.
@@ -145,25 +161,6 @@ internal sealed class AzureAIModelAPI : ModelAPI
 
         var assistant = new ChatMessage("assistant", content, toolCalls is { Count: > 0 } ? toolCalls : null);
         return new ModelOutput(assistant, finishReason, modelUsage, new ModelCall(request, response));
-    }
-
-    /// <summary>One token per process, refreshed when it is within five minutes of expiry.</summary>
-    private static async Task<string> Token()
-    {
-        var fresh = _tokenTask is { IsCompletedSuccessfully: true } done
-                    && done.Result.ExpiresOn - DateTimeOffset.UtcNow > TimeSpan.FromMinutes(5);
-        if (!fresh && (_tokenTask is null || _tokenTask.IsCompleted))
-            _tokenTask = RequestToken();   // none yet, expiring, or failed: start one request that every caller awaits
-        return (await _tokenTask!).Token;
-    }
-
-    private static async Task<AccessToken> RequestToken()
-    {
-        var scope = Environment.GetEnvironmentVariable(AudienceVar) is { Length: > 0 } audience ? audience : DefaultAudience;
-        Display.Step(Tag, $"requesting an Entra ID token for {scope} (env -> managed identity -> Visual Studio -> az login -> ...)");
-        var token = await Credential.GetTokenAsync(new TokenRequestContext(new[] { scope }), CancellationToken.None);
-        Display.Step(Tag, $"token acquired, expires {token.ExpiresOn:HH:mm:ss}Z");
-        return token;
     }
 
     // ---- neutral -> wire ---------------------------------------------------
@@ -241,6 +238,21 @@ internal sealed class AzureAIModelAPI : ModelAPI
         JsonArray parts => string.Concat(parts.Select(p => p?["text"]?.GetValue<string>() ?? "")),
         _ => content.ToJsonString(),
     };
+
+    /// <summary>Send, turning the client's own timeout into a 408 so it reads as "the deployment
+    /// is unhealthy" rather than as a cancellation (which is what the control plane's token means).</summary>
+    internal static async Task<HttpResponseMessage> Post(HttpClient http, HttpRequestMessage message, string tag)
+    {
+        try
+        {
+            return await http.SendAsync(message);
+        }
+        catch (TaskCanceledException)
+        {
+            Display.Step(tag, $"no reply within {http.Timeout.TotalSeconds:0}s");
+            throw new FoundryHttpException(HttpStatusCode.RequestTimeout, $"408 no reply within {http.Timeout.TotalSeconds:0}s; the deployment looks unhealthy");
+        }
+    }
 
     private static string Truncate(string s) => s.Length <= 200 ? s : s[..197] + "...";
 }

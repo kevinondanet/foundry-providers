@@ -11,7 +11,7 @@ namespace InspectAzureAI.Eval.Sandbox.Docker;
 /// orphan the process tree), files are written byte-exact over <c>docker exec -i</c> stdin and read back
 /// through <c>cat</c>; relative paths resolve under the image's WORKDIR.
 /// </summary>
-public sealed class DockerSandboxEnvironment : ISandboxEnvironment
+public sealed partial class DockerSandboxEnvironment : ISandboxEnvironment
 {
     /// <summary>Port of the <c>write_file</c> shell: create the parent directory, then stream stdin into the file named by <c>$1</c>.</summary>
     internal const string WriteFileScript = "mkdir -p \"$(dirname \"$1\")\" && cat > \"$1\"";

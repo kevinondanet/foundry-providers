@@ -25,10 +25,10 @@ using inspect_ai.log;
 namespace inspect_ai._control;
 
 /// <summary>A snapshot an outside observer can poll.</summary>
-internal sealed record EvalStatus(string Task, int SamplesStarted, int SamplesFinished, string LastActivity, bool Done);
+internal sealed record EvalStatus(string Task, string Model, int SamplesStarted, int SamplesFinished, string LastActivity, bool Done);
 
 /// <summary>A handle to one running eval.</summary>
-internal sealed class RunningEval(string taskName, CancellationTokenSource cancellation)
+internal sealed class RunningEval(string taskName, string modelName, CancellationTokenSource cancellation)
 {
     internal int SamplesStarted;
     internal int SamplesFinished;
@@ -37,7 +37,10 @@ internal sealed class RunningEval(string taskName, CancellationTokenSource cance
     /// <summary>Completes with the log when the engine finishes (or faults / cancels).</summary>
     public Task<EvalLog> Completion { get; internal set; } = Task.FromException<EvalLog>(new InvalidOperationException("not started"));
 
-    public EvalStatus Status() => new(taskName, SamplesStarted, SamplesFinished, LastActivity, Completion.IsCompleted);
+    public EvalStatus Status() => new(taskName, modelName, SamplesStarted, SamplesFinished, LastActivity, Completion.IsCompleted);
+
+    /// <summary>True once Cancel() was called, so a caller can tell our cancellation from a provider's timeout.</summary>
+    public bool IsCancelled => cancellation.IsCancellationRequested;
 
     /// <summary>The only downward signal. The engine sees a token, not us.</summary>
     public void Cancel()
@@ -51,16 +54,22 @@ internal static class ControlPlane
 {
     private static readonly List<RunningEval> Running = new();   // no lock: single event loop
 
+    // Which run the code emitting an event belongs to. Set inside the async
+    // flow of each run, so it follows that run's awaits and nobody else's —
+    // the same contextvar trick as transcript() and sandbox().
+    private static readonly AsyncLocal<RunningEval?> CurrentRun = new();
+
     public static RunningEval Start(EvalOptions options)
     {
         var cancellation = new CancellationTokenSource();
-        var run = new RunningEval(options.Task, cancellation);
+        var run = new RunningEval(options.Task, options.Model, cancellation);
 
         // The upward channel: mirror transcript events into the run's status.
         // Python does this by writing events to the sample buffer on disk,
         // which the view server reads from another process.
         void Tap(Transcript transcript, Event e)
         {
+            if (CurrentRun.Value != run) return;   // another eval's sample (several may run at once)
             switch (e)
             {
                 case SampleInitEvent: run.SamplesStarted++; break;
@@ -70,13 +79,14 @@ internal static class ControlPlane
         }
         Transcript.EventEmitted += Tap;
 
-        Display.Step("L2 _control", $"starting eval '{options.Task}': status endpoint live, cancellation token issued, engine called next");
+        Display.Step("L2 _control", $"starting eval '{options.Task}' on {options.Model}: status endpoint live, cancellation token issued, engine called next");
         run.Completion = RunAndUntap();   // the engine runs synchronously up to its first await, then yields to us
         Running.Add(run);
         return run;
 
         async Task<EvalLog> RunAndUntap()
         {
+            CurrentRun.Value = run;   // scoped to this async flow; the caller's context is untouched
             try { return await EvalRunner.eval(options, cancellation.Token); }   // -> layer 3
             finally { Transcript.EventEmitted -= Tap; }
         }

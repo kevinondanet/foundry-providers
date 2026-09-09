@@ -20,7 +20,7 @@ internal sealed record RunOptions
 
     public static readonly IReadOnlyList<string> SandboxTypes = ["docker", "local"];
 
-    public static readonly IReadOnlyList<string> Routes = ["models", "anthropic"];
+    public static readonly IReadOnlyList<string> Routes = ["models", "anthropic", "responses"];
 
     public string? Task { get; init; }
 
@@ -73,7 +73,7 @@ internal sealed record RunOptions
     /// <summary>The <c>--cache</c> policy (Inspect's <c>generate(cache=...)</c>); null when caching is off.</summary>
     public CachePolicy? Cache { get; init; }
 
-    /// <summary>The <c>--compaction</c> strategy, applied to the mini-swe and basic agent loops (claude-code and maf manage their own context).</summary>
+    /// <summary>The <c>--compaction</c> strategy, applied to the mini-swe and basic agent loops (claude-code, copilot and maf manage their own context).</summary>
     public CompactionChoice? Compaction { get; init; }
 
     /// <summary>The <c>--hooks</c> entries (built-in hook names), created per run by <see cref="RunWiring.CreateHooks"/>.</summary>

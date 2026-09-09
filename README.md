@@ -2,8 +2,9 @@
 
 A .NET 10 port of [Inspect AI](https://inspect.aisi.org.uk) built around
 [Azure AI Foundry](https://ai.azure.com/): the `azureai` model provider (the adapter for Foundry
-model-inference endpoints) and its companion provider for Claude deployments on the Anthropic Messages
-route, the eval engine that drives them (tasks, solvers, scorers, tools, agents, sandboxes, limits, logs,
+model-inference endpoints) and its companion providers for Claude deployments on the Anthropic Messages
+route and for gpt-5.6, gpt-5.4-pro and o-series deployments on the OpenAI Responses route, the eval
+engine that drives them (tasks, solvers, scorers, tools, agents, sandboxes, limits, logs,
 eval sets), two SWE agents, the `inspectai` command line and three console apps. The provider is the
 **lite** cut: it keeps everything needed to drive the deployments that were verified on a live Foundry
 resource (below) with a developer sign-in, and drops the rest:
@@ -11,10 +12,10 @@ resource (below) with a developer sign-in, and drops the rest:
 | Kept | Dropped (available on `main`) |
 |---|---|
 | Entra ID authentication through `DefaultAzureCredential`, which picks up `az login` (and managed identity when hosted) | API keys (`AZURE_API_KEY` / `AZUREAI_API_KEY` / `AZUREAI_ANTHROPIC_API_KEY`), the api-key override hook, the `AZUREAI_CREDENTIAL` selector and `--auth` |
-| **Native tool calling** (`tools` / `tool_choice` on the wire, `tool_calls` parsed back), on both routes | Llama detection and `<tool_call>` prompt-format tool emulation (`emulate_tools`, `Llama31Handler`) |
+| **Native tool calling** (`tools` / `tool_choice` on the wire, `tool_calls` parsed back), on all three routes | Llama detection and `<tool_call>` prompt-format tool emulation (`emulate_tools`, `Llama31Handler`) |
 | Streaming with `on_stream` events, images, `ModelCall` capture, retry classification, content-filter stop details | The YAML fallback for non-JSON tool arguments (native function calling always returns JSON) |
-| The Mistral rules, the gpt-5 / o-series `max_completion_tokens` rule, `-M max_completion_tokens=true` for MAI-Thinking-1 | |
-| **Reasoning controls** (`--reasoning-effort`, `--reasoning-tokens` mapped to each vendor's field), reasoning text and token counts parsed back, Claude thinking replayed on later turns | |
+| The Mistral rules, the gpt-5 / o-series `max_completion_tokens` rule (plus the Microsoft family), `-M max_completion_tokens=true` | |
+| **Reasoning controls** (`--reasoning-effort`, `--reasoning-tokens`, `--reasoning-summary` mapped to each vendor's field), reasoning text and token counts parsed back, Claude thinking replayed on later turns | |
 | A `params` probe that discovers which request parameters each deployment accepts (the matrix below) | |
 | Deployment discovery (`models`) and the `test-all` smoke matrix | |
 | `AnthropicFoundryModelApi` for `claude-*` deployments (bearer token, `tool_use`, streaming, images) | |
@@ -67,6 +68,7 @@ InspectAzureAI.sln
 │   ├── Testing/                    CannedTransport — an offline HttpPipelineTransport
 │   ├── Foundry/                    FoundryCatalog — deployment discovery through Azure Resource Manager; parameter probes
 │   ├── Anthropic/                  AnthropicFoundryModelApi — Claude deployments on the Anthropic Messages route; web search, citations
+│   ├── OpenAI/                     OpenAIResponsesModelApi — gpt-5.6*, gpt-5.4-pro and o-series deployments on the OpenAI Responses route
 │   ├── AzureAIModelApi.cs          port of AzureAIAPI (Entra ID only)
 │   ├── AzureAIStreamAccumulator.cs port of azureai_completion_from_stream
 │   ├── AzureChatCompletions.cs     dict-backed response view (raw JSON)
@@ -91,9 +93,14 @@ InspectAzureAI.sln
 ├── src/InspectAzureAI.SweShowcase  console app: list, run, show
 ├── src/InspectAzureAI.ModelMatrix  console app: every deployment x task x agent
 ├── src/InspectAzureAI.Sample       console app: chat, stream, tools, image, token, models, test-all, capture, params, cache, cost, structured
+├── examples/                       C# ports of the inspect_ai examples, one console project (dotnet run --project examples -- <example>) with a folder per example (examples/README.md indexes them): approval
 ├── docs/ARCHITECTURE.md            the guided tour; docs/ports/ the port notes; docs/dashboard the wire dashboard (see below)
-└── tests/                          seven xunit projects, all offline: Tests, Eval.Tests, Swe.Tests, Maf.Tests, Cli.Tests, ModelMatrix.Tests, Sample.Tests
+└── tests/                          eight xunit projects, all offline: Tests, Eval.Tests, Swe.Tests, Maf.Tests, Cli.Tests, ModelMatrix.Tests, Sample.Tests, Examples.Tests
 ```
+
+## Examples
+
+`examples/` holds C# ports of the examples in the inspect_ai repository's `examples/` folder: one console project, `InspectAzureAI.Examples`, with a folder per example mirroring the Python names; [examples/README.md](examples/README.md) indexes them. `dotnet run --project examples -- list` names them and `dotnet run --project examples -- <example> [--task <name>] [--fake] [--model <deployment>] [--sandbox docker|local|fake|none] ...` runs one, the way `inspect eval` runs the Python original. Every example has an offline mode: `--fake` drives it with a scripted model, and the tools run in a `local` sandbox or a scripted `fake` one. The first is [examples/approval](examples/approval/README.md), the approval-mode demo: custom `bash_allowlist` and `python_allowlist` approvers, a `human` approver and an approval policy vetting bash and python tool calls (`dotnet run --project examples -- approval --fake --sandbox local`). Each example's tasks are also discoverable by the `inspectai` CLI through their `[Task]` methods (`--assembly examples/bin/Debug/net10.0/InspectAzureAI.Examples.dll`).
 
 ## Architecture
 
@@ -140,10 +147,11 @@ flowchart LR
 | `AZUREAI_AUDIENCE` | Entra ID token scope (default `https://cognitiveservices.azure.com/.default`) |
 | `AZURE_TENANT_ID`, `AZURE_CLIENT_ID` | *(Azure.Identity standard, read by `DefaultAzureCredential` itself)* tenant pin; client id of a user-assigned managed identity |
 | `AZUREAI_ANTHROPIC_BASE_URL`, `AZURE_ANTHROPIC_BASE_URL` | Anthropic route base URL; when unset it is derived from `AZUREAI_BASE_URL` (`…/models` → `…/anthropic`) |
+| `AZUREAI_OPENAI_BASE_URL`, `AZURE_OPENAI_BASE_URL` | Responses route base URL (`…/openai/v1`, no api-version; the `openai.azure.com` host works too); when unset it is derived from `AZUREAI_BASE_URL` (`…/models` → `…/openai/v1`) |
 | `AZUREAI_RESOURCE_ID`, `AZURE_SUBSCRIPTION_ID` | `models` / `test-all`: the Foundry resource id (skips discovery) or the subscription to search; otherwise every readable subscription is searched for the account whose endpoints include the `AZUREAI_BASE_URL` host |
 | `INSPECT_AZUREAI_MODEL` | *(sample only)* default model name (`gpt-5.4-mini` when unset) |
 
-No API-key variable is read. Both providers resolve `DefaultAzureCredential` at construction and send the
+No API-key variable is read. All three providers resolve `DefaultAzureCredential` at construction and send the
 token only as `Authorization: Bearer` (fidelity note 16). A missing endpoint raises `PrerequisiteError`
 with the Python message.
 
@@ -197,9 +205,9 @@ dotnet test  InspectAzureAI.sln          # six projects, offline; Docker, networ
 ```
 
 Every sample command accepts `--model <name>`, `--streaming auto|true|false`, `--temperature <n>`,
-`--max-tokens <n|none>`, `--reasoning-effort <none|minimal|low|medium|high|xhigh|max>`, `--reasoning-tokens <n>`,
+`--max-tokens <n|none>`, `--reasoning-effort <none|minimal|low|medium|high|xhigh|max>`, `--reasoning-tokens <n>`, `--reasoning-summary <none|concise|detailed|auto>`,
 `--model-arg key=value` (repeatable, the Python `-M` args; JSON values such as `thinking={"type":"enabled"}` are
-parsed), `--route models|anthropic` and `--fake` (answer from an in-memory canned endpoint with a dummy token —
+parsed), `--route models|anthropic|responses` and `--fake` (answer from an in-memory canned endpoint with a dummy token —
 no network, no sign-in). `params` and `capture --params` also take `--params all|a,b` and `--parallel <n>`.
 
 ```bash
@@ -293,6 +301,7 @@ name; `config` and `naming` print the family and the derived fields):
 | Cohere | `thinking: {type: enabled}` / `disabled` (`disabled` is ignored) | `thinking.token_budget` | `reasoning_content` → `ContentReasoning` |
 | OpenAI without reasoning (gpt-4o), Mistral AI, unknown | nothing (gpt-4o answers HTTP 400 to `reasoning_effort`; Mistral rejects every reasoning field) | nothing | nothing |
 | Anthropic (Claude, Messages route) | `thinking: {type: adaptive}` + `output_config.effort` (`minimal` → `low`); `none` omits `thinking` | `thinking: {type: enabled, budget_tokens}` (the deprecated 4.6 form; `max_tokens` raised above it) | `thinking` blocks → `ContentReasoning` with `signature`; no separate token count |
+| OpenAI on the Responses route (`--route responses`; gpt-5.6*, gpt-5.4-pro and the o-series pick it automatically) | `reasoning.effort: <level>` verbatim (`none` included; `max` → `xhigh` for models before gpt-5.6); `reasoning.summary` only with `--reasoning-summary auto` (Python defaults to `auto`; the port keeps it off because other Azure organisations can get HTTP 400, and myfoundry0406 accepted it and returned summary text) | ignored | encrypted `reasoning` items → redacted `ContentReasoning` with `signature` (the item id), the encrypted blob and a `summary`, replayed through `encrypted_content`; `output_tokens_details.reasoning_tokens` → `ModelUsage.ReasoningTokens` |
 
 `--model-arg` still wins over the derived field (model args are applied last), so any vendor object can be
 tried verbatim: `--model-arg 'thinking={"type":"enabled","budget_tokens":2048}'`. Two reserved model args
@@ -306,7 +315,8 @@ in stream mode, as a top-level `usage.reasoning_tokens`); streamed reasoning is 
 `StreamReasoningEvent` (the sample prints it dimmed before the answer). On the Anthropic route the thinking
 blocks are replayed unchanged, with their signature, ahead of text and `tool_use` on later turns — the
 Messages API rejects a turn without them. On the model-inference route reasoning is **not** replayed
-(DeepSeek rejects an echoed `reasoning_content`). The `reasoning` smoke check in `test-all` reports `text`
+(DeepSeek rejects an echoed `reasoning_content`); the Responses route replays it as `reasoning` items
+through `encrypted_content`. The `reasoning` smoke check in `test-all` reports `text`
 (reasoning text came back), `hidden` (only a token count), `none` (a reasoning field was sent, nothing came
 back) or `n/a` (the family has no control). Streamed requests that carry pass-through fields now get the
 `extra-parameters: pass-through` header the SDK only sets on non-streaming calls (fidelity note 21).
@@ -347,7 +357,7 @@ native tool call and a reasoning call (`--reasoning-effort medium` mapped per fa
 
 | Deployment | Format | chat | stream | tools | reasoning | Note |
 |---|---|---|---|---|---|---|
-| gpt-5.6-sol, gpt-5.6-luna, gpt-5.6-luna-2, gpt-5.6-terra, gpt-5.4-mini | OpenAI | ok | ok | ok | hidden · 33–52 tok | `max_completion_tokens` sent (gpt-5 rule); usage not reported in stream mode (as in Python) unless `--model-arg stream_options={"include_usage":true}`, which the probe found accepted |
+| gpt-5.6-sol, gpt-5.6-luna, gpt-5.6-luna-2, gpt-5.6-terra, gpt-5.4-mini | OpenAI | ok | ok | ok | hidden · 33–52 tok | `max_completion_tokens` sent (gpt-5 rule); usage not reported in stream mode (as in Python) unless `--model-arg stream_options={"include_usage":true}`, which the probe found accepted. On gpt-5.6-* function tools combined with `reasoning_effort` answer HTTP 400 (`use /v1/responses or set reasoning_effort to 'none'`), so those names now default to the Responses route (`--route models` forces chat completions), where tools with `--reasoning-effort medium` on gpt-5.6-sol and `hello_world` on gpt-5.6-terra succeeded on 2026-09-09; gpt-5.4-mini stays on chat completions |
 | gpt-4o | OpenAI | ok | ok | ok | n/a | `max_tokens` sent (the gpt-5 / o-series rule does not apply) |
 | model-router | OpenAI | ok | ok | ok | text | answered from a routed model (`grok-4-1-fast-reasoning` in one run) |
 | DeepSeek-V4-Pro, DeepSeek-V4-Flash, DeepSeek-V4-Flash-0731 | DeepSeek | ok | ok | ok | text | |
@@ -358,7 +368,7 @@ native tool call and a reasoning call (`--reasoning-effort medium` mapped per fa
 | Cohere-command-a-plus-05-2026 | Cohere | ok | ok | ok | text | |
 | grok-4.6 | xAI | ok | ok | ok | hidden · 238 tok | ~20–28 s for the three checks |
 | claude-sonnet-4-6 | Anthropic | ok | ok | ok | text | the model-inference route answers `Requested API is currently not supported` for Anthropic deployments; `test-all` sends them through the Anthropic Messages route (`/anthropic/v1/messages`, same bearer token) via the companion provider. `image` on this route also described a test picture correctly |
-| gpt-5.4-pro | OpenAI | — | — | — | — | not a chat-completions deployment (`models` shows chat = no): HTTP 400 `The requested operation is unsupported.`, returned as the terminal error |
+| gpt-5.4-pro | OpenAI | — | — | — | — | not a chat-completions deployment (`models` shows chat = no): HTTP 400 `The requested operation is unsupported.`, returned as the terminal error; served on the Responses route, which is now its default (`--route responses`, `openai/gpt-5.4-pro`); `hello_world` succeeded there on 2026-09-09 with no `--route` |
 | Cohere-parse-v5 | Cohere | — | — | — | — | document-parsing model (`models` shows chat = no): HTTP 404 `Requested API is currently not supported` |
 | FLUX.2-pro | Black Forest Labs | — | — | — | — | image-generation model: HTTP 404 `Service request failed.` on `/chat/completions`. The ARM capability metadata still marks it chat-capable, so a bare `test-all` includes it and exits 1; use `--only` to pick the chat deployments |
 
@@ -387,7 +397,10 @@ the stream, a reasoning signal appearing or disappearing); `ok (no visible effec
 the probe cannot observe (temperature, top_p, seed, penalties, top_k, verbosity, effort); `ignored` = HTTP 200
 but no effect; `rejected` = HTTP 400 (the evidence in the dashboard quotes the service); `-` = not probed for
 that route. The dashboard's "Parameter matrix" view shows the same data with the evidence and the recorded
-exchange behind every cell.
+exchange behind every cell. The gpt-5.6 rows are chat-completions verdicts: on those deployments function
+tools combined with `reasoning_effort` are rejected there, so they now default to the Responses route
+(`--route models` reproduces the table); gpt-5.4-pro's `fail` is likewise the chat-completions verdict of
+a deployment that is served on the Responses route.
 
 <!-- params-matrix:start -->
 | Deployment | reasoning | `baseline` | `stream` | `temperature` | `top_p` | `seed` | `frequency_penalty` | `presence_penalty` | `stop` | `n` | `logprobs` | `parallel_tool_calls` | `response_format.json_object` | `response_format.json_schema` | `max_tokens` | `stream_options` | `reasoning_effort=none` | `reasoning_effort=low` | `reasoning_effort=high` | `reasoning_effort=xhigh` | `verbosity=low` | `reasoning_tokens` | `sampling-extras` | `max_completion_tokens` | `thinking.enabled` | `thinking.disabled` | `top_k` | `metadata` | `thinking.adaptive` | `output_config.effort=low` | `thinking.budget` |
@@ -427,6 +440,43 @@ prompt caching, citations, batch mode, server-side tools, `thinking.display`, th
 policy. Errors follow the same contract as the main provider (400 returned, 408/429/5xx thrown for
 `ShouldRetry`, 401 as `IsAuthFailure`).
 
+## gpt-5.6, gpt-5.4-pro and the o-series: the OpenAI Responses route
+
+Foundry serves gpt-5.6-sol, gpt-5.6-luna, gpt-5.6-luna-2 and gpt-5.6-terra on the OpenAI Responses API as
+well: on `/chat/completions` they reject function tools combined with `reasoning_effort` (HTTP 400
+`Function tools with reasoning_effort are not supported for gpt-5.6-sol in /v1/chat/completions. To use
+function tools, use /v1/responses or set reasoning_effort to 'none'.`), and gpt-5.4-pro (`chatCompletion:
+false` in ARM) answers only there. `OpenAI/OpenAIResponsesModelApi.cs` (with `ResponsesInput`,
+`ResponsesTools`, `ResponsesOutput` and `ResponsesStreamAccumulator`) is the third `IModelApi`: a hand-rolled
+`HttpClient` over an injectable `HttpMessageHandler` (no OpenAI NuGet package) posting to
+`https://<resource>.services.ai.azure.com/openai/v1/responses` with the same bearer token and audience as the
+other routes. Selection: `--route responses` (examples runner and Sample), the `openai/<deployment>` prefix in
+`inspectai`, or automatically for names containing `gpt-5.6`, `-pro` or `codex` or starting with `o<digit>`
+(`FoundryModels.RouteFor`); `--route models` or `azureai/<deployment>` forces chat completions, and
+gpt-5.4-mini stays there. Requests carry `input` items (system → `developer`; `input_text` / `input_image` /
+`input_file` parts; assistant `reasoning` items replayed via `encrypted_content`, `message` and `function_call`
+items; tool results as `function_call_output`), flat function `tools` with `strict: false`, `tool_choice`
+(`none` / `required` / a named function; `auto` is not sent), `parallel_tool_calls`, `max_output_tokens` from
+`max_tokens` (no default), `reasoning: {effort, mode, summary}` (`summary` only with `--reasoning-summary auto`; it comes back as `ContentReasoning.Summary` and is written to the log as `summary`), `text.format` (`json_schema`) and
+`text.verbosity`, always `store: false` with `include: ["reasoning.encrypted_content"]` on reasoning models
+(the model arg `store=true` switches both off), `temperature` / `top_p` only when reasoning is off, and model
+args last; `frequency_penalty`, `presence_penalty`, `stop_seqs`, `seed`, `logit_bias`, `num_choices`, logprobs
+and `fallback_models` are ignored with a one-time warning. The stop reason comes from
+`incomplete_details.reason` (`max_output_tokens` → `max_tokens`, `content_filter`; `tool_calls` whenever a
+function call is present); usage maps `input_tokens` minus `cached_tokens` to input, `cached_tokens` to cache
+reads and `output_tokens_details.reasoning_tokens` to `ReasoningTokens`. Streaming delivers `output_text`,
+`reasoning_summary_text` and `function_call_arguments` deltas live and parses the terminal
+`response.completed|incomplete|failed` response object like a non-streamed body, so the recorded `ModelCall`
+has the same shape either way. HTTP 400 `context_length_exceeded` becomes a `model_length` output,
+`content_filter` / `content_policy_violation` / `invalid_prompt` / `cyber_policy` a `content_filter` output,
+other 400s the terminal error; 408/429/5xx are retried like the other routes; the HTTP timeout is infinite
+(gpt-5.4-pro can take minutes; the model layer's attempt timeout governs). Not ported: the built-in tools
+(web search, computer use, remote MCP, code interpreter, image generation), logprobs, background mode
+(fidelity note 24). Verified live on 2026-09-09 against myfoundry0406: the `reasoning` example with tools and
+`--reasoning-effort medium` on gpt-5.6-sol (encrypted reasoning items replayed on turns 2 and 3,
+`reasoning_tokens` reported), `hello_world` on gpt-5.6-terra and on gpt-5.4-pro (auto-routed, no `--route`),
+and `reasoning.summary: auto` on gpt-5.6-sol, which returned summary text.
+
 ## Python → C# mapping
 
 | Python (inspect_ai) | C# |
@@ -448,6 +498,7 @@ policy. Errors follow the same contract as the main provider (400 returned, 408/
 | *(none)* Entra token diagnostics for the `token` command | `Util/EntraTokenInfo.cs` |
 | *(none)* deployment discovery for `models` / `test-all` | `Foundry/FoundryCatalog.cs` |
 | `_providers/anthropic.py` (Azure path: `max_tokens`, `message_stop_reason`, usage, tools, streaming) | `Anthropic/AnthropicFoundryModelApi.cs` (companion) |
+| `_providers/openai_responses.py`, `_openai_responses.py` (input items, tools, output, stream accumulation) | `OpenAI/OpenAIResponsesModelApi.cs`, `ResponsesInput.cs`, `ResponsesTools.cs`, `ResponsesOutput.cs`, `ResponsesStreamAccumulator.cs` (companion) |
 | `_util/http.py` `is_retryable_http_status`, `parse_retry_after(_from_exception)`, `status_code_of` | `Util/HttpRetryUtil.cs` |
 | `_openai.py` `needs_max_completion_tokens`, `openai_stop_details`, `openai_media_filter` | `Util/OpenAIUtil.cs` |
 | `_model_output.py` `collect_stop_details`; `ModelOutput`, `ChatCompletionChoice`, `ModelUsage`, `StopReason`, `StopDetails` | `Util/ModelOutputUtil.cs`; `Core/ModelOutput.cs` |
@@ -559,12 +610,15 @@ Places where the port deliberately deviates from the Python implementation, and 
     `getattr`, and azure.ai.inference's dict-backed `ChatResponseMessage` exposes no such attribute, so
     for this provider Python never produces a `refusal` explanation; the port reproduces that by not
     reading the raw `refusal` key (a refusal with no filtered category yields no stop details).
-13. **`max_completion_tokens=true` model arg (port-only).** Python emits `max_completion_tokens` only for
-    gpt-5 and o-series names; reasoning models under other names (MAI-Thinking-1) reject `max_tokens`. The
-    port pops a boolean `max_completion_tokens` model arg and, when true, sends `config.MaxTokens` as
-    `max_completion_tokens` for any family. A non-boolean value is left in `model_extras` as a body field,
-    exactly as Python would forward it. `test-all` applies the arg automatically when a deployment answers
-    400 asking for it.
+13. **`max_completion_tokens` for the Microsoft family, and the `max_completion_tokens=true` model arg
+    (both port-only).** Python emits `max_completion_tokens` only for gpt-5 and o-series names; reasoning
+    models under other names (MAI-Thinking-1) reject `max_tokens`. The port adds the Microsoft family
+    (`mai-*` names, or `model_format=Microsoft`) to that rule, so `config.MaxTokens` reaches MAI-Thinking-1
+    as `max_completion_tokens` without a flag. It also pops a boolean `max_completion_tokens` model arg:
+    true sends `max_completion_tokens` for any family, false keeps Python's name-only rule (disabling the
+    Microsoft addition). A non-boolean value is left in `model_extras` as a body field, exactly as Python
+    would forward it. `test-all` still applies the arg automatically when a deployment answers 400 asking
+    for it.
 14. **Deployment discovery (`Foundry/FoundryCatalog.cs`) is port-only.** Inspect takes the model name from
     the CLI; the sample's `models` and `test-all` commands resolve the account behind the endpoint through
     Azure Resource Manager (`https://management.azure.com/.default` scope on the same credential) and list
@@ -614,6 +668,18 @@ Places where the port deliberately deviates from the Python implementation, and 
     it from the status and the response with the heuristics listed under "Parameters by model"; a grouped
     probe (`seed` + penalties) is split into single-field probes only when rejected. Verdicts are evidence
     of what the gateway did on that day, not a vendor contract.
+24. **Responses route (port-only).** `OpenAI/OpenAIResponsesModelApi.cs` is a third provider for the deployments
+    Foundry serves on the OpenAI Responses API (see the section above). Like the Anthropic companion it
+    authenticates with Entra ID and derives its base URL from the inference endpoint. Deviations:
+    `reasoning.summary` is opt-in (`--reasoning-summary auto`) where Python defaults to `auto`, because other
+    Azure organisations can get HTTP 400 for summaries (the test resource accepted it and returned summary
+    text); `message` and `function_call` item ids are not replayed
+    (optional with `store: false`; Python omits them too when it has none); the built-in tools (web search,
+    computer use, remote MCP — `supports_remote_mcp` is false here for now —, code interpreter, image
+    generation), logprobs and background mode are not ported; names containing `gpt-5.6`, `-pro` or `codex`
+    or starting with `o<digit>` are auto-routed here (`--route models` or the `azureai/` prefix overrides),
+    and the per-family `ReasoningParams` mapping is bypassed (`reasoning_effort` never appears in the
+    request). The sandbox agent bridge still speaks chat completions and Anthropic messages only.
 
 ## SWE showcase
 

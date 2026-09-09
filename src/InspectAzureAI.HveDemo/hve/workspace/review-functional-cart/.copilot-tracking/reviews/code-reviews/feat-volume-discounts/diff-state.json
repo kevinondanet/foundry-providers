@@ -1,0 +1,24 @@
+{
+  "branch": "feat/volume-discounts",
+  "base": "main",
+  "files": [
+    "shop/cart.py"
+  ],
+  "untrackedFiles": [],
+  "extensions": [
+    ".py"
+  ],
+  "diffPatchPath": ".copilot-tracking/pr/pr-reference.patch",
+  "findingsFolder": ".copilot-tracking/reviews/code-reviews/feat-volume-discounts/",
+  "reviewStateProvenance": {
+    "scope": "automation-derived",
+    "hotspots": "automation-derived",
+    "outOfScope": "automation-derived"
+  },
+  "depthTier": "standard",
+  "depthRationale": "Automation-derived default for a workflow-mode review.",
+  "hotspots": [
+    "shop/cart.py"
+  ],
+  "outOfScope": []
+}

@@ -42,7 +42,10 @@ public static class EvalSet
     /// <summary>
     /// Runs the set. Returns whether every task succeeded and one log per task and model — full logs for the tasks
     /// run in this call, headers (no samples) for those already complete in the directory. Cancellation waits for
-    /// the tasks in flight to write their cancelled logs and then propagates.
+    /// the tasks in flight to write their cancelled logs and then propagates. Deviation: Python's <c>eval_set(model=None)</c>
+    /// runs tasks that carry their own <c>Task.model</c> and identifies each by that model; this port requires an eval-level
+    /// model (<see cref="EvalSetOptions.Models"/> or <see cref="EvalOptions.Model"/>) — the eval-set model names the logs and
+    /// enters the <see cref="TaskIdentifier"/> even for a task whose <see cref="EvalTask.Model"/> the runner then generates with.
     /// </summary>
     /// <exception cref="PrerequisiteError">No tasks, tasks that are not distinct, or foreign logs in the directory.</exception>
     public static async Task<EvalSetResult> RunAsync(IReadOnlyList<EvalTask> tasks, EvalSetOptions options, CancellationToken cancellationToken = default)
@@ -67,7 +70,10 @@ public static class EvalSet
             throw new ArgumentOutOfRangeException(nameof(options), "RetryConnections must be a positive number.");
         }
 
-        var models = options.Models ?? [options.Eval.Model];
+        var models = options.Models
+            ?? (options.Eval.Model is { } defaultModel
+                ? new[] { defaultModel }
+                : throw new ArgumentException("An eval set needs a model: set EvalSetOptions.Models or EvalOptions.Model (a task-level EvalTask.Model does not identify the task in an eval set).", nameof(options)));
         if (models.Count == 0)
         {
             throw new ArgumentException("At least one model is required.", nameof(options));
@@ -90,7 +96,7 @@ public static class EvalSet
         }
 
         // adaptive connections subsume retry_connections: the controller scales down on retry signals itself
-        var evalModel = options.Eval.Model;
+        var evalModel = options.Eval.Model ?? models[0];
         var adaptive = options.Eval.AdaptiveConnections ?? evalModel.AdaptiveConnections ?? AdaptiveConnections.FromConfigValue(evalModel.Config.AdaptiveConnections);
         if (Concurrency.AdaptiveActive(adaptive, evalModel.Config.MaxConnections, IsBatch(evalModel.Config.Batch)))
         {

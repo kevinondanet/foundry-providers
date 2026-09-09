@@ -1,0 +1,1079 @@
+{
+  "surface": "report",
+  "manifest": {
+    "version": 1,
+    "surface": "report",
+    "title": "Using providers with Microsoft Foundry models",
+    "description": "A practical C# guide to adapter selection, model-specific settings, API protocols, and migration, grounded in this repository and Microsoft documentation.",
+    "generatedAt": "2026-09-08T14:02:27.641223+00:00",
+    "blocks": [
+      {
+        "id": "title",
+        "type": "markdown",
+        "body": "# Using providers with Microsoft Foundry models"
+      },
+      {
+        "id": "summary",
+        "type": "markdown",
+        "body": "## Providers keep application code stable while translating each model’s API\n\nA **provider is an adapter** between your application’s conversation objects and a model service’s request and response format. Microsoft Foundry supplies access to models from different publishers. Your provider chooses the right endpoint, encodes messages and tools, applies supported settings, and converts the reply into a common result.\n\nIn this repository, `AzureAIModelApi` and `AnthropicFoundryModelApi` both implement `IModelApi`. An evaluation can therefore keep the same task, tools, and scoring logic while changing the adapter and deployment. That shared contract does not make every Foundry model a chat model, or make every model accept the same settings.\n\n**The design rule is: reuse an adapter for another model with the same protocol; add an adapter for a different protocol; use a different operation contract when the task itself changes.** Embedding vectors, generated images, document extraction, and real-time audio need more than changing the model name in a chat request.\n\nThere is also a migration decision. Microsoft lists **August 26, 2026** as the retirement date for the Azure AI Inference beta SDK. The reusable library here still references `Azure.AI.Inference` 1.0.0-beta.5. Plan new OpenAI-compatible integration around the current v1 APIs, while retaining a native Messages adapter where required. The successful September 7 `/models` requests establish what this resource did then; they do not reverse the SDK retirement notice. [Microsoft migration guidance](https://learn.microsoft.com/en-us/azure/foundry/how-to/navigate-from-classic)\n\nThis guide explains how to use the code that exists, what its adapters translate, and where additional support is needed."
+      },
+      {
+        "id": "scope",
+        "type": "markdown",
+        "body": "## Read this as a guide to two implementations and a changing model catalog\n\n**Audience:** developers using the C# project. **Documentation checked:** September 8, 2026. **Live evidence:** the September 7 expenses rerun on one configured Foundry resource. This report made no new inference calls.\n\nTwo implementations appear throughout:\n\n- **Reusable library:** `InspectAzureAI.Provider`, with the `InspectAzureAI.Eval` runtime around it. It supports richer message types, streaming, reasoning controls, schema translation, discovery, and diagnostics.\n- **Teaching demo:** `InspectAzureAI.LayersDemo`, a separate, self-contained application. It has its own `ModelAPI` base class, two small HTTP providers, a toy shell, and a simpler retry loop. This is the application used in the rerun.\n\nThe protocol map covers the major communication families rather than claiming a tested inventory of every catalog entry. Catalog availability, deployment region, model version, hosting option, and API support can differ. Use the deployment’s model card and endpoint details for the exact combination you intend to call.\n\n**Keep these names separate:** the publisher is OpenAI, Anthropic, Microsoft, Mistral, or another model maker; the deployment name is the identifier on your resource; the SDK is a client library; the provider is this project’s translation code; the protocol is the wire contract, such as Chat Completions or Messages."
+      },
+      {
+        "id": "routes-intro",
+        "type": "markdown",
+        "body": "## Choose the operation and API before choosing the provider\n\nThe table is a routing guide. Its route paths are relative to the appropriate service endpoint; use the hostname documented for that deployment. “Existing support” refers to this repository’s two reusable chat providers, not to the overall Foundry platform. A model catalog entry is evidence that the model is offered, not that `/chat/completions` accepts it.\n\nMicrosoft’s current guidance separates resource-level OpenAI access, the Anthropic endpoint, and project APIs for Foundry features. A project endpoint is not a drop-in base URL for this library’s `/models` provider. [SDK and endpoint overview](https://learn.microsoft.com/en-us/azure/foundry/how-to/develop/sdk-overview)"
+      },
+      {
+        "id": "routes-table",
+        "type": "table",
+        "tableId": "routes"
+      },
+      {
+        "id": "routes-notes",
+        "type": "markdown",
+        "body": "FLUX.2 [pro] has a documented BFL provider route; the 404 observed when it was sent to the demo’s chat route is not evidence that image generation is unavailable. Likewise, Microsoft documents `Cohere-parse-v5` as an image-to-text extraction model without tool calling. [FLUX API guide](https://learn.microsoft.com/en-us/azure/foundry/foundry-models/how-to/use-foundry-models-flux) · [Model capabilities](https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure)\n\nManaged compute can share OpenAI-compatible routing when its runtime implements that contract; other runtimes have a managed-deployment route. Real-time audio adds a different transport and session lifecycle. These are separate integration decisions, not new names for the existing chat loop. [Managed compute routes](https://learn.microsoft.com/en-us/azure/foundry/concepts/managed-compute-overview) · [Realtime communication](https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/realtime-audio-websockets)"
+      },
+      {
+        "id": "quickstart",
+        "type": "markdown",
+        "body": "## Start with one deployment and an explicit route\n\nThe commands below run from the repository’s `src` directory. They use the existing implementation and your Azure CLI sign-in. Replace the resource and deployment names with your own; `chat`, `stream`, `tools`, and `params` send billable inference requests when run without `--fake`.\n\n```sh\naz login\nexport AZUREAI_BASE_URL=https://YOUR-RESOURCE.services.ai.azure.com/models\n\n# Inspect settings, then verify identity and list deployments.\ndotnet run --project InspectAzureAI.Sample -- config\ndotnet run --project InspectAzureAI.Sample -- token\ndotnet run --project InspectAzureAI.Sample -- models\n\n# OpenAI-compatible chat on the existing /models route.\ndotnet run --project InspectAzureAI.Sample -- chat \"Hello\" --model gpt-5.4-mini\n\n# Claude uses the Messages route on the same resource.\ndotnet run --project InspectAzureAI.Sample -- chat \"Hello\" \\\n  --model claude-sonnet-4-6 --route anthropic\n\n# Verify streaming and a complete native tool loop separately.\ndotnet run --project InspectAzureAI.Sample -- stream \"Hello\" --model gpt-5.4-mini\ndotnet run --project InspectAzureAI.Sample -- tools --model gpt-5.4-mini\n```\n\nThe providers use `DefaultAzureCredential` and bearer tokens. The existing default audience is `https://cognitiveservices.azure.com/.default`; `AZUREAI_AUDIENCE` overrides it. `AZUREAI_ANTHROPIC_BASE_URL` can supply the Claude base explicitly. Deployment discovery uses an Azure Resource Manager token and requires read access; successful inference does not by itself establish that discovery is authorized.\n\nUse the audience documented for the endpoint you integrate. Current Microsoft project/SDK examples also use `https://ai.azure.com/.default`; do not assume that changing an endpoint and retaining every authentication setting is sufficient. This branch of the library does not read API-key variables, even where the service itself offers key authentication. [Current SDK authentication examples](https://learn.microsoft.com/en-us/azure/foundry/how-to/develop/sdk-overview)\n\nThe selector syntax depends on the application. LayersDemo uses `--model azureai/<deployment>` or `anthropic/<deployment>`. The provider-only Sample uses the bare deployment name and `--route models|anthropic`. The deployment field sent to Foundry must match the deployed identifier.",
+        "sourceId": "sample"
+      },
+      {
+        "id": "csharp",
+        "type": "markdown",
+        "body": "## Your C# call stays the same after the adapter is selected\n\nThis helper compiles against the current reusable provider library. Supply the resource root without `/models` or `/anthropic`, the bare deployment name, and the route decision derived from configuration or deployment metadata.\n\n```csharp\nusing InspectAzureAI.Provider;\nusing InspectAzureAI.Provider.Anthropic;\nusing InspectAzureAI.Provider.Core;\n\npublic static class ProviderExample\n{\n    public static async Task<string> AskAsync(\n        string resourceRoot,\n        string deployment,\n        bool useMessages,\n        CancellationToken cancellationToken = default)\n    {\n        string root = resourceRoot.TrimEnd('/');\n        IModelApi provider = useMessages\n            ? new AnthropicFoundryModelApi(deployment, baseUrl: root + \"/anthropic\")\n            : new AzureAIModelApi(deployment, baseUrl: root + \"/models\");\n\n        GenerateResult result = await provider.GenerateAsync(\n            [new ChatMessageUser(\"Reply with a short greeting.\")],\n            [],\n            ToolChoice.Auto,\n            new GenerateConfig { MaxTokens = 1024 },\n            cancellationToken);\n\n        if (result.Error is { } error) throw error;\n        return result.Output?.Completion ?? \"\";\n    }\n}\n\n```\n\nThis is one generation call. It does not execute returned tool calls or add the evaluation runtime’s retry policy. For evaluation workloads, `FoundryModels.Create(...)` wraps an adapter in `InspectAzureAI.Eval.Model.Model`, which owns retries, concurrency, logging, and related runtime behavior. Preserve the provider result’s structured content and tool calls when building an agent; reading only `Completion` is suitable for this text-only example.\n\nThe helper was compile-checked with .NET 10; it was not run against the service for this report.",
+        "sourceId": "contract"
+      },
+      {
+        "id": "translation-intro",
+        "type": "markdown",
+        "body": "## The provider translates meaning, not just the endpoint URL\n\nThe existing adapters accept common messages, tool definitions, tool choice, and `GenerateConfig`. Their serializers and parsers perform the conversions below. The Responses column describes the additional contract a new adapter would need, rather than an implementation already present.\n\nFor example, a calculator call becomes an assistant function call on Chat Completions, a `tool_use` content block on Messages, and a `function_call` item on Responses. The local engine executes the calculator and returns its result in the corresponding format. [Responses input and output contract](https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/responses)"
+      },
+      {
+        "id": "wire-table",
+        "type": "table",
+        "tableId": "wire"
+      },
+      {
+        "id": "tool-roundtrip",
+        "type": "markdown",
+        "body": "A single tool result illustrates why a URL substitution is insufficient. These are illustrative fragments after a calculator has returned `38.5`; the call IDs stand in for IDs supplied by the model.\n\n```json\n{\"role\":\"tool\",\"tool_call_id\":\"call_example\",\"content\":\"38.5\"}\n```\n\n```json\n{\"role\":\"user\",\"content\":[\n  {\"type\":\"tool_result\",\"tool_use_id\":\"toolu_example\",\"content\":\"38.5\"}\n]}\n```\n\nThe first fragment is Chat Completions; the second is Messages. Both represent the same result. The adapter must also preserve preceding assistant tool calls, keep result IDs matched, and assemble streamed argument fragments before execution. The providers parse and translate local function requests; the tool executor performs the functions.\n\nOrdinary streaming is **server-sent events (SSE)** over an HTTP response. It is not a bidirectional audio session. The reusable library turns vendor events into common text, reasoning, and tool-argument stream events, then returns a final normalized output. Reported usage can be absent in a stream; the Azure adapter warns about that case rather than proving zero token use.\n\nNative server tools form another boundary. The full Anthropic adapter has explicit handling for server-side web search and remote MCP declarations. That does not make those capabilities automatically available on every other route."
+      },
+      {
+        "id": "families-intro",
+        "type": "markdown",
+        "body": "## A shared protocol still needs model-specific settings\n\nThe table describes **the mappings currently encoded in this repository**, not a universal promise from each publisher. It includes code comments recording earlier probes; those reasoning probes were not repeated for this report. `GenerateConfig` is a common vocabulary, and each adapter supports only a subset of it.\n\nIn the fuller library, `model_format` can supply the publisher for reasoning-family selection. Deployment names remain part of several token-limit and message-dialect heuristics. Explicit model arguments are applied after derived settings and can override them. Treat that flexibility as an escape hatch that needs verification.",
+        "sourceId": "reasoning"
+      },
+      {
+        "id": "families-table",
+        "type": "table",
+        "tableId": "families"
+      },
+      {
+        "id": "capabilities",
+        "type": "markdown",
+        "body": "**Accepted does not mean honored.** A server can return HTTP 200 while ignoring an extra field. The `params` command sends a baseline and isolated probes, then distinguishes accepted, ignored, rejected, error, and not-applicable outcomes using available evidence.\n\n```sh\ndotnet run --project InspectAzureAI.Sample -- params \\\n  --only gpt-5.4-mini,MAI-Thinking-1 \\\n  --params temperature,stop,reasoning_effort=high --parallel 1\n\ndotnet run --project InspectAzureAI.Sample -- chat \"Explain briefly\" \\\n  --model MAI-Thinking-1 --model-arg max_completion_tokens=true\n```\n\nCheck the emitted request as well as the response. For example, the current Azure adapter derives `response_format` from `ResponseSchema`, but some other `GenerateConfig` properties are not translated at all. Its general configuration comments also lag some newer mappings; the implementation and captured request are stronger evidence than the comment alone.\n\nThe full Anthropic adapter currently emits `output_format` for response schemas. That is a description of this code path, not a guarantee that the same field and beta settings apply to every newer Claude release. Test schema enforcement with the exact deployed version before relying on it.\n\nTwo more boundaries matter. The Azure message converter accepts text and images but rejects audio and video inputs, even though the common data model defines those types. Also, an effort label such as `high` is a vendor-specific setting, not a standardized compute budget. A model returning only final text has not thereby proved that no internal reasoning took place."
+      },
+      {
+        "id": "runtime-intro",
+        "type": "markdown",
+        "body": "## Keep translation, execution, and resilience in their owning layers\n\nThese responsibilities explain what can stay stable when another adapter is added. The fuller library and the teaching demo have the same broad separation, but not identical implementations or policies."
+      },
+      {
+        "id": "ownership-table",
+        "type": "table",
+        "tableId": "ownership"
+      },
+      {
+        "id": "retry-details",
+        "type": "markdown",
+        "body": "In **LayersDemo**, each HTTP request has a 180-second timeout, surfaced as a non-retried 408. The model layer retries selected transient failures with exponential backoff and jitter, uses `Retry-After` as a floor, and permits five retries by default. The Azure demo provider also learns specific token-limit or temperature incompatibilities from a 400 and resends. This bounded repair is not an instruction to retry arbitrary bad requests.\n\nIn the **full library**, the provider classifies retryable failures and the `Model` wrapper applies retry counts, budgets, attempt/stream-idle timeouts, and concurrency management. Its HTTP classification includes 408, and its wait calculation uses a supplied `Retry-After` value or backoff. Do not copy the demo’s timeout or backoff description onto that runtime.\n\nTroubleshoot by failure type: a 400 can indicate an unsupported field or operation; a 404 can indicate the wrong route or deployment; 401/403 concerns credentials or permission; 429 requires quota-aware scheduling; timeouts and selected 5xx failures require bounded retries and health checks. Preserve the actual error body because the status code alone rarely identifies the cause."
+      },
+      {
+        "id": "evidence-intro",
+        "type": "markdown",
+        "body": "## The rerun tested tool-based chat, not the entire Foundry catalog\n\nThe September 7 run exercised three samples per model: an expense total and named maximum item, an equal bill split, and a missing file. `gpt-5.4-mini` graded every completed sample. The main run used four concurrent model evaluations and up to three concurrent samples per evaluation.\n\nAll 16 main evaluations completed and the automated scoreboard awarded 48/48 correct grades in about 80 seconds. Manual inspection found one false positive: GPT-4o gave the largest price but omitted “taxi,” a fact explicitly required by the target. The table keeps successful protocol execution distinct from task correctness and endpoint failures.",
+        "sourceId": "rerun"
+      },
+      {
+        "id": "outcomes-reading",
+        "type": "markdown",
+        "body": "The bars count deployment-level outcomes across the 21 checks: 16 evaluations completed, three failed on the chosen route, one timed out, and one failed after rate-limit retries. This shows where integration stopped. It does not score answer quality, and it does not generalize beyond this resource and test. The detailed outcomes follow.",
+        "sourceId": "rerun"
+      },
+      {
+        "id": "deployment-outcomes-chart",
+        "type": "chart",
+        "chartId": "deployment-outcomes"
+      },
+      {
+        "id": "rerun-results-table",
+        "type": "table",
+        "tableId": "rerun-results"
+      },
+      {
+        "id": "evidence-limits",
+        "type": "markdown",
+        "body": "The 15 other main deployments were GPT-5.4-mini; GPT-5.6 Terra, Luna, Luna-2, and Sol; Kimi-K2.6 and Kimi-K2.7-Code; Grok-4.6; Cohere-command-a-plus-05-2026; Mistral-Large-3; MAI-Thinking-1; DeepSeek-V4-Flash and Pro; model-router; and Claude Sonnet 4.6. Their exact requested identifiers are preserved in the local run manifest.\n\nFive additional deployment checks bring the rerun to **21 distinct deployments**, not 20. Failed evaluations are error outcomes, not zero-accuracy scores. The small three-sample task is useful integration evidence, not a model ranking or evidence of general catalog support.\n\nThe raw scoreboard also includes the grader’s calls in GPT-5.4-mini’s row because it identifies calls by model name. Its 13 displayed calls comprise 10 solver calls plus three grading calls. Solver-only usage was 3,944 input and 383 output tokens; the saved request audit separates the roles. This is an accounting limitation in the demo, not a vendor tokenization difference.",
+        "sourceId": "rerun-summary"
+      },
+      {
+        "id": "extension",
+        "type": "markdown",
+        "body": "## Add coverage by protocol and verified capabilities\n\n**For a new deployment on an existing protocol**, start with its deployment metadata and model card. Verify readiness, operation support, accepted settings, and output types. Then run plain text, streaming, a complete tool round trip, schema enforcement, and modality checks for the features you need. A successful “hello” is only the first check.\n\nThe repository already has useful building blocks: `FoundryCatalog` retrieves model, publisher format, version, state, and advertised capabilities; the matrix uses publisher format to choose Anthropic and filters non-chat deployments. Its current fallback treats a missing `chatCompletion` capability as supported. For wider catalog coverage, an explicit **unknown** state is safer than treating missing metadata as proof.\n\n**For a new wire protocol**, implement a separate adapter. A Responses adapter would need item-based input/output, function-call continuation, event assembly, status handling, and appropriate retention of continuation state. Repointing `AzureAIModelApi` to `/openai/v1` does not implement those behaviors. Microsoft lists `gpt-5.4-pro` and `gpt-6-astra` among supported Responses models; that makes Responses an integration candidate, not a claim that those deployments have been tested here. [Responses model support](https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/responses)\n\n**For a different operation**, introduce a suitable contract alongside chat: embeddings return vectors; image generation returns image artifacts; parsing returns document structure/text; real-time audio manages sessions and events. Share credentials, transport infrastructure, telemetry, and error handling where useful without forcing these outputs into a text completion.\n\nPrefer a deployment profile keyed by resource, deployment, model version, and API route. Record supported modalities, tools, schemas, effort values, token-limit field, and required headers. Keep raw overrides visible in logs, and use explicit “unsupported” or “unknown” states. A publisher-wide boolean is too coarse for a growing catalog."
+      },
+      {
+        "id": "next-steps",
+        "type": "markdown",
+        "body": "## Recommended implementation order\n\n1. **Preserve the current evidence.** Keep the LayersDemo rerun as an integration example, including its grader and accounting caveats. Record adapter version, deployment identity, and normalized plus raw request/response details with each future run.\n2. **Add OpenAI v1 Chat Completions and Responses deliberately.** Keep them separately selectable where their semantics differ. Replace reliance on the retired inference beta SDK through a tested migration, not an endpoint-string edit. Existing `/models` results remain historical evidence. [Migration guidance](https://learn.microsoft.com/en-us/azure/foundry/how-to/navigate-from-classic)\n3. **Keep Claude’s native adapter version-aware.** Check accepted thinking controls, schema fields, content blocks, and required headers for the chosen deployment. Microsoft documents Messages for Claude hosting variants; feature availability can differ. [Claude API overview](https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/claude-models)\n4. **Replace fragile name assumptions with reviewed profiles.** The current `NeedsMaxCompletionTokens` recognizes GPT-5 and o-series names. New families and arbitrary deployment aliases need verified metadata or explicit settings. Publisher hints alone do not replace every name-dependent check.\n5. **Test observable behavior.** Include returned tool IDs, multi-turn replay, split stream events, missing usage, cancellation, 429 waits, structured outputs, and unsupported-operation errors. Validate grading separately from model communication.\n6. **Add non-chat adapters when the application needs them.** A provider abstraction should expose supported operations honestly; it should not imply every Foundry catalog model can run the expenses task.\n\nThe remaining product choices are which operations the application needs beyond chat, whether it requires Foundry-managed agent/tool state, and which exact deployments must share a common capability baseline. Answering those determines the next adapter to build."
+      }
+    ],
+    "tables": [
+      {
+        "id": "routes",
+        "title": "Operations, routes, and existing adapter coverage",
+        "dataset": "routes",
+        "sourceId": "evidence-routes",
+        "defaultSort": {
+          "field": "operation",
+          "direction": "asc"
+        },
+        "columns": [
+          {
+            "field": "operation",
+            "label": "Operation / family",
+            "type": "text"
+          },
+          {
+            "field": "route",
+            "label": "Wire route or contract",
+            "type": "text"
+          },
+          {
+            "field": "coverage",
+            "label": "Existing support",
+            "type": "text"
+          },
+          {
+            "field": "decision",
+            "label": "What to use",
+            "type": "text"
+          }
+        ]
+      },
+      {
+        "id": "wire",
+        "title": "Conversation and result translation",
+        "dataset": "wire",
+        "sourceId": "evidence-wire",
+        "defaultSort": {
+          "field": "concept",
+          "direction": "asc"
+        },
+        "columns": [
+          {
+            "field": "concept",
+            "label": "Common concept",
+            "type": "text"
+          },
+          {
+            "field": "chat",
+            "label": "Chat Completions",
+            "type": "text"
+          },
+          {
+            "field": "messages",
+            "label": "Anthropic Messages",
+            "type": "text"
+          },
+          {
+            "field": "responses",
+            "label": "Responses — proposed adapter",
+            "type": "text"
+          }
+        ]
+      },
+      {
+        "id": "families",
+        "title": "Current family mappings and their boundaries",
+        "dataset": "families",
+        "sourceId": "evidence-families",
+        "defaultSort": {
+          "field": "family",
+          "direction": "asc"
+        },
+        "columns": [
+          {
+            "field": "family",
+            "label": "Family / examples",
+            "type": "text"
+          },
+          {
+            "field": "mapping",
+            "label": "Current code mapping",
+            "type": "text"
+          },
+          {
+            "field": "boundary",
+            "label": "Boundary to verify",
+            "type": "text"
+          }
+        ]
+      },
+      {
+        "id": "ownership",
+        "title": "Responsibility boundaries",
+        "dataset": "ownership",
+        "sourceId": "evidence-ownership",
+        "defaultSort": {
+          "field": "owner",
+          "direction": "asc"
+        },
+        "columns": [
+          {
+            "field": "owner",
+            "label": "Owner",
+            "type": "text"
+          },
+          {
+            "field": "job",
+            "label": "Responsibility",
+            "type": "text"
+          },
+          {
+            "field": "limit",
+            "label": "Important boundary",
+            "type": "text"
+          }
+        ]
+      },
+      {
+        "id": "rerun-results",
+        "title": "What the September 7 rerun establishes",
+        "dataset": "rerun-results",
+        "sourceId": "evidence-rerun-results",
+        "defaultSort": {
+          "field": "group",
+          "direction": "asc"
+        },
+        "columns": [
+          {
+            "field": "group",
+            "label": "Deployment group",
+            "type": "text"
+          },
+          {
+            "field": "observed",
+            "label": "Observed outcome",
+            "type": "text"
+          },
+          {
+            "field": "meaning",
+            "label": "Provider implication",
+            "type": "text"
+          }
+        ]
+      }
+    ],
+    "charts": [
+      {
+        "id": "deployment-outcomes",
+        "title": "Deployment outcomes in the expenses rerun",
+        "subtitle": "21 deployments on September 7, 2026; completion is distinct from answer correctness",
+        "type": "bar",
+        "dataset": "deployment_outcomes",
+        "sourceId": "rerun-outcomes",
+        "encodings": {
+          "x": {
+            "field": "outcome",
+            "type": "nominal",
+            "label": "Evaluation outcome"
+          },
+          "y": {
+            "field": "deployments",
+            "type": "quantitative",
+            "label": "Deployments"
+          },
+          "tooltip": [
+            {
+              "field": "total_deployments",
+              "type": "quantitative",
+              "label": "Total deployments checked"
+            }
+          ]
+        }
+      }
+    ],
+    "cards": [],
+    "sources": [
+      {
+        "id": "azure",
+        "label": "Local AzureAIModelApi implementation — working tree reviewed September 8, 2026",
+        "path": "src/InspectAzureAI.Provider/AzureAIModelApi.cs"
+      },
+      {
+        "id": "anthropic",
+        "label": "Local AnthropicFoundryModelApi implementation",
+        "path": "src/InspectAzureAI.Provider/Anthropic/AnthropicFoundryModelApi.cs"
+      },
+      {
+        "id": "contract",
+        "label": "Local IModelApi generation contract",
+        "path": "src/InspectAzureAI.Provider/Core/IModelApi.cs"
+      },
+      {
+        "id": "reasoning",
+        "label": "Local reasoning-family mappings and recorded probe notes",
+        "path": "src/InspectAzureAI.Provider/Util/ReasoningParams.cs"
+      },
+      {
+        "id": "names",
+        "label": "Local token-limit family detection",
+        "path": "src/InspectAzureAI.Provider/Util/OpenAIUtil.cs"
+      },
+      {
+        "id": "messages",
+        "label": "Local Azure message conversion and Mistral reducer",
+        "path": "src/InspectAzureAI.Provider/Tools/AzureMessageConversion.cs"
+      },
+      {
+        "id": "tools",
+        "label": "Local native tool conversion",
+        "path": "src/InspectAzureAI.Provider/Tools/AzureToolConversion.cs"
+      },
+      {
+        "id": "auth",
+        "label": "Local Entra credential and audience configuration",
+        "path": "src/InspectAzureAI.Provider/Util/AzureHosting.cs"
+      },
+      {
+        "id": "catalog",
+        "label": "Local ARM deployment discovery and capability interpretation",
+        "path": "src/InspectAzureAI.Provider/Foundry/FoundryCatalog.cs"
+      },
+      {
+        "id": "selection",
+        "label": "Local model matrix deployment selection",
+        "path": "src/InspectAzureAI.ModelMatrix/DeploymentSelection.cs"
+      },
+      {
+        "id": "factory",
+        "label": "Local provider factory and model wrapper",
+        "path": "src/InspectAzureAI.Eval/Model/FoundryModels.cs"
+      },
+      {
+        "id": "runtime",
+        "label": "Local full evaluation model runtime",
+        "path": "src/InspectAzureAI.Eval/Model/Model.cs"
+      },
+      {
+        "id": "probes",
+        "label": "Local parameter probe specifications and verdicts",
+        "path": "src/InspectAzureAI.Provider/Foundry/ParameterProbes.cs"
+      },
+      {
+        "id": "sample",
+        "label": "Local provider sample CLI",
+        "path": "src/InspectAzureAI.Sample/Program.cs"
+      },
+      {
+        "id": "demo",
+        "label": "Local seven-layer teaching demo",
+        "path": "src/InspectAzureAI.LayersDemo/README.md"
+      },
+      {
+        "id": "demo-azure",
+        "label": "Teaching demo parameter learning and HTTP timeout",
+        "path": "src/InspectAzureAI.LayersDemo/Layer6_Providers/AzureAIProvider.cs"
+      },
+      {
+        "id": "demo-model",
+        "label": "Teaching demo backoff and retries",
+        "path": "src/InspectAzureAI.LayersDemo/Layer5_Model/Model.cs"
+      },
+      {
+        "id": "rerun",
+        "label": "September 7, 2026 expenses rerun: 21 deployments, including failed checks",
+        "path": "src/logs/expenses-astra-2026-09-07/run-manifest.json"
+      },
+      {
+        "id": "rerun-audit",
+        "label": "September 7 request and usage audit for the 16 completed model evaluations",
+        "path": "src/logs/expenses-astra-2026-09-07/main-audit.json"
+      },
+      {
+        "id": "rerun-summary",
+        "label": "September 7 rerun summary, failed checks, and corrected role accounting",
+        "path": "src/logs/expenses-astra-2026-09-07/SUMMARY.md"
+      },
+      {
+        "id": "sdk",
+        "label": "Microsoft Learn — SDKs and endpoints",
+        "url": "https://learn.microsoft.com/en-us/azure/foundry/how-to/develop/sdk-overview"
+      },
+      {
+        "id": "endpoints",
+        "label": "Microsoft Learn — Foundry model endpoints",
+        "url": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/endpoints"
+      },
+      {
+        "id": "migration",
+        "label": "Microsoft Learn — Migration from Foundry classic",
+        "url": "https://learn.microsoft.com/en-us/azure/foundry/how-to/navigate-from-classic"
+      },
+      {
+        "id": "responses",
+        "label": "Microsoft Learn — Azure OpenAI Responses API",
+        "url": "https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/responses"
+      },
+      {
+        "id": "claude",
+        "label": "Microsoft Learn — Claude APIs and model capabilities",
+        "url": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/claude-models"
+      },
+      {
+        "id": "models",
+        "label": "Microsoft Learn — Models sold by Azure",
+        "url": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure"
+      },
+      {
+        "id": "flux",
+        "label": "Microsoft Learn — FLUX model API",
+        "url": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/how-to/use-foundry-models-flux"
+      },
+      {
+        "id": "realtime",
+        "label": "Microsoft Learn — Realtime audio over WebSockets",
+        "url": "https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/realtime-audio-websockets"
+      },
+      {
+        "id": "compute",
+        "label": "Microsoft Learn — Managed compute endpoint routes",
+        "url": "https://learn.microsoft.com/en-us/azure/foundry/concepts/managed-compute-overview"
+      },
+      {
+        "id": "inference-rest",
+        "label": "Microsoft Learn — model-inference Chat Completions wire contract",
+        "url": "https://learn.microsoft.com/en-us/rest/api/microsoftfoundry/model-inference/get-chat-completions/get-chat-completions?view=rest-microsoftfoundry-model-inference-2024-05-01-preview"
+      },
+      {
+        "id": "evidence-routes",
+        "label": "Operations, routes, and existing adapter coverage — reviewed source synthesis",
+        "path": "reports/foundry-provider-guide/query-routes.sql",
+        "query": {
+          "engine": "sqlite",
+          "language": "sql",
+          "sql": "SELECT\n  json_extract(value, '$.operation') AS \"operation\",\n  json_extract(value, '$.route') AS \"route\",\n  json_extract(value, '$.coverage') AS \"coverage\",\n  json_extract(value, '$.decision') AS \"decision\"\nFROM json_each('[{\"operation\": \"Chat through legacy inference\", \"route\": \"models/chat/completions?api-version=2024-05-01-preview in the demo\", \"coverage\": \"AzureAIModelApi; demo AzureAIModelAPI\", \"decision\": \"Current project route; track the SDK migration separately.\"}, {\"operation\": \"Chat through OpenAI v1\", \"route\": \"openai/v1/chat/completions\", \"coverage\": \"No dedicated v1 adapter in the reviewed code\", \"decision\": \"An OpenAI-compatible client/adapter for deployments exposing this operation.\"}, {\"operation\": \"Claude conversation\", \"route\": \"anthropic/v1/messages\", \"coverage\": \"AnthropicFoundryModelApi and demo companion\", \"decision\": \"Native Messages adapter; check the specific Claude version’s features.\"}, {\"operation\": \"Document extraction / reranking\", \"route\": \"Model-specific parsing or reranking contract\", \"coverage\": \"Not implemented by these chat providers\", \"decision\": \"Cohere Parse is image-to-Markdown with no tool calling; use its documented operation. Reranking is a separate task.\"}, {\"operation\": \"Embeddings\", \"route\": \"openai/v1/embeddings for compatible deployments\", \"coverage\": \"No embedding operation in IModelApi\", \"decision\": \"An embedding client and vector result type.\"}, {\"operation\": \"Foundry project / agent operations\", \"route\": \"api/projects/<project> and its SDK-exposed APIs\", \"coverage\": \"Not supplied by these two providers\", \"decision\": \"Foundry project SDK for project features and platform-managed tools.\"}, {\"operation\": \"Image generation / editing\", \"route\": \"Image API or vendor API; FLUX.2 uses providers/blackforestlabs/v1/flux-2-pro\", \"coverage\": \"Not implemented\", \"decision\": \"An image adapter with image inputs/outputs and the documented endpoint, version, and authentication.\"}, {\"operation\": \"Managed compute / custom models\", \"route\": \"managed-deployments/<deployment>/; openai/v1 for compatible chat runtimes\", \"coverage\": \"No general managed-compute adapter\", \"decision\": \"Inspect the model runtime contract; compatible chat can share a protocol adapter.\"}, {\"operation\": \"Realtime audio\", \"route\": \"WebSocket openai/v1/realtime, or WebRTC/SIP integration\", \"coverage\": \"Not implemented\", \"decision\": \"A session API with audio events and bidirectional transport.\"}, {\"operation\": \"Responses\", \"route\": \"openai/v1/responses\", \"coverage\": \"No Responses adapter in the reviewed code\", \"decision\": \"Add item-based input/output and continuation support; verify model and region support.\"}]');",
+          "description": "Executed tabulation of the reviewed snapshot in evidence-tables.json; source-notes.md identifies the underlying code, documentation, and run evidence. This query does not query a live Foundry service.",
+          "tables_used": [
+            "json_each(reviewed_snapshot)"
+          ],
+          "executed_at": "2026-09-08T14:02:27.641223+00:00"
+        }
+      },
+      {
+        "id": "evidence-wire",
+        "label": "Conversation and result translation — reviewed source synthesis",
+        "path": "reports/foundry-provider-guide/query-wire.sql",
+        "query": {
+          "engine": "sqlite",
+          "language": "sql",
+          "sql": "SELECT\n  json_extract(value, '$.concept') AS \"concept\",\n  json_extract(value, '$.chat') AS \"chat\",\n  json_extract(value, '$.messages') AS \"messages\",\n  json_extract(value, '$.responses') AS \"responses\"\nFROM json_each('[{\"concept\": \"Assistant tool request\", \"chat\": \"tool_calls; function.arguments is JSON encoded as a string\", \"messages\": \"content block: tool_use; input is a JSON object\", \"responses\": \"function_call item; arguments and call_id\"}, {\"concept\": \"Completion text\", \"chat\": \"choices[].message.content\", \"messages\": \"Text blocks within content[]\", \"responses\": \"Output message items containing text blocks\"}, {\"concept\": \"Generation limit\", \"chat\": \"max_tokens or max_completion_tokens, selected by model/profile\", \"messages\": \"max_tokens; thinking budget must fit\", \"responses\": \"max_output_tokens, with model-specific semantics\"}, {\"concept\": \"Instructions\", \"chat\": \"system message in messages[] in this adapter\", \"messages\": \"Top-level system in this adapter\", \"responses\": \"instructions and/or supported input message roles\"}, {\"concept\": \"Stop / finish\", \"chat\": \"finish_reason: stop, tool_calls, length, etc.\", \"messages\": \"stop_reason: end_turn, tool_use, max_tokens, etc.\", \"responses\": \"Response status and incomplete details; inspect output items\"}, {\"concept\": \"Stream framing\", \"chat\": \"SSE choice deltas; assemble text and tool arguments\", \"messages\": \"SSE message/content-block events and deltas\", \"responses\": \"SSE response/item/content events\"}, {\"concept\": \"Tool definition\", \"chat\": \"tools[].function.parameters\", \"messages\": \"tools[].input_schema\", \"responses\": \"Function tool schema in the Responses tools list\"}, {\"concept\": \"Tool result\", \"chat\": \"role: tool with tool_call_id\", \"messages\": \"user content block: tool_result with tool_use_id\", \"responses\": \"function_call_output item with call_id\"}, {\"concept\": \"Usage\", \"chat\": \"prompt_tokens / completion_tokens; optional details\", \"messages\": \"input_tokens / output_tokens and cache fields\", \"responses\": \"input_tokens / output_tokens and API-specific details\"}]');",
+          "description": "Executed tabulation of the reviewed snapshot in evidence-tables.json; source-notes.md identifies the underlying code, documentation, and run evidence. This query does not query a live Foundry service.",
+          "tables_used": [
+            "json_each(reviewed_snapshot)"
+          ],
+          "executed_at": "2026-09-08T14:02:27.641223+00:00"
+        }
+      },
+      {
+        "id": "evidence-families",
+        "label": "Current family mappings and their boundaries — reviewed source synthesis",
+        "path": "reports/foundry-provider-guide/query-families.sql",
+        "query": {
+          "engine": "sqlite",
+          "language": "sql",
+          "sql": "SELECT\n  json_extract(value, '$.family') AS \"family\",\n  json_extract(value, '$.mapping') AS \"mapping\",\n  json_extract(value, '$.boundary') AS \"boundary\"\nFROM json_each('[{\"family\": \"Anthropic / Claude\", \"mapping\": \"Separate Messages adapter; adaptive thinking and output_config.effort, or an explicit thinking budget\", \"boundary\": \"Version-specific accepted efforts and schemas; preserve thinking signatures on replay.\"}, {\"family\": \"Cohere Command\", \"mapping\": \"thinking object; ReasoningTokens maps to token_budget\", \"boundary\": \"Code notes say disabling thinking was accepted but ignored in an earlier probe. Parse and Rerank are different operations.\"}, {\"family\": \"DeepSeek\", \"mapping\": \"reasoning_effort for the current V4 mapping\", \"boundary\": \"Earlier code notes distinguish an honored effort field from an ignored thinking toggle; do not generalize across versions.\"}, {\"family\": \"Microsoft / MAI-Thinking-1\", \"mapping\": \"reasoning_effort; explicit max_completion_tokens=true override in the library\", \"boundary\": \"The teaching demo learns the token field from a 400; the library does not use that same learning loop.\"}, {\"family\": \"Mistral\", \"mapping\": \"Message reducer; no default token limit for detected Mistral models\", \"boundary\": \"The reducer folds a following user message into a preceding tool result; model capability remains deployment-specific.\"}, {\"family\": \"Moonshot / Kimi\", \"mapping\": \"thinking enabled/disabled object; reasoning content can be returned\", \"boundary\": \"Code notes record that a disabled setting did not suppress thinking in an earlier Foundry probe.\"}, {\"family\": \"OpenAI GPT-5 / o-series\", \"mapping\": \"max_completion_tokens and reasoning_effort\", \"boundary\": \"Accepted effort levels and sampling controls vary. Current token detection does not cover every future GPT family.\"}, {\"family\": \"OpenAI legacy chat / GPT-4o\", \"mapping\": \"max_tokens; no derived reasoning control\", \"boundary\": \"A raw unsupported reasoning parameter can still be rejected.\"}, {\"family\": \"Router\", \"mapping\": \"reasoning_effort forwarded by the current mapping\", \"boundary\": \"Record the requested deployment and the actual returned model; routing can change what behavior is observed.\"}, {\"family\": \"xAI / Grok\", \"mapping\": \"reasoning_effort; reasoning token usage where returned\", \"boundary\": \"The mapping does not promise that effort=none disables reasoning or that internal reasoning text is exposed.\"}]');",
+          "description": "Executed tabulation of the reviewed snapshot in evidence-tables.json; source-notes.md identifies the underlying code, documentation, and run evidence. This query does not query a live Foundry service.",
+          "tables_used": [
+            "json_each(reviewed_snapshot)"
+          ],
+          "executed_at": "2026-09-08T14:02:27.641223+00:00"
+        }
+      },
+      {
+        "id": "evidence-ownership",
+        "label": "Responsibility boundaries — reviewed source synthesis",
+        "path": "reports/foundry-provider-guide/query-ownership.sql",
+        "query": {
+          "engine": "sqlite",
+          "language": "sql",
+          "sql": "SELECT\n  json_extract(value, '$.owner') AS \"owner\",\n  json_extract(value, '$.job') AS \"job\",\n  json_extract(value, '$.limit') AS \"limit\"\nFROM json_each('[{\"owner\": \"1. Task and scorer\", \"job\": \"Define the question, tools, expected answer, and grading\", \"limit\": \"A grading error can occur even when communication is correct.\"}, {\"owner\": \"2. Evaluation/model runtime\", \"job\": \"Coordinate calls, retry budgets, concurrency, transcript events, and usage\", \"limit\": \"Do not assume a direct IModelApi call includes the full runtime.\"}, {\"owner\": \"3. Provider adapter\", \"job\": \"Serialize requests, parse replies, classify failures, translate streams\", \"limit\": \"Do not execute a local function merely because a tool call was parsed.\"}, {\"owner\": \"4. Transport and credential\", \"job\": \"Send HTTP/SSE, acquire and refresh bearer tokens\", \"limit\": \"Endpoint, audience, version, and headers must match the service.\"}, {\"owner\": \"5. Foundry deployment\", \"job\": \"Serve the selected model and enforce operation support, filters, and quota\", \"limit\": \"An adapter cannot create model capabilities or additional quota.\"}, {\"owner\": \"6. Tool runtime / sandbox\", \"job\": \"Execute permitted local tool requests and return results\", \"limit\": \"The demo shell is simulated; a command failure need not be a model failure.\"}]');",
+          "description": "Executed tabulation of the reviewed snapshot in evidence-tables.json; source-notes.md identifies the underlying code, documentation, and run evidence. This query does not query a live Foundry service.",
+          "tables_used": [
+            "json_each(reviewed_snapshot)"
+          ],
+          "executed_at": "2026-09-08T14:02:27.641223+00:00"
+        }
+      },
+      {
+        "id": "rerun-outcomes",
+        "label": "Rerun outcome counts — tabulated from the saved run manifest",
+        "path": "reports/foundry-provider-guide/query-deployment_outcomes.sql",
+        "query": {
+          "engine": "sqlite",
+          "language": "sql",
+          "sql": "SELECT\n  json_extract(value, '$.outcome') AS \"outcome\",\n  json_extract(value, '$.deployments') AS \"deployments\",\n  json_extract(value, '$.total_deployments') AS \"total_deployments\",\n  json_extract(value, '$.share') AS \"share\",\n  json_extract(value, '$.models') AS \"models\",\n  json_extract(value, '$.samples_per_eval') AS \"samples_per_eval\"\nFROM json_each('[{\"outcome\": \"Completed\", \"deployments\": 16, \"total_deployments\": 21, \"share\": 0.7619047619047619, \"models\": \"azureai/gpt-4o, azureai/gpt-5.4-mini, azureai/gpt-5.6-luna, azureai/gpt-5.6-terra, azureai/Kimi-K2.6, azureai/gpt-5.6-luna-2, azureai/gpt-5.6-sol, azureai/Kimi-K2.7-Code, azureai/grok-4.6, azureai/Cohere-command-a-plus-05-2026, azureai/Mistral-Large-3, azureai/MAI-Thinking-1, azureai/DeepSeek-V4-Flash, azureai/DeepSeek-V4-Pro, azureai/model-router, anthropic/claude-sonnet-4-6\", \"samples_per_eval\": 3}, {\"outcome\": \"Route error\", \"deployments\": 3, \"total_deployments\": 21, \"share\": 0.14285714285714285, \"models\": \"azureai/gpt-5.4-pro, azureai/Cohere-parse-v5, azureai/FLUX.2-pro\", \"samples_per_eval\": 3}, {\"outcome\": \"Timeout\", \"deployments\": 1, \"total_deployments\": 21, \"share\": 0.047619047619047616, \"models\": \"azureai/DeepSeek-V4-Flash-0731\", \"samples_per_eval\": 3}, {\"outcome\": \"Rate limit\", \"deployments\": 1, \"total_deployments\": 21, \"share\": 0.047619047619047616, \"models\": \"azureai/Ministral-3B\", \"samples_per_eval\": 3}]');",
+          "description": "Executed tabulation of the reviewed snapshot in evidence-tables.json; source-notes.md identifies the underlying code, documentation, and run evidence. This query does not query a live Foundry service.",
+          "tables_used": [
+            "json_each(reviewed_snapshot)"
+          ],
+          "executed_at": "2026-09-08T14:02:27.641223+00:00"
+        }
+      },
+      {
+        "id": "evidence-rerun-results",
+        "label": "What the September 7 rerun establishes — reviewed source synthesis",
+        "path": "reports/foundry-provider-guide/query-rerun-results.sql",
+        "query": {
+          "engine": "sqlite",
+          "language": "sql",
+          "sql": "SELECT\n  json_extract(value, '$.group') AS \"group\",\n  json_extract(value, '$.observed') AS \"observed\",\n  json_extract(value, '$.meaning') AS \"meaning\"\nFROM json_each('[{\"group\": \"15 other main deployments\", \"observed\": \"3/3 automated and the required answer facts were present\", \"meaning\": \"The chosen route supported the tested text/tool workflow; this does not validate every feature.\"}, {\"group\": \"Cohere-parse-v5\", \"observed\": \"404 api_not_supported on the chat route\", \"meaning\": \"A parsing model needs the appropriate task-specific integration.\"}, {\"group\": \"DeepSeek-V4-Flash-0731\", \"observed\": \"Some replies and one correct sample, then 180-second request timeouts; eval failed with 408\", \"meaning\": \"Protocol compatibility and deployment reliability are separate.\"}, {\"group\": \"FLUX.2-pro\", \"observed\": \"404 on the chat route\", \"meaning\": \"Image generation needs an image/vendor adapter.\"}, {\"group\": \"GPT-4o\", \"observed\": \"Automated 3/3; required-fact review 2/3 because taxi was omitted\", \"meaning\": \"The grader accepted an incomplete answer; transport success did not prove task success.\"}, {\"group\": \"Ministral-3B\", \"observed\": \"429 after retries even with one sample at a time; missing-file sample succeeded\", \"meaning\": \"The provider honored waits but could not remove a capacity constraint.\"}, {\"group\": \"gpt-5.4-pro\", \"observed\": \"400 unsupported operation on the legacy chat route\", \"meaning\": \"Check a supported API such as Responses rather than treating the model as universally unusable.\"}]');",
+          "description": "Executed tabulation of the reviewed snapshot in evidence-tables.json; source-notes.md identifies the underlying code, documentation, and run evidence. This query does not query a live Foundry service.",
+          "tables_used": [
+            "json_each(reviewed_snapshot)"
+          ],
+          "executed_at": "2026-09-08T14:02:27.641223+00:00"
+        }
+      }
+    ]
+  },
+  "snapshot": {
+    "version": 1,
+    "generatedAt": "2026-09-08T14:02:27.641223+00:00",
+    "status": "ready",
+    "datasets": {
+      "routes": [
+        {
+          "operation": "Chat through legacy inference",
+          "route": "models/chat/completions?api-version=2024-05-01-preview in the demo",
+          "coverage": "AzureAIModelApi; demo AzureAIModelAPI",
+          "decision": "Current project route; track the SDK migration separately."
+        },
+        {
+          "operation": "Chat through OpenAI v1",
+          "route": "openai/v1/chat/completions",
+          "coverage": "No dedicated v1 adapter in the reviewed code",
+          "decision": "An OpenAI-compatible client/adapter for deployments exposing this operation."
+        },
+        {
+          "operation": "Claude conversation",
+          "route": "anthropic/v1/messages",
+          "coverage": "AnthropicFoundryModelApi and demo companion",
+          "decision": "Native Messages adapter; check the specific Claude version’s features."
+        },
+        {
+          "operation": "Document extraction / reranking",
+          "route": "Model-specific parsing or reranking contract",
+          "coverage": "Not implemented by these chat providers",
+          "decision": "Cohere Parse is image-to-Markdown with no tool calling; use its documented operation. Reranking is a separate task."
+        },
+        {
+          "operation": "Embeddings",
+          "route": "openai/v1/embeddings for compatible deployments",
+          "coverage": "No embedding operation in IModelApi",
+          "decision": "An embedding client and vector result type."
+        },
+        {
+          "operation": "Foundry project / agent operations",
+          "route": "api/projects/<project> and its SDK-exposed APIs",
+          "coverage": "Not supplied by these two providers",
+          "decision": "Foundry project SDK for project features and platform-managed tools."
+        },
+        {
+          "operation": "Image generation / editing",
+          "route": "Image API or vendor API; FLUX.2 uses providers/blackforestlabs/v1/flux-2-pro",
+          "coverage": "Not implemented",
+          "decision": "An image adapter with image inputs/outputs and the documented endpoint, version, and authentication."
+        },
+        {
+          "operation": "Managed compute / custom models",
+          "route": "managed-deployments/<deployment>/; openai/v1 for compatible chat runtimes",
+          "coverage": "No general managed-compute adapter",
+          "decision": "Inspect the model runtime contract; compatible chat can share a protocol adapter."
+        },
+        {
+          "operation": "Realtime audio",
+          "route": "WebSocket openai/v1/realtime, or WebRTC/SIP integration",
+          "coverage": "Not implemented",
+          "decision": "A session API with audio events and bidirectional transport."
+        },
+        {
+          "operation": "Responses",
+          "route": "openai/v1/responses",
+          "coverage": "No Responses adapter in the reviewed code",
+          "decision": "Add item-based input/output and continuation support; verify model and region support."
+        }
+      ],
+      "wire": [
+        {
+          "concept": "Assistant tool request",
+          "chat": "tool_calls; function.arguments is JSON encoded as a string",
+          "messages": "content block: tool_use; input is a JSON object",
+          "responses": "function_call item; arguments and call_id"
+        },
+        {
+          "concept": "Completion text",
+          "chat": "choices[].message.content",
+          "messages": "Text blocks within content[]",
+          "responses": "Output message items containing text blocks"
+        },
+        {
+          "concept": "Generation limit",
+          "chat": "max_tokens or max_completion_tokens, selected by model/profile",
+          "messages": "max_tokens; thinking budget must fit",
+          "responses": "max_output_tokens, with model-specific semantics"
+        },
+        {
+          "concept": "Instructions",
+          "chat": "system message in messages[] in this adapter",
+          "messages": "Top-level system in this adapter",
+          "responses": "instructions and/or supported input message roles"
+        },
+        {
+          "concept": "Stop / finish",
+          "chat": "finish_reason: stop, tool_calls, length, etc.",
+          "messages": "stop_reason: end_turn, tool_use, max_tokens, etc.",
+          "responses": "Response status and incomplete details; inspect output items"
+        },
+        {
+          "concept": "Stream framing",
+          "chat": "SSE choice deltas; assemble text and tool arguments",
+          "messages": "SSE message/content-block events and deltas",
+          "responses": "SSE response/item/content events"
+        },
+        {
+          "concept": "Tool definition",
+          "chat": "tools[].function.parameters",
+          "messages": "tools[].input_schema",
+          "responses": "Function tool schema in the Responses tools list"
+        },
+        {
+          "concept": "Tool result",
+          "chat": "role: tool with tool_call_id",
+          "messages": "user content block: tool_result with tool_use_id",
+          "responses": "function_call_output item with call_id"
+        },
+        {
+          "concept": "Usage",
+          "chat": "prompt_tokens / completion_tokens; optional details",
+          "messages": "input_tokens / output_tokens and cache fields",
+          "responses": "input_tokens / output_tokens and API-specific details"
+        }
+      ],
+      "families": [
+        {
+          "family": "Anthropic / Claude",
+          "mapping": "Separate Messages adapter; adaptive thinking and output_config.effort, or an explicit thinking budget",
+          "boundary": "Version-specific accepted efforts and schemas; preserve thinking signatures on replay."
+        },
+        {
+          "family": "Cohere Command",
+          "mapping": "thinking object; ReasoningTokens maps to token_budget",
+          "boundary": "Code notes say disabling thinking was accepted but ignored in an earlier probe. Parse and Rerank are different operations."
+        },
+        {
+          "family": "DeepSeek",
+          "mapping": "reasoning_effort for the current V4 mapping",
+          "boundary": "Earlier code notes distinguish an honored effort field from an ignored thinking toggle; do not generalize across versions."
+        },
+        {
+          "family": "Microsoft / MAI-Thinking-1",
+          "mapping": "reasoning_effort; explicit max_completion_tokens=true override in the library",
+          "boundary": "The teaching demo learns the token field from a 400; the library does not use that same learning loop."
+        },
+        {
+          "family": "Mistral",
+          "mapping": "Message reducer; no default token limit for detected Mistral models",
+          "boundary": "The reducer folds a following user message into a preceding tool result; model capability remains deployment-specific."
+        },
+        {
+          "family": "Moonshot / Kimi",
+          "mapping": "thinking enabled/disabled object; reasoning content can be returned",
+          "boundary": "Code notes record that a disabled setting did not suppress thinking in an earlier Foundry probe."
+        },
+        {
+          "family": "OpenAI GPT-5 / o-series",
+          "mapping": "max_completion_tokens and reasoning_effort",
+          "boundary": "Accepted effort levels and sampling controls vary. Current token detection does not cover every future GPT family."
+        },
+        {
+          "family": "OpenAI legacy chat / GPT-4o",
+          "mapping": "max_tokens; no derived reasoning control",
+          "boundary": "A raw unsupported reasoning parameter can still be rejected."
+        },
+        {
+          "family": "Router",
+          "mapping": "reasoning_effort forwarded by the current mapping",
+          "boundary": "Record the requested deployment and the actual returned model; routing can change what behavior is observed."
+        },
+        {
+          "family": "xAI / Grok",
+          "mapping": "reasoning_effort; reasoning token usage where returned",
+          "boundary": "The mapping does not promise that effort=none disables reasoning or that internal reasoning text is exposed."
+        }
+      ],
+      "ownership": [
+        {
+          "owner": "1. Task and scorer",
+          "job": "Define the question, tools, expected answer, and grading",
+          "limit": "A grading error can occur even when communication is correct."
+        },
+        {
+          "owner": "2. Evaluation/model runtime",
+          "job": "Coordinate calls, retry budgets, concurrency, transcript events, and usage",
+          "limit": "Do not assume a direct IModelApi call includes the full runtime."
+        },
+        {
+          "owner": "3. Provider adapter",
+          "job": "Serialize requests, parse replies, classify failures, translate streams",
+          "limit": "Do not execute a local function merely because a tool call was parsed."
+        },
+        {
+          "owner": "4. Transport and credential",
+          "job": "Send HTTP/SSE, acquire and refresh bearer tokens",
+          "limit": "Endpoint, audience, version, and headers must match the service."
+        },
+        {
+          "owner": "5. Foundry deployment",
+          "job": "Serve the selected model and enforce operation support, filters, and quota",
+          "limit": "An adapter cannot create model capabilities or additional quota."
+        },
+        {
+          "owner": "6. Tool runtime / sandbox",
+          "job": "Execute permitted local tool requests and return results",
+          "limit": "The demo shell is simulated; a command failure need not be a model failure."
+        }
+      ],
+      "deployment_outcomes": [
+        {
+          "outcome": "Completed",
+          "deployments": 16,
+          "total_deployments": 21,
+          "share": 0.7619047619047619,
+          "models": "azureai/gpt-4o, azureai/gpt-5.4-mini, azureai/gpt-5.6-luna, azureai/gpt-5.6-terra, azureai/Kimi-K2.6, azureai/gpt-5.6-luna-2, azureai/gpt-5.6-sol, azureai/Kimi-K2.7-Code, azureai/grok-4.6, azureai/Cohere-command-a-plus-05-2026, azureai/Mistral-Large-3, azureai/MAI-Thinking-1, azureai/DeepSeek-V4-Flash, azureai/DeepSeek-V4-Pro, azureai/model-router, anthropic/claude-sonnet-4-6",
+          "samples_per_eval": 3
+        },
+        {
+          "outcome": "Route error",
+          "deployments": 3,
+          "total_deployments": 21,
+          "share": 0.14285714285714285,
+          "models": "azureai/gpt-5.4-pro, azureai/Cohere-parse-v5, azureai/FLUX.2-pro",
+          "samples_per_eval": 3
+        },
+        {
+          "outcome": "Timeout",
+          "deployments": 1,
+          "total_deployments": 21,
+          "share": 0.047619047619047616,
+          "models": "azureai/DeepSeek-V4-Flash-0731",
+          "samples_per_eval": 3
+        },
+        {
+          "outcome": "Rate limit",
+          "deployments": 1,
+          "total_deployments": 21,
+          "share": 0.047619047619047616,
+          "models": "azureai/Ministral-3B",
+          "samples_per_eval": 3
+        }
+      ],
+      "rerun-results": [
+        {
+          "group": "15 other main deployments",
+          "observed": "3/3 automated and the required answer facts were present",
+          "meaning": "The chosen route supported the tested text/tool workflow; this does not validate every feature."
+        },
+        {
+          "group": "Cohere-parse-v5",
+          "observed": "404 api_not_supported on the chat route",
+          "meaning": "A parsing model needs the appropriate task-specific integration."
+        },
+        {
+          "group": "DeepSeek-V4-Flash-0731",
+          "observed": "Some replies and one correct sample, then 180-second request timeouts; eval failed with 408",
+          "meaning": "Protocol compatibility and deployment reliability are separate."
+        },
+        {
+          "group": "FLUX.2-pro",
+          "observed": "404 on the chat route",
+          "meaning": "Image generation needs an image/vendor adapter."
+        },
+        {
+          "group": "GPT-4o",
+          "observed": "Automated 3/3; required-fact review 2/3 because taxi was omitted",
+          "meaning": "The grader accepted an incomplete answer; transport success did not prove task success."
+        },
+        {
+          "group": "Ministral-3B",
+          "observed": "429 after retries even with one sample at a time; missing-file sample succeeded",
+          "meaning": "The provider honored waits but could not remove a capacity constraint."
+        },
+        {
+          "group": "gpt-5.4-pro",
+          "observed": "400 unsupported operation on the legacy chat route",
+          "meaning": "Check a supported API such as Responses rather than treating the model as universally unusable."
+        }
+      ]
+    }
+  },
+  "sources": [
+    {
+      "id": "azure",
+      "label": "Local AzureAIModelApi implementation — working tree reviewed September 8, 2026",
+      "path": "src/InspectAzureAI.Provider/AzureAIModelApi.cs"
+    },
+    {
+      "id": "anthropic",
+      "label": "Local AnthropicFoundryModelApi implementation",
+      "path": "src/InspectAzureAI.Provider/Anthropic/AnthropicFoundryModelApi.cs"
+    },
+    {
+      "id": "contract",
+      "label": "Local IModelApi generation contract",
+      "path": "src/InspectAzureAI.Provider/Core/IModelApi.cs"
+    },
+    {
+      "id": "reasoning",
+      "label": "Local reasoning-family mappings and recorded probe notes",
+      "path": "src/InspectAzureAI.Provider/Util/ReasoningParams.cs"
+    },
+    {
+      "id": "names",
+      "label": "Local token-limit family detection",
+      "path": "src/InspectAzureAI.Provider/Util/OpenAIUtil.cs"
+    },
+    {
+      "id": "messages",
+      "label": "Local Azure message conversion and Mistral reducer",
+      "path": "src/InspectAzureAI.Provider/Tools/AzureMessageConversion.cs"
+    },
+    {
+      "id": "tools",
+      "label": "Local native tool conversion",
+      "path": "src/InspectAzureAI.Provider/Tools/AzureToolConversion.cs"
+    },
+    {
+      "id": "auth",
+      "label": "Local Entra credential and audience configuration",
+      "path": "src/InspectAzureAI.Provider/Util/AzureHosting.cs"
+    },
+    {
+      "id": "catalog",
+      "label": "Local ARM deployment discovery and capability interpretation",
+      "path": "src/InspectAzureAI.Provider/Foundry/FoundryCatalog.cs"
+    },
+    {
+      "id": "selection",
+      "label": "Local model matrix deployment selection",
+      "path": "src/InspectAzureAI.ModelMatrix/DeploymentSelection.cs"
+    },
+    {
+      "id": "factory",
+      "label": "Local provider factory and model wrapper",
+      "path": "src/InspectAzureAI.Eval/Model/FoundryModels.cs"
+    },
+    {
+      "id": "runtime",
+      "label": "Local full evaluation model runtime",
+      "path": "src/InspectAzureAI.Eval/Model/Model.cs"
+    },
+    {
+      "id": "probes",
+      "label": "Local parameter probe specifications and verdicts",
+      "path": "src/InspectAzureAI.Provider/Foundry/ParameterProbes.cs"
+    },
+    {
+      "id": "sample",
+      "label": "Local provider sample CLI",
+      "path": "src/InspectAzureAI.Sample/Program.cs"
+    },
+    {
+      "id": "demo",
+      "label": "Local seven-layer teaching demo",
+      "path": "src/InspectAzureAI.LayersDemo/README.md"
+    },
+    {
+      "id": "demo-azure",
+      "label": "Teaching demo parameter learning and HTTP timeout",
+      "path": "src/InspectAzureAI.LayersDemo/Layer6_Providers/AzureAIProvider.cs"
+    },
+    {
+      "id": "demo-model",
+      "label": "Teaching demo backoff and retries",
+      "path": "src/InspectAzureAI.LayersDemo/Layer5_Model/Model.cs"
+    },
+    {
+      "id": "rerun",
+      "label": "September 7, 2026 expenses rerun: 21 deployments, including failed checks",
+      "path": "src/logs/expenses-astra-2026-09-07/run-manifest.json"
+    },
+    {
+      "id": "rerun-audit",
+      "label": "September 7 request and usage audit for the 16 completed model evaluations",
+      "path": "src/logs/expenses-astra-2026-09-07/main-audit.json"
+    },
+    {
+      "id": "rerun-summary",
+      "label": "September 7 rerun summary, failed checks, and corrected role accounting",
+      "path": "src/logs/expenses-astra-2026-09-07/SUMMARY.md"
+    },
+    {
+      "id": "sdk",
+      "label": "Microsoft Learn — SDKs and endpoints",
+      "url": "https://learn.microsoft.com/en-us/azure/foundry/how-to/develop/sdk-overview"
+    },
+    {
+      "id": "endpoints",
+      "label": "Microsoft Learn — Foundry model endpoints",
+      "url": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/endpoints"
+    },
+    {
+      "id": "migration",
+      "label": "Microsoft Learn — Migration from Foundry classic",
+      "url": "https://learn.microsoft.com/en-us/azure/foundry/how-to/navigate-from-classic"
+    },
+    {
+      "id": "responses",
+      "label": "Microsoft Learn — Azure OpenAI Responses API",
+      "url": "https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/responses"
+    },
+    {
+      "id": "claude",
+      "label": "Microsoft Learn — Claude APIs and model capabilities",
+      "url": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/claude-models"
+    },
+    {
+      "id": "models",
+      "label": "Microsoft Learn — Models sold by Azure",
+      "url": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure"
+    },
+    {
+      "id": "flux",
+      "label": "Microsoft Learn — FLUX model API",
+      "url": "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/how-to/use-foundry-models-flux"
+    },
+    {
+      "id": "realtime",
+      "label": "Microsoft Learn — Realtime audio over WebSockets",
+      "url": "https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/realtime-audio-websockets"
+    },
+    {
+      "id": "compute",
+      "label": "Microsoft Learn — Managed compute endpoint routes",
+      "url": "https://learn.microsoft.com/en-us/azure/foundry/concepts/managed-compute-overview"
+    },
+    {
+      "id": "inference-rest",
+      "label": "Microsoft Learn — model-inference Chat Completions wire contract",
+      "url": "https://learn.microsoft.com/en-us/rest/api/microsoftfoundry/model-inference/get-chat-completions/get-chat-completions?view=rest-microsoftfoundry-model-inference-2024-05-01-preview"
+    },
+    {
+      "id": "evidence-routes",
+      "label": "Operations, routes, and existing adapter coverage — reviewed source synthesis",
+      "path": "reports/foundry-provider-guide/query-routes.sql",
+      "query": {
+        "engine": "sqlite",
+        "language": "sql",
+        "sql": "SELECT\n  json_extract(value, '$.operation') AS \"operation\",\n  json_extract(value, '$.route') AS \"route\",\n  json_extract(value, '$.coverage') AS \"coverage\",\n  json_extract(value, '$.decision') AS \"decision\"\nFROM json_each('[{\"operation\": \"Chat through legacy inference\", \"route\": \"models/chat/completions?api-version=2024-05-01-preview in the demo\", \"coverage\": \"AzureAIModelApi; demo AzureAIModelAPI\", \"decision\": \"Current project route; track the SDK migration separately.\"}, {\"operation\": \"Chat through OpenAI v1\", \"route\": \"openai/v1/chat/completions\", \"coverage\": \"No dedicated v1 adapter in the reviewed code\", \"decision\": \"An OpenAI-compatible client/adapter for deployments exposing this operation.\"}, {\"operation\": \"Claude conversation\", \"route\": \"anthropic/v1/messages\", \"coverage\": \"AnthropicFoundryModelApi and demo companion\", \"decision\": \"Native Messages adapter; check the specific Claude version’s features.\"}, {\"operation\": \"Document extraction / reranking\", \"route\": \"Model-specific parsing or reranking contract\", \"coverage\": \"Not implemented by these chat providers\", \"decision\": \"Cohere Parse is image-to-Markdown with no tool calling; use its documented operation. Reranking is a separate task.\"}, {\"operation\": \"Embeddings\", \"route\": \"openai/v1/embeddings for compatible deployments\", \"coverage\": \"No embedding operation in IModelApi\", \"decision\": \"An embedding client and vector result type.\"}, {\"operation\": \"Foundry project / agent operations\", \"route\": \"api/projects/<project> and its SDK-exposed APIs\", \"coverage\": \"Not supplied by these two providers\", \"decision\": \"Foundry project SDK for project features and platform-managed tools.\"}, {\"operation\": \"Image generation / editing\", \"route\": \"Image API or vendor API; FLUX.2 uses providers/blackforestlabs/v1/flux-2-pro\", \"coverage\": \"Not implemented\", \"decision\": \"An image adapter with image inputs/outputs and the documented endpoint, version, and authentication.\"}, {\"operation\": \"Managed compute / custom models\", \"route\": \"managed-deployments/<deployment>/; openai/v1 for compatible chat runtimes\", \"coverage\": \"No general managed-compute adapter\", \"decision\": \"Inspect the model runtime contract; compatible chat can share a protocol adapter.\"}, {\"operation\": \"Realtime audio\", \"route\": \"WebSocket openai/v1/realtime, or WebRTC/SIP integration\", \"coverage\": \"Not implemented\", \"decision\": \"A session API with audio events and bidirectional transport.\"}, {\"operation\": \"Responses\", \"route\": \"openai/v1/responses\", \"coverage\": \"No Responses adapter in the reviewed code\", \"decision\": \"Add item-based input/output and continuation support; verify model and region support.\"}]');",
+        "description": "Executed tabulation of the reviewed snapshot in evidence-tables.json; source-notes.md identifies the underlying code, documentation, and run evidence. This query does not query a live Foundry service.",
+        "tables_used": [
+          "json_each(reviewed_snapshot)"
+        ],
+        "executed_at": "2026-09-08T14:02:27.641223+00:00"
+      }
+    },
+    {
+      "id": "evidence-wire",
+      "label": "Conversation and result translation — reviewed source synthesis",
+      "path": "reports/foundry-provider-guide/query-wire.sql",
+      "query": {
+        "engine": "sqlite",
+        "language": "sql",
+        "sql": "SELECT\n  json_extract(value, '$.concept') AS \"concept\",\n  json_extract(value, '$.chat') AS \"chat\",\n  json_extract(value, '$.messages') AS \"messages\",\n  json_extract(value, '$.responses') AS \"responses\"\nFROM json_each('[{\"concept\": \"Assistant tool request\", \"chat\": \"tool_calls; function.arguments is JSON encoded as a string\", \"messages\": \"content block: tool_use; input is a JSON object\", \"responses\": \"function_call item; arguments and call_id\"}, {\"concept\": \"Completion text\", \"chat\": \"choices[].message.content\", \"messages\": \"Text blocks within content[]\", \"responses\": \"Output message items containing text blocks\"}, {\"concept\": \"Generation limit\", \"chat\": \"max_tokens or max_completion_tokens, selected by model/profile\", \"messages\": \"max_tokens; thinking budget must fit\", \"responses\": \"max_output_tokens, with model-specific semantics\"}, {\"concept\": \"Instructions\", \"chat\": \"system message in messages[] in this adapter\", \"messages\": \"Top-level system in this adapter\", \"responses\": \"instructions and/or supported input message roles\"}, {\"concept\": \"Stop / finish\", \"chat\": \"finish_reason: stop, tool_calls, length, etc.\", \"messages\": \"stop_reason: end_turn, tool_use, max_tokens, etc.\", \"responses\": \"Response status and incomplete details; inspect output items\"}, {\"concept\": \"Stream framing\", \"chat\": \"SSE choice deltas; assemble text and tool arguments\", \"messages\": \"SSE message/content-block events and deltas\", \"responses\": \"SSE response/item/content events\"}, {\"concept\": \"Tool definition\", \"chat\": \"tools[].function.parameters\", \"messages\": \"tools[].input_schema\", \"responses\": \"Function tool schema in the Responses tools list\"}, {\"concept\": \"Tool result\", \"chat\": \"role: tool with tool_call_id\", \"messages\": \"user content block: tool_result with tool_use_id\", \"responses\": \"function_call_output item with call_id\"}, {\"concept\": \"Usage\", \"chat\": \"prompt_tokens / completion_tokens; optional details\", \"messages\": \"input_tokens / output_tokens and cache fields\", \"responses\": \"input_tokens / output_tokens and API-specific details\"}]');",
+        "description": "Executed tabulation of the reviewed snapshot in evidence-tables.json; source-notes.md identifies the underlying code, documentation, and run evidence. This query does not query a live Foundry service.",
+        "tables_used": [
+          "json_each(reviewed_snapshot)"
+        ],
+        "executed_at": "2026-09-08T14:02:27.641223+00:00"
+      }
+    },
+    {
+      "id": "evidence-families",
+      "label": "Current family mappings and their boundaries — reviewed source synthesis",
+      "path": "reports/foundry-provider-guide/query-families.sql",
+      "query": {
+        "engine": "sqlite",
+        "language": "sql",
+        "sql": "SELECT\n  json_extract(value, '$.family') AS \"family\",\n  json_extract(value, '$.mapping') AS \"mapping\",\n  json_extract(value, '$.boundary') AS \"boundary\"\nFROM json_each('[{\"family\": \"Anthropic / Claude\", \"mapping\": \"Separate Messages adapter; adaptive thinking and output_config.effort, or an explicit thinking budget\", \"boundary\": \"Version-specific accepted efforts and schemas; preserve thinking signatures on replay.\"}, {\"family\": \"Cohere Command\", \"mapping\": \"thinking object; ReasoningTokens maps to token_budget\", \"boundary\": \"Code notes say disabling thinking was accepted but ignored in an earlier probe. Parse and Rerank are different operations.\"}, {\"family\": \"DeepSeek\", \"mapping\": \"reasoning_effort for the current V4 mapping\", \"boundary\": \"Earlier code notes distinguish an honored effort field from an ignored thinking toggle; do not generalize across versions.\"}, {\"family\": \"Microsoft / MAI-Thinking-1\", \"mapping\": \"reasoning_effort; explicit max_completion_tokens=true override in the library\", \"boundary\": \"The teaching demo learns the token field from a 400; the library does not use that same learning loop.\"}, {\"family\": \"Mistral\", \"mapping\": \"Message reducer; no default token limit for detected Mistral models\", \"boundary\": \"The reducer folds a following user message into a preceding tool result; model capability remains deployment-specific.\"}, {\"family\": \"Moonshot / Kimi\", \"mapping\": \"thinking enabled/disabled object; reasoning content can be returned\", \"boundary\": \"Code notes record that a disabled setting did not suppress thinking in an earlier Foundry probe.\"}, {\"family\": \"OpenAI GPT-5 / o-series\", \"mapping\": \"max_completion_tokens and reasoning_effort\", \"boundary\": \"Accepted effort levels and sampling controls vary. Current token detection does not cover every future GPT family.\"}, {\"family\": \"OpenAI legacy chat / GPT-4o\", \"mapping\": \"max_tokens; no derived reasoning control\", \"boundary\": \"A raw unsupported reasoning parameter can still be rejected.\"}, {\"family\": \"Router\", \"mapping\": \"reasoning_effort forwarded by the current mapping\", \"boundary\": \"Record the requested deployment and the actual returned model; routing can change what behavior is observed.\"}, {\"family\": \"xAI / Grok\", \"mapping\": \"reasoning_effort; reasoning token usage where returned\", \"boundary\": \"The mapping does not promise that effort=none disables reasoning or that internal reasoning text is exposed.\"}]');",
+        "description": "Executed tabulation of the reviewed snapshot in evidence-tables.json; source-notes.md identifies the underlying code, documentation, and run evidence. This query does not query a live Foundry service.",
+        "tables_used": [
+          "json_each(reviewed_snapshot)"
+        ],
+        "executed_at": "2026-09-08T14:02:27.641223+00:00"
+      }
+    },
+    {
+      "id": "evidence-ownership",
+      "label": "Responsibility boundaries — reviewed source synthesis",
+      "path": "reports/foundry-provider-guide/query-ownership.sql",
+      "query": {
+        "engine": "sqlite",
+        "language": "sql",
+        "sql": "SELECT\n  json_extract(value, '$.owner') AS \"owner\",\n  json_extract(value, '$.job') AS \"job\",\n  json_extract(value, '$.limit') AS \"limit\"\nFROM json_each('[{\"owner\": \"1. Task and scorer\", \"job\": \"Define the question, tools, expected answer, and grading\", \"limit\": \"A grading error can occur even when communication is correct.\"}, {\"owner\": \"2. Evaluation/model runtime\", \"job\": \"Coordinate calls, retry budgets, concurrency, transcript events, and usage\", \"limit\": \"Do not assume a direct IModelApi call includes the full runtime.\"}, {\"owner\": \"3. Provider adapter\", \"job\": \"Serialize requests, parse replies, classify failures, translate streams\", \"limit\": \"Do not execute a local function merely because a tool call was parsed.\"}, {\"owner\": \"4. Transport and credential\", \"job\": \"Send HTTP/SSE, acquire and refresh bearer tokens\", \"limit\": \"Endpoint, audience, version, and headers must match the service.\"}, {\"owner\": \"5. Foundry deployment\", \"job\": \"Serve the selected model and enforce operation support, filters, and quota\", \"limit\": \"An adapter cannot create model capabilities or additional quota.\"}, {\"owner\": \"6. Tool runtime / sandbox\", \"job\": \"Execute permitted local tool requests and return results\", \"limit\": \"The demo shell is simulated; a command failure need not be a model failure.\"}]');",
+        "description": "Executed tabulation of the reviewed snapshot in evidence-tables.json; source-notes.md identifies the underlying code, documentation, and run evidence. This query does not query a live Foundry service.",
+        "tables_used": [
+          "json_each(reviewed_snapshot)"
+        ],
+        "executed_at": "2026-09-08T14:02:27.641223+00:00"
+      }
+    },
+    {
+      "id": "rerun-outcomes",
+      "label": "Rerun outcome counts — tabulated from the saved run manifest",
+      "path": "reports/foundry-provider-guide/query-deployment_outcomes.sql",
+      "query": {
+        "engine": "sqlite",
+        "language": "sql",
+        "sql": "SELECT\n  json_extract(value, '$.outcome') AS \"outcome\",\n  json_extract(value, '$.deployments') AS \"deployments\",\n  json_extract(value, '$.total_deployments') AS \"total_deployments\",\n  json_extract(value, '$.share') AS \"share\",\n  json_extract(value, '$.models') AS \"models\",\n  json_extract(value, '$.samples_per_eval') AS \"samples_per_eval\"\nFROM json_each('[{\"outcome\": \"Completed\", \"deployments\": 16, \"total_deployments\": 21, \"share\": 0.7619047619047619, \"models\": \"azureai/gpt-4o, azureai/gpt-5.4-mini, azureai/gpt-5.6-luna, azureai/gpt-5.6-terra, azureai/Kimi-K2.6, azureai/gpt-5.6-luna-2, azureai/gpt-5.6-sol, azureai/Kimi-K2.7-Code, azureai/grok-4.6, azureai/Cohere-command-a-plus-05-2026, azureai/Mistral-Large-3, azureai/MAI-Thinking-1, azureai/DeepSeek-V4-Flash, azureai/DeepSeek-V4-Pro, azureai/model-router, anthropic/claude-sonnet-4-6\", \"samples_per_eval\": 3}, {\"outcome\": \"Route error\", \"deployments\": 3, \"total_deployments\": 21, \"share\": 0.14285714285714285, \"models\": \"azureai/gpt-5.4-pro, azureai/Cohere-parse-v5, azureai/FLUX.2-pro\", \"samples_per_eval\": 3}, {\"outcome\": \"Timeout\", \"deployments\": 1, \"total_deployments\": 21, \"share\": 0.047619047619047616, \"models\": \"azureai/DeepSeek-V4-Flash-0731\", \"samples_per_eval\": 3}, {\"outcome\": \"Rate limit\", \"deployments\": 1, \"total_deployments\": 21, \"share\": 0.047619047619047616, \"models\": \"azureai/Ministral-3B\", \"samples_per_eval\": 3}]');",
+        "description": "Executed tabulation of the reviewed snapshot in evidence-tables.json; source-notes.md identifies the underlying code, documentation, and run evidence. This query does not query a live Foundry service.",
+        "tables_used": [
+          "json_each(reviewed_snapshot)"
+        ],
+        "executed_at": "2026-09-08T14:02:27.641223+00:00"
+      }
+    },
+    {
+      "id": "evidence-rerun-results",
+      "label": "What the September 7 rerun establishes — reviewed source synthesis",
+      "path": "reports/foundry-provider-guide/query-rerun-results.sql",
+      "query": {
+        "engine": "sqlite",
+        "language": "sql",
+        "sql": "SELECT\n  json_extract(value, '$.group') AS \"group\",\n  json_extract(value, '$.observed') AS \"observed\",\n  json_extract(value, '$.meaning') AS \"meaning\"\nFROM json_each('[{\"group\": \"15 other main deployments\", \"observed\": \"3/3 automated and the required answer facts were present\", \"meaning\": \"The chosen route supported the tested text/tool workflow; this does not validate every feature.\"}, {\"group\": \"Cohere-parse-v5\", \"observed\": \"404 api_not_supported on the chat route\", \"meaning\": \"A parsing model needs the appropriate task-specific integration.\"}, {\"group\": \"DeepSeek-V4-Flash-0731\", \"observed\": \"Some replies and one correct sample, then 180-second request timeouts; eval failed with 408\", \"meaning\": \"Protocol compatibility and deployment reliability are separate.\"}, {\"group\": \"FLUX.2-pro\", \"observed\": \"404 on the chat route\", \"meaning\": \"Image generation needs an image/vendor adapter.\"}, {\"group\": \"GPT-4o\", \"observed\": \"Automated 3/3; required-fact review 2/3 because taxi was omitted\", \"meaning\": \"The grader accepted an incomplete answer; transport success did not prove task success.\"}, {\"group\": \"Ministral-3B\", \"observed\": \"429 after retries even with one sample at a time; missing-file sample succeeded\", \"meaning\": \"The provider honored waits but could not remove a capacity constraint.\"}, {\"group\": \"gpt-5.4-pro\", \"observed\": \"400 unsupported operation on the legacy chat route\", \"meaning\": \"Check a supported API such as Responses rather than treating the model as universally unusable.\"}]');",
+        "description": "Executed tabulation of the reviewed snapshot in evidence-tables.json; source-notes.md identifies the underlying code, documentation, and run evidence. This query does not query a live Foundry service.",
+        "tables_used": [
+          "json_each(reviewed_snapshot)"
+        ],
+        "executed_at": "2026-09-08T14:02:27.641223+00:00"
+      }
+    }
+  ]
+}

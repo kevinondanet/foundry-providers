@@ -80,7 +80,9 @@ public sealed class SandboxToolsServer
     private (string Stdout, string Stderr, int Code) Run(string[] parts) => parts switch
     {
         ["cat", .. var files] when files.Length > 0 => Cat(files),
-        ["ls", ..] => (string.Join('\n', _files.Keys.OrderBy(k => k)) + "\n", "", 0),   // flags ignored
+        ["ls", .. var args] => Ls(args),
+        ["test", "-f" or "-e" or "-r" or "-s", var file] => Exists(file),
+        ["[", "-f" or "-e" or "-r" or "-s", var file, "]"] => Exists(file),
         ["pwd"] => ("/workspace\n", "", 0),
         ["echo", .. var rest] => (string.Join(' ', rest).Trim('"', '\'') + "\n", "", 0),
         ["wc", "-l", var file] => _files.TryGetValue(Normalize(file), out var text)
@@ -101,6 +103,24 @@ public sealed class SandboxToolsServer
         }
         return (stdout, stderr, code);
     }
+
+    /// <summary>`ls`, `ls -la`, `ls .` list everything; `ls <file>` reports whether it is there.</summary>
+    private (string, string, int) Ls(string[] args)
+    {
+        var names = args.Where(a => !a.StartsWith('-')).Select(Normalize).Where(n => n is not ("" or "." or "/workspace")).ToList();
+        if (names.Count == 0) return (string.Join('\n', _files.Keys.OrderBy(k => k)) + "\n", "", 0);
+        string stdout = "", stderr = "";
+        var code = 0;
+        foreach (var name in names)
+        {
+            if (_files.ContainsKey(name)) stdout += name + "\n";
+            else { stderr += $"ls: cannot access '{name}': No such file or directory\n"; code = 2; }
+        }
+        return (stdout, stderr, code);
+    }
+
+    /// <summary>`test -f x` / `[ -f x ]`: exit 0 when the file exists, 1 when it does not, no output.</summary>
+    private (string, string, int) Exists(string file) => ("", "", _files.ContainsKey(Normalize(file)) ? 0 : 1);
 
     /// <summary>The working directory is /workspace; accept the ways a model may spell a path in it.</summary>
     private static string Normalize(string path)

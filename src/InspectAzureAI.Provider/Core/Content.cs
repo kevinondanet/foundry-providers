@@ -27,11 +27,16 @@ public sealed record ContentText(string Text) : Content
 /// Reasoning content (port of <c>ContentReasoning</c>, <c>content.py</c>): thinking the model chose to
 /// expose. <see cref="Signature"/> carries Anthropic's opaque signature (or the <c>redacted_thinking</c>
 /// payload when <see cref="Redacted"/>), which must travel back unchanged on later turns. The Foundry
-/// model-inference route exposes reasoning as plain text (<c>reasoning_content</c>) with no signature.
+/// model-inference route exposes reasoning as plain text (<c>reasoning_content</c>) with no signature. On the
+/// OpenAI Responses route <see cref="Signature"/> is the reasoning item id and, when <see cref="Redacted"/>,
+/// <see cref="Reasoning"/> is the item's <c>encrypted_content</c>; both are replayed on later turns.
 /// </summary>
 public sealed record ContentReasoning(string Reasoning, string? Signature = null, bool Redacted = false) : Content
 {
     public override string Type => "reasoning";
+
+    /// <summary>Provider summary of the reasoning (the Responses API <c>summary</c> parts); null when none was returned.</summary>
+    public string? Summary { get; init; }
 }
 
 /// <summary>

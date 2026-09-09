@@ -128,6 +128,17 @@ public sealed class ShowcaseOfflineTests : IDisposable
     }
 
     [Fact]
+    public async Task fake_copilot_is_refused_as_a_usage_error()
+    {
+        var run = await RunAsync("run", "--fake", "--task", "hello-swe", "--agent", "copilot", "--log-dir", _logDir);
+
+        Assert.Equal(2, run.ExitCode);
+        Assert.Contains("copilot", run.Stderr);
+        Assert.Contains("usage:", run.Stderr);
+        Assert.False(Directory.Exists(_logDir));
+    }
+
+    [Fact]
     public async Task list_prints_the_built_in_tasks_and_agents()
     {
         var run = await RunAsync("list");
@@ -139,6 +150,7 @@ public sealed class ShowcaseOfflineTests : IDisposable
         Assert.Contains("system-explorer", run.Stdout);
         Assert.Contains("model_graded_qa", run.Stdout);
         Assert.Contains("claude-code", run.Stdout);
+        Assert.Contains("copilot", run.Stdout);
         Assert.Contains("maf", run.Stdout);
     }
 

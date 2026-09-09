@@ -1,0 +1,5 @@
+Use this tool to interact with a computer.
+
+Use a mouse and keyboard to interact with a computer's desktop GUI.
+
+Keep in mind that icons require double clicks to open while other UI affordances like menu items and buttons require a single click.

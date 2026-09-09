@@ -304,12 +304,16 @@ public static class EvalLogEdits
 /// </summary>
 internal static class HeaderScorers
 {
-    /// <summary>The header's scorers as <see cref="ScorerDef"/>s (empty when the header records none).</summary>
-    /// <exception cref="NotSupportedException">A metric group, or a metric this port cannot re-create.</exception>
+    /// <summary>The header's scorers as <see cref="ScorerDef"/>s (empty when the header records none), per-key metric groups included.</summary>
+    /// <exception cref="NotSupportedException">A metric this port cannot re-create.</exception>
     public static IReadOnlyList<ScorerDef> FromLog(EvalLog log)
     {
         ArgumentNullException.ThrowIfNull(log);
-        return (log.Eval.Scorers ?? []).Select(scorer => new ScorerDef(scorer.Name, MissingScorer, MetricsOf(scorer))).ToList();
+        return (log.Eval.Scorers ?? []).Select(scorer =>
+        {
+            var (metrics, byKey) = MetricsOf(scorer);
+            return new ScorerDef(scorer.Name, MissingScorer, metrics) { MetricsByKey = byKey };
+        }).ToList();
     }
 
     /// <summary>
@@ -346,18 +350,72 @@ internal static class HeaderScorers
         return EvalResultsBuilder.ComputeResults(totalSamples, scores, resolved, names, reducers, metrics, null, null, completedSamples, headlineMetric);
     }
 
-    private static IReadOnlyList<MetricDef> MetricsOf(EvalScorer scorer) => scorer.Metrics switch
+    /// <summary>
+    /// The metrics a header scorer records, in the shapes <see cref="MetricDictResults.HeaderMetrics"/> writes: a list
+    /// of definitions, a <c>{key: [definitions]}</c> object (Python's dictionary form, only per-key scores) or a list
+    /// whose trailing entries are such objects (the list form). Each definition is re-created by name through
+    /// <see cref="LogHeader.MetricFromLog"/>.
+    /// </summary>
+    internal static (IReadOnlyList<MetricDef> Metrics, MetricDict? ByKey) MetricsOf(EvalScorer scorer)
     {
-        null => [],
-        JsonArray { Count: 0 } => [],
-        JsonArray items => items.Select(item => MetricOf(scorer.Name, item)).ToList(),
-        _ => throw new NotSupportedException($"The scorer '{scorer.Name}' in the log header declares metric groups (a dict of metric lists), which this port cannot re-create; pass the scorers explicitly."),
-    };
+        ArgumentNullException.ThrowIfNull(scorer);
+        switch (scorer.Metrics)
+        {
+            case null:
+            case JsonArray { Count: 0 }:
+                return ([], null);
+            case JsonObject dictionary:
+                return ([], MetricDictOf(scorer.Name, dictionary));
+            case JsonArray items:
+            {
+                var metrics = new List<MetricDef>();
+                MetricDict? byKey = null;
+                foreach (var item in items)
+                {
+                    if (item is JsonObject definition && definition["name"] is JsonValue nameValue && nameValue.TryGetValue<string>(out var name))
+                    {
+                        metrics.Add(LogHeader.MetricFromLog(name, definition["options"] as JsonObject));
+                    }
+                    else if (item is JsonObject dictionary)
+                    {
+                        byKey ??= new MetricDict();
+                        foreach (var (key, group) in MetricDictOf(scorer.Name, dictionary))
+                        {
+                            byKey[key] = byKey.TryGetValue(key, out var existing) ? [.. existing, .. group] : group;
+                        }
+                    }
+                    else
+                    {
+                        throw new NotSupportedException($"The scorer '{scorer.Name}' in the log header declares a metric entry this port cannot re-create ({item?.ToJsonString() ?? "null"}); pass the scorers explicitly.");
+                    }
+                }
 
-    private static MetricDef MetricOf(string scorerName, JsonNode? item) =>
-        item is JsonObject definition && definition["name"] is JsonValue nameValue && nameValue.TryGetValue<string>(out var name)
-            ? LogHeader.MetricFromLog(name, definition["options"] as JsonObject)
-            : throw new NotSupportedException($"The scorer '{scorerName}' in the log header declares a group of metrics, which this port cannot re-create; pass the scorers explicitly.");
+                return (metrics, byKey);
+            }
+
+            default:
+                throw new NotSupportedException($"The scorer '{scorer.Name}' in the log header declares metrics in a shape this port cannot re-create; pass the scorers explicitly.");
+        }
+    }
+
+    private static MetricDict MetricDictOf(string scorerName, JsonObject dictionary)
+    {
+        var byKey = new MetricDict();
+        foreach (var (key, group) in dictionary)
+        {
+            if (group is not JsonArray definitions)
+            {
+                throw new NotSupportedException($"The scorer '{scorerName}' in the log header declares metrics for key '{key}' that are not a list, which this port cannot re-create; pass the scorers explicitly.");
+            }
+
+            byKey[key] = definitions.Select(item =>
+                item is JsonObject definition && definition["name"] is JsonValue nameValue && nameValue.TryGetValue<string>(out var name)
+                    ? LogHeader.MetricFromLog(name, definition["options"] as JsonObject)
+                    : throw new NotSupportedException($"The scorer '{scorerName}' in the log header declares a metric for key '{key}' without a name, which this port cannot re-create; pass the scorers explicitly.")).ToList();
+        }
+
+        return byKey;
+    }
 
     private static Task<Score> MissingScorer(TaskState state, Target target, CancellationToken cancellationToken) =>
         throw new InvalidOperationException("A scorer re-created from a log header only carries metrics and cannot score.");

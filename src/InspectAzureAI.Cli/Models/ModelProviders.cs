@@ -39,7 +39,7 @@ public static class ModelProviders
         {
             lock (Gate)
             {
-                return Factories.Keys.Concat(["azureai", "anthropic"]).Order(StringComparer.Ordinal).ToList();
+                return Factories.Keys.Concat(["azureai", "anthropic", "openai"]).Order(StringComparer.Ordinal).ToList();
             }
         }
     }
@@ -100,6 +100,10 @@ public static class ModelProviders
                     route = "anthropic";
                     deployment = rest;
                     break;
+                case "openai":
+                    route = "responses";
+                    deployment = rest;
+                    break;
                 default:
                     throw new PrerequisiteError($"Unknown model provider '{provider}' in '{name}'. Known providers: {string.Join(", ", Providers)}; a bare deployment name (e.g. 'gpt-5.4-mini') uses Azure AI Foundry.");
             }
@@ -116,10 +120,12 @@ public static class ModelProviders
             deployment = FoundryModels.DefaultModel;
         }
 
-        var anthropic = route == "anthropic" || deployment.StartsWith("claude", StringComparison.OrdinalIgnoreCase);
-        IModelApi api = anthropic
-            ? new AnthropicFoundryModelApi(deployment, baseUrl, config, modelArgs: modelArgs)
-            : new AzureAIModelApi(deployment, baseUrl, config, modelArgs: modelArgs);
+        IModelApi api = FoundryModels.RouteFor(deployment, route) switch
+        {
+            "anthropic" => new AnthropicFoundryModelApi(deployment, baseUrl, config, modelArgs: modelArgs),
+            "responses" => new InspectAzureAI.Provider.OpenAI.OpenAIResponsesModelApi(deployment, baseUrl, config, modelArgs: modelArgs),
+            _ => new AzureAIModelApi(deployment, baseUrl, config, modelArgs: modelArgs),
+        };
         return new Model(api, config);
     }
 }

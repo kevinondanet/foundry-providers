@@ -38,15 +38,17 @@ internal static class EvalResultsBuilder
         IReadOnlyList<string> scorerNames,
         IReadOnlyList<IReadOnlyDictionary<string, SampleScore>> sampleScores,
         IReadOnlyList<ScoreReducer>? reducers,
-        IReadOnlyList<MetricDef>? metricsOverride) =>
-        ComputeViews(scorers, scorerNames, sampleScores, reducers, metricsOverride).Scores;
+        IReadOnlyList<MetricDef>? metricsOverride,
+        MetricDict? metricsByKeyOverride = null) =>
+        ComputeViews(scorers, scorerNames, sampleScores, reducers, metricsOverride, metricsByKeyOverride).Scores;
 
     /// <summary>
     /// Port of <c>eval_results</c>: the <see cref="EvalResults"/> (one <see cref="EvalScore"/> per scorer and reducer view,
     /// the sample counts, the headline resolved against <paramref name="headlineMetric"/>) and the per-view
     /// <see cref="EvalSampleReductions"/> (null when there are no scorers, as in Python). <paramref name="scorerNames"/>
     /// are the unique names the sample scores are keyed by (<see cref="UniqueScorerNames"/>); <paramref name="metricsOverride"/>
-    /// replaces every scorer's metrics; <paramref name="completedSamples"/> is the number of samples that ended without
+    /// (with <paramref name="metricsByKeyOverride"/>, the dictionary part of Python's task-level <c>metrics</c>) replaces
+    /// every scorer's metrics; <paramref name="completedSamples"/> is the number of samples that ended without
     /// error, falling back to the number of scored samples when the caller cannot know it. Shared by the runner and
     /// <see cref="ScoreLogs"/> so re-scoring and recomputation agree with the run.
     /// </summary>
@@ -60,12 +62,13 @@ internal static class EvalResultsBuilder
         EarlyStoppingSummary? earlyStopping = null,
         IReadOnlyDictionary<string, object?>? metadata = null,
         int? completedSamples = null,
-        HeadlineMetric? headlineMetric = null)
+        HeadlineMetric? headlineMetric = null,
+        MetricDict? metricsByKeyOverride = null)
     {
         ArgumentNullException.ThrowIfNull(sampleScores);
         ArgumentNullException.ThrowIfNull(scorers);
         ArgumentNullException.ThrowIfNull(scorerNames);
-        var views = ComputeViews(scorers, scorerNames, sampleScores, reducers, metricsOverride);
+        var views = ComputeViews(scorers, scorerNames, sampleScores, reducers, metricsOverride, metricsByKeyOverride);
         var results = new EvalResults
         {
             TotalSamples = totalSamples,
@@ -105,35 +108,45 @@ internal static class EvalResultsBuilder
         IReadOnlyList<string> scorerNames,
         IReadOnlyList<IReadOnlyDictionary<string, SampleScore>> sampleScores,
         IReadOnlyList<ScoreReducer>? reducers,
-        IReadOnlyList<MetricDef>? metricsOverride)
+        IReadOnlyList<MetricDef>? metricsOverride,
+        MetricDict? metricsByKeyOverride)
     {
         var result = new List<EvalScore>();
         var reductions = new List<EvalSampleReductions>();
         for (var i = 0; i < scorers.Count; i++)
         {
             var name = scorerNames[i];
-            var metrics = metricsOverride ?? scorers[i].Metrics;
+            // Python's Metrics union: a task-level override (list part, dictionary part or both) replaces the scorer's metrics, dictionary form included
+            var overridden = metricsOverride is not null || metricsByKeyOverride is not null;
+            var metrics = overridden ? metricsOverride ?? [] : scorers[i].Metrics;
+            var byKey = overridden ? metricsByKeyOverride : scorers[i].MetricsByKey;
+            // metrics={...} (the dictionary form) produces only per-key scores; metrics=[..., {...}] the scorer's score as well
+            var dictForm = byKey is not null && metrics.Count == 0;
             var scores = sampleScores.Where(s => s.ContainsKey(name)).Select(s => s[name]).ToList();
 
             // Python: no reducers → an unnamed mean view; an explicit empty list disables reduction entirely
             if (reducers is { Count: 0 })
             {
-                if (metrics.Any(m => m.Scores == MetricScores.Reduced) && HasRepeatedSampleIds(scores))
+                if (MetricDictResults.Flatten(metrics, byKey).Any(m => m.Scores == MetricScores.Reduced) && HasRepeatedSampleIds(scores))
                 {
                     throw new InvalidOperationException(
                         $"Scorer '{scorers[i].Name}' has metrics with @metric(scores=\"reduced\") but epoch reduction is disabled. "
                         + "Configure an epochs reducer or use scores=\"auto\"/\"unreduced\".");
                 }
 
-                result.Add(ScoreForMetrics(name, scores, metrics, null));
+                result.AddRange(ComputeEvalScores(name, scores, metrics, byKey, dictForm, null));
                 continue;
             }
 
             // Port of compute_eval_scores_for_views: "unreduced" metrics see every epoch in their own view (no reducer)
             var reducedMetrics = metrics.Where(m => m.Scores != MetricScores.Unreduced).ToList();
             var unreducedMetrics = metrics.Where(m => m.Scores == MetricScores.Unreduced).ToList();
-            var mixedViews = reducedMetrics.Count > 0 && unreducedMetrics.Count > 0;
-            if (reducedMetrics.Count > 0)
+            var reducedByKey = byKey is null ? null : MetricDictResults.Filter(byKey, m => m.Scores != MetricScores.Unreduced);
+            var unreducedByKey = byKey is null ? null : MetricDictResults.Filter(byKey, m => m.Scores == MetricScores.Unreduced);
+            var hasReduced = reducedMetrics.Count > 0 || reducedByKey is not null;
+            var hasUnreduced = unreducedMetrics.Count > 0 || unreducedByKey is not null;
+            var mixedViews = hasReduced && hasUnreduced;
+            if (hasReduced)
             {
                 var views = reducers is null
                     ? [(Reducers.Mean(), mixedViews ? "mean" : null)]
@@ -142,17 +155,38 @@ internal static class EvalResultsBuilder
                 {
                     var reduced = ReduceScores(scores, reducer);
                     reductions.Add(new EvalSampleReductions(name, reduced.Select(s => new EvalSampleScore(s.Score) { SampleId = s.SampleId }).ToList()) { Reducer = reducerName });
-                    result.Add(ScoreForMetrics(name, reduced, reducedMetrics, reducerName));
+                    result.AddRange(ComputeEvalScores(name, reduced, reducedMetrics, reducedByKey, dictForm, reducerName));
                 }
             }
 
-            if (unreducedMetrics.Count > 0)
+            if (hasUnreduced)
             {
-                result.Add(ScoreForMetrics(name, scores, unreducedMetrics, null));
+                result.AddRange(ComputeEvalScores(name, scores, unreducedMetrics, unreducedByKey, dictForm, null));
             }
         }
 
         return new ScoreViews(result, reductions);
+    }
+
+    /// <summary>
+    /// Port of <c>compute_eval_scores</c>: the list form yields the scorer's own score over its plain metrics (even when
+    /// none of them apply to this view, as Python does) followed by one score per key of its dictionary entry; the
+    /// dictionary form (<paramref name="dictForm"/>) yields the per-key scores only.
+    /// </summary>
+    private static IEnumerable<EvalScore> ComputeEvalScores(string scorerName, IReadOnlyList<SampleScore> scores, IReadOnlyList<MetricDef> metrics, MetricDict? byKey, bool dictForm, string? reducerName)
+    {
+        if (!dictForm)
+        {
+            yield return ScoreForMetrics(scorerName, scores, metrics, reducerName);
+        }
+
+        if (byKey is not null)
+        {
+            foreach (var score in MetricDictResults.ScorersFromMetricDict(scorerName, scores, byKey, reducerName))
+            {
+                yield return score;
+            }
+        }
     }
 
     /// <summary>Port of <c>_has_repeated_sample_ids</c>: whether any sample id (ignoring null) occurs more than once.</summary>
@@ -260,7 +294,7 @@ internal static class EvalResultsBuilder
     }
 
     /// <summary>Python <c>float(value)</c> for a metric result; a value that is not numeric is logged as NaN (written as JSON null).</summary>
-    private static double MetricValue(ScoreValue? value) => value switch
+    internal static double MetricValue(ScoreValue? value) => value switch
     {
         ScoreValue.Num number => number.Value,
         ScoreValue.Bool flag => flag.Value ? 1.0 : 0.0,

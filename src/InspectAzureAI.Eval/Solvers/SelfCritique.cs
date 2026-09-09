@@ -53,7 +53,7 @@ public static partial class Solvers
             variables["critique"] = critique.Completion;
             state.Messages.Add(new ChatMessageUser(PythonFormat.Format(completionTempl, variables)));
 
-            return await generate(state, ToolCallsMode.Loop, null, cancellationToken).ConfigureAwait(false);
+            return await generate(state, ToolCallsMode.Loop, null, cancellationToken: cancellationToken).ConfigureAwait(false);
         };
     }
 }

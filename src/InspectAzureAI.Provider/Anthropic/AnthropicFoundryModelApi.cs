@@ -25,8 +25,9 @@ namespace InspectAzureAI.Provider.Anthropic;
 /// (adaptive thinking plus <c>output_config.effort</c>, or the deprecated <c>budget_tokens</c> form) and
 /// thinking blocks are parsed, streamed and replayed with their signature; Claude's server-side web search
 /// (the "anthropic" provider of the built-in <c>web_search</c> tool) is passed through and its results and
-/// citations replayed (<see cref="AnthropicWebSearch"/>); prompt caching, document citations on input, batch
-/// mode and the other server-side tools are not ported. Requests are sent with <see cref="HttpClient"/> over an injectable handler; responses are kept
+/// citations replayed (<see cref="AnthropicWebSearch"/>); remote MCP servers (<c>execution="remote"</c>) are sent
+/// as <c>mcp_servers</c> and their calls parsed and replayed (<see cref="AnthropicRemoteMcp"/>); prompt caching,
+/// document citations on input, batch mode and the other server-side tools are not ported. Requests are sent with <see cref="HttpClient"/> over an injectable handler; responses are kept
 /// as raw JSON so the recorded <see cref="ModelCall"/> is the wire payload.
 /// </summary>
 public sealed class AnthropicFoundryModelApi : IModelApi, IDisposable
@@ -186,7 +187,7 @@ public sealed class AnthropicFoundryModelApi : IModelApi, IDisposable
             Content = new StringContent(request.ToJsonString(), Encoding.UTF8, "application/json"),
         };
         message.Headers.Add("anthropic-version", AnthropicVersion);
-        if (BetaHeader(config) is { Length: > 0 } beta)
+        if (BetaHeader(config, remoteMcp: request["mcp_servers"] is JsonArray { Count: > 0 }) is { Length: > 0 } beta)
         {
             message.Headers.Add("anthropic-beta", beta);
         }
@@ -273,9 +274,11 @@ public sealed class AnthropicFoundryModelApi : IModelApi, IDisposable
         request["messages"] = Messages(input);
 
         var choiceKind = toolChoice is ToolFunction ? "tool" : toolChoice.ToString();   // auto | any | none | tool
-        if (tools.Count > 0 && choiceKind != "none")
+        // Port of partition_tools: remote MCP server markers leave `tools` and become `mcp_servers`.
+        var (functionTools, mcpServers) = AnthropicRemoteMcp.PartitionTools(tools);
+        if (functionTools.Count > 0 && choiceKind != "none")
         {
-            request["tools"] = new JsonArray(tools.Select(t => (JsonNode?)(AnthropicWebSearch.ServerToolParam(t, DeploymentName) ?? new JsonObject
+            request["tools"] = new JsonArray(functionTools.Select(t => (JsonNode?)(AnthropicWebSearch.ServerToolParam(t, DeploymentName) ?? new JsonObject
             {
                 ["name"] = t.Name,
                 ["description"] = t.Description,
@@ -293,6 +296,11 @@ public sealed class AnthropicFoundryModelApi : IModelApi, IDisposable
             }
 
             request["tool_choice"] = choice;
+        }
+
+        if (mcpServers.Count > 0 && choiceKind != "none")
+        {
+            request["mcp_servers"] = new JsonArray(mcpServers.Select(s => (JsonNode?)AnthropicRemoteMcp.McpServerParam(s)).ToArray());
         }
 
         if (config.Temperature is not null) request["temperature"] = config.Temperature;
@@ -329,9 +337,10 @@ public sealed class AnthropicFoundryModelApi : IModelApi, IDisposable
     /// <summary>
     /// The <c>anthropic-beta</c> header value for a request: the <c>anthropic_beta</c> model arg (comma separated)
     /// plus <see cref="ResponseFormat.AnthropicStructuredOutputsBeta"/> when the config carries a response schema
-    /// (Python appends the beta alongside <c>output_format</c>); null when there is nothing to send.
+    /// (Python appends the beta alongside <c>output_format</c>) and <see cref="AnthropicRemoteMcp.Beta"/> when
+    /// <paramref name="remoteMcp"/> (the request carries <c>mcp_servers</c>); null when there is nothing to send.
     /// </summary>
-    public string? BetaHeader(GenerateConfig config)
+    public string? BetaHeader(GenerateConfig config, bool remoteMcp = false)
     {
         var betas = new List<string>();
         if (AnthropicBeta is { Length: > 0 })
@@ -342,6 +351,11 @@ public sealed class AnthropicFoundryModelApi : IModelApi, IDisposable
         if (config.ResponseSchema is not null && !betas.Contains(ResponseFormat.AnthropicStructuredOutputsBeta))
         {
             betas.Add(ResponseFormat.AnthropicStructuredOutputsBeta);
+        }
+
+        if (remoteMcp && !betas.Contains(AnthropicRemoteMcp.Beta))
+        {
+            betas.Add(AnthropicRemoteMcp.Beta);
         }
 
         return betas.Count > 0 ? string.Join(",", betas) : null;
@@ -482,7 +496,8 @@ public sealed class AnthropicFoundryModelApi : IModelApi, IDisposable
                     blocks.Add(textBlock);
                     break;
                 case ContentToolUse toolUse:
-                    foreach (var replayed in AnthropicWebSearch.ReplayBlocks(toolUse))
+                    var replayBlocks = toolUse.ToolType == AnthropicRemoteMcp.ToolType ? AnthropicRemoteMcp.ReplayBlocks(toolUse) : AnthropicWebSearch.ReplayBlocks(toolUse);
+                    foreach (var replayed in replayBlocks)
                     {
                         blocks.Add(replayed);
                     }
@@ -525,6 +540,7 @@ public sealed class AnthropicFoundryModelApi : IModelApi, IDisposable
         var items = new List<Content>();
         var toolCalls = new List<ToolCall>();
         var pendingServerToolUses = new Dictionary<string, JsonObject>(StringComparer.Ordinal);
+        var pendingMcpToolUses = new Dictionary<string, JsonObject>(StringComparer.Ordinal);
         foreach (var block in message["content"]?.AsArray() ?? [])
         {
             switch (block?["type"]?.ToString())
@@ -543,6 +559,17 @@ public sealed class AnthropicFoundryModelApi : IModelApi, IDisposable
                     }
 
                     items.Add(AnthropicWebSearch.ToContentToolUse(serverToolUse, block.AsObject()));
+                    break;
+                case "mcp_tool_use":
+                    pendingMcpToolUses[block["id"]?.ToString() ?? ""] = block.AsObject();
+                    break;
+                case "mcp_tool_result":
+                    if (!pendingMcpToolUses.Remove(block["tool_use_id"]?.ToString() ?? "", out var mcpToolUse))
+                    {
+                        throw new ServiceResponseException(AnthropicRemoteMcp.OrphanResultError);
+                    }
+
+                    items.Add(AnthropicRemoteMcp.ToContentToolUse(mcpToolUse, block.AsObject()));
                     break;
                 case "thinking":
                     items.Add(new ContentReasoning(block["thinking"]?.ToString() ?? "", block["signature"]?.ToString()));
@@ -685,7 +712,7 @@ public sealed class AnthropicFoundryModelApi : IModelApi, IDisposable
             {
                 block["thinking"] = entry.Text.ToString();
             }
-            else if (block["type"]?.ToString() is "tool_use" or "server_tool_use" && entry.Json.Length > 0)
+            else if (block["type"]?.ToString() is "tool_use" or "server_tool_use" or "mcp_tool_use" && entry.Json.Length > 0)
             {
                 block["input"] = JsonNode.Parse(entry.Json.ToString()) ?? new JsonObject();
             }

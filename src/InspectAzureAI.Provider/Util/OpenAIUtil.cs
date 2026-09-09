@@ -34,6 +34,44 @@ public static partial class OpenAIUtil
     /// <summary>Port of <c>needs_max_completion_tokens</c>.</summary>
     public static bool NeedsMaxCompletionTokens(string modelName) => IsGpt5Model(modelName) || IsOSeriesModel(modelName);
 
+    [GeneratedRegex(@"^gpt-(\d+)(?:\.(\d+))?")]
+    private static partial Regex GptVersion();
+
+    /// <summary>Port of <c>is_gpt_5_plus_model</c>: a gpt-5.x name (gpt-5.1, gpt-5.4-mini, gpt-5.6-sol, ...).</summary>
+    public static bool IsGpt5Plus(string modelName) => modelName.ToLowerInvariant().Contains("gpt-5.");
+
+    /// <summary>Port of <c>supports_native_max_reasoning_effort</c>: gpt-5.6 and later take <c>reasoning.effort: max</c> verbatim.</summary>
+    public static bool SupportsMaxReasoningEffort(string modelName)
+    {
+        var match = GptVersion().Match(modelName.ToLowerInvariant());
+        if (!match.Success)
+        {
+            return false;
+        }
+
+        var major = int.Parse(match.Groups[1].Value);
+        var minor = match.Groups[2].Success ? int.Parse(match.Groups[2].Value) : 0;
+        return major > 5 || (major == 5 && minor >= 6);
+    }
+
+    /// <summary>Port of <c>has_reasoning_options</c>: the o-series, gpt-5 except the <c>-chat</c> variants, and codex.</summary>
+    public static bool HasReasoningOptions(string modelName)
+    {
+        var name = modelName.ToLowerInvariant();
+        return IsOSeriesModel(name) || (IsGpt5Model(name) && !name.Contains("-chat")) || name.Contains("codex");
+    }
+
+    /// <summary>
+    /// Whether a deployment name should default to the Responses route: Foundry serves the gpt-5.6 family, the
+    /// <c>-pro</c> models (<c>chatCompletion: false</c> in ARM), codex and the o-series there; chat completions
+    /// refuses them function tools with reasoning, or everything. An explicit route always wins.
+    /// </summary>
+    public static bool PrefersResponsesRoute(string modelName)
+    {
+        var name = modelName.ToLowerInvariant();
+        return name.Contains("gpt-5.6") || name.Contains("-pro") || name.Contains("codex") || OSeriesPrefix().IsMatch(name);
+    }
+
     /// <summary>
     /// Port of <c>openai_stop_details</c> over the raw JSON of a choice: every
     /// <c>content_filter_results</c> entry with <c>filtered: true</c> becomes a category (detected-only

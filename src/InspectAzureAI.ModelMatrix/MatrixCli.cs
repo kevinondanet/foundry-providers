@@ -67,8 +67,9 @@ internal static class MatrixCli
           AZUREAI_RESOURCE_ID                                              the resource's ARM id (skips discovery)
           AZURE_SUBSCRIPTION_ID                                            narrows the resource search
 
-        Each deployment takes the route its ARM model format implies (Anthropic → the Messages API, everything else →
-        the model-inference route). Every row reports accuracy, tokens, cost (when the model is priced), throughput
+        Each deployment takes the route its ARM model format implies (Anthropic → the Messages API; OpenAI without chat
+        completions, or gpt-5.6* / o-series / -pro / codex → the Responses API; everything else → the model-inference
+        route). Every row reports accuracy, tokens, cost (when the model is priced), throughput
         (tokens per second of wall time) and time. Authentication is Entra ID only: sign in with `az login` first.
         Exit codes: 0 ok, 1 at least one deployment errored, 2 usage or missing prerequisite, 3 sign-in / Azure /
         runtime failure.

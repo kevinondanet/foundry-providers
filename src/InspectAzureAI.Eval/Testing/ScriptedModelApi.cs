@@ -86,6 +86,9 @@ public sealed class ScriptedModelApi : IModelApi
     /// <summary>Whether <c>Model</c> collapses consecutive user messages for this api (default: no).</summary>
     public bool CollapseUserMessages { get; init; }
 
+    /// <summary>Port of <c>supports_remote_mcp()</c>: whether <c>Model</c> lets remote MCP server markers through to this api (default: no, Python's base default).</summary>
+    public bool SupportsRemoteMcp { get; init; }
+
     /// <summary>Overrides the retry decision for thrown turns (default: retry on 408/429/5xx of a RequestFailedException).</summary>
     public Func<Exception, RetryDecision>? ShouldRetry { get; init; }
 

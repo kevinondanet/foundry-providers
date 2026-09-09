@@ -15,7 +15,7 @@ public class SolverTests
     private static TaskState State(params ChatMessage[] messages) =>
         new("scripted", 1, 1, "question", messages.Length == 0 ? [new ChatMessageUser("question")] : messages);
 
-    private static readonly Generate NoGenerate = (state, _, _, _) => Task.FromResult(state);
+    private static readonly Generate NoGenerate = (state, _, _, _, _) => Task.FromResult(state);
 
     private static Solver Append(string text) => (state, _, _) =>
     {
@@ -164,7 +164,7 @@ public class SolverTests
     {
         ToolCallsMode? seenMode = null;
         GenerateConfig? seenConfig = null;
-        Generate generate = (state, mode, config, _) =>
+        Generate generate = (state, mode, config, _, _) =>
         {
             seenMode = mode;
             seenConfig = config;

@@ -13,6 +13,7 @@ using InspectAzureAI.Eval.Scorers;
 using InspectAzureAI.Provider;
 using InspectAzureAI.Provider.Anthropic;
 using InspectAzureAI.Provider.Core;
+using InspectAzureAI.Provider.OpenAI;
 using InspectAzureAI.SweShowcase.BuiltinTasks;
 
 namespace InspectAzureAI.SweShowcase;
@@ -46,10 +47,12 @@ internal static class Cli
 
         run options:
           --task <name>             hello-swe | pytest-fix | system-explorer (required)
-          --agent <name>            mini-swe | claude-code | basic | maf (required)
+          --agent <name>            mini-swe | claude-code | copilot | basic | maf (required)
           --model <deployment>      Foundry deployment (default: $INSPECT_AZUREAI_MODEL or gpt-5.4-mini)
-          --route models|anthropic  model-inference route (default) or the Anthropic Messages route; claude-* names
-                                    take the Anthropic route automatically
+          --route models|anthropic|responses
+                                    model-inference route (default), the Anthropic Messages route or the OpenAI
+                                    Responses route; claude-* names take the Anthropic route and gpt-5.6* / o-series /
+                                    -pro / codex names the Responses route automatically
           --limit N                 run only the first N samples
           --sample-id ID            run only this sample id (repeatable; wins over --limit)
           --epochs N                run every sample N times (epoch scores reduced with mean)
@@ -82,6 +85,7 @@ internal static class Cli
           AZUREAI_BASE_URL (or AZURE_ENDPOINT_URL / AZUREAI_ENDPOINT_URL)   the Foundry endpoint
           INSPECT_AZUREAI_MODEL                                            default deployment name
           AZUREAI_ANTHROPIC_BASE_URL                                        Anthropic route base URL (derived when unset)
+          AZUREAI_OPENAI_BASE_URL                                           Responses route base URL (derived when unset)
           INSPECT_LOG_DIR / INSPECT_LOG_FORMAT                              log directory / format defaults
           INSPECT_CACHE_DIR                                                 where --cache keeps its entries
           INSPECT_AZUREAI_MODEL_COST_CONFIG                                 a price file applied to every run
@@ -198,6 +202,7 @@ internal static class Cli
         Console.WriteLine("agents:");
         Console.WriteLine("  mini-swe         native C# port of mini-swe-agent's bash tool-calling loop (inspect_swe mini_swe_agent)");
         Console.WriteLine("  claude-code      the Claude Code CLI inside the sandbox, its API calls bridged to the task model (inspect_swe claude_code)");
+        Console.WriteLine("  copilot          the GitHub Copilot CLI inside the sandbox (BYOK), its API calls bridged to the task model");
         Console.WriteLine("  basic            Inspect's basic_agent ReAct loop with the sandbox bash tool and a submit tool");
         Console.WriteLine("  maf              a Microsoft Agent Framework ChatClientAgent with the sandbox bash tool, its model calls bridged in-process to the task model");
         Console.WriteLine();
@@ -383,6 +388,7 @@ internal static class Cli
         {
             AzureAIModelApi azure => azure.Credential,
             AnthropicFoundryModelApi anthropic => anthropic.Credential,
+            OpenAIResponsesModelApi responses => responses.Credential,
             _ => null,
         };
         if (credential is not null)

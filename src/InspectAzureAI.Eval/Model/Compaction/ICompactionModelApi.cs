@@ -146,11 +146,16 @@ public static class ModelCompactionExtensions
         return model.Api is not ICompactionModelApi api || api.CompactReasoningHistory;
     }
 
-    /// <summary>Port of <c>model.api.apply_redacted_reasoning_tokens_to_input()</c> (false unless the api opts in).</summary>
+    /// <summary>
+    /// Port of <c>model.api.apply_redacted_reasoning_tokens_to_input()</c>: true for the OpenAI Responses route
+    /// (its encrypted reasoning items are replayed with <c>store: false</c>, as Python's openai provider reports),
+    /// otherwise false unless the api opts in.
+    /// </summary>
     public static bool ApplyRedactedReasoningTokensToInput(this Model model)
     {
         ArgumentNullException.ThrowIfNull(model);
-        return model.Api is ICompactionModelApi api && api.ApplyRedactedReasoningTokensToInput;
+        return model.Api is InspectAzureAI.Provider.OpenAI.OpenAIResponsesModelApi
+            || (model.Api is ICompactionModelApi api && api.ApplyRedactedReasoningTokensToInput);
     }
 
     /// <summary>

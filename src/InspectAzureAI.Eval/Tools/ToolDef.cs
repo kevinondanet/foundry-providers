@@ -29,6 +29,13 @@ public sealed partial record ToolDef(string Name, string Description, ToolParams
     /// </summary>
     public Approval.ToolCallViewer? Viewer { get; init; }
 
+    /// <summary>
+    /// Port of <c>ToolDef.model_input</c> (<c>@tool(model_input=...)</c>): how this tool's results are played back as
+    /// model input; applied by <see cref="ToolModelInput.Resolve"/> just before a generate (the conversation itself
+    /// is left untouched). Null plays results back as they are.
+    /// </summary>
+    public ToolCallModelInput? ModelInput { get; init; }
+
     /// <summary>Port of <c>ToolInfo</c> construction from a <c>ToolDef</c>: what the model sees.</summary>
     public ToolInfo ToInfo() => new(Name, Description) { Parameters = Parameters, Options = Options };
 }
