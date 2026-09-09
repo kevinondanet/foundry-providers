@@ -80,4 +80,33 @@ public class DirectOpenAITests
         Assert.Equal(500, ex.Status);
         Assert.True(api.ShouldRetry(ex).Retry);
     }
+    [Fact]
+    public async Task chat_stream_accumulates_choices_tool_fragments_and_final_usage()
+    {
+        var chunks = new[] {
+            "{\"model\":\"gpt-4\",\"choices\":[{\"index\":1,\"delta\":{\"content\":\"second\"}},{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call1\",\"function\":{\"name\":\"f\",\"arguments\":\"{\"}}]}}]}",
+            "{\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"}\"}}]},\"finish_reason\":\"tool_calls\"},{\"index\":1,\"delta\":{},\"finish_reason\":\"stop\"}]}",
+            "{\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":4,\"total_tokens\":14,\"prompt_tokens_details\":{\"cached_tokens\":3}}}"
+        };
+        var handler = new DirectTestHandler(_ => DirectTestHandler.Sse(string.Join("", chunks.Select(c => "data: " + c + "\n\n")) + "data: [DONE]\n\n"));
+        var deltas = new List<StreamEvent>();
+        using var api = new OpenAIModelApi("gpt-4", apiKey: "test", streaming: true, settings: new() { Handler = handler });
+        var result = (await api.GenerateAsync([new ChatMessageUser("hi")], [], ToolChoice.Auto, new() { NumChoices = 2 }, e => { deltas.Add(e); return Task.CompletedTask; })).OutputOrThrow();
+        Assert.Equal(2, result.Choices.Count);
+        Assert.Equal("second", result.Choices[1].Message.Text);
+        Assert.Equal("call1", result.Choices[0].Message.ToolCalls![0].Id);
+        Assert.Equal("f", result.Choices[0].Message.ToolCalls![0].Function);
+        Assert.Equal(7, result.Usage!.InputTokens);
+        Assert.Contains(deltas, e => e is StreamToolCallEvent { Arguments: "}" });
+        Assert.EndsWith("/v1/chat/completions", handler.Calls[0].Url);
+        Assert.True(handler.Calls[0].Body!["stream_options"]!["include_usage"]!.GetValue<bool>());
+    }
+    [Fact]
+    public async Task chat_truncated_stream_is_retryable()
+    {
+        var handler = new DirectTestHandler(_ => DirectTestHandler.Sse("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"unfinished\"}}]}\n\n"));
+        using var api = new OpenAIModelApi("gpt-4", apiKey: "test", streaming: true, settings: new() { Handler = handler });
+        var ex = await Assert.ThrowsAsync<ServiceResponseException>(() => api.GenerateAsync([], [], ToolChoice.Auto, new()));
+        Assert.True(api.ShouldRetry(ex).Retry);
+    }
 }

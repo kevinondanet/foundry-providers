@@ -55,7 +55,14 @@ public sealed class OpenAIModelApi : DirectModelApi
     }
     public override JsonObject BuildRequest(IReadOnlyList<ChatMessage> input, IReadOnlyList<ToolInfo> tools, ToolChoice toolChoice, GenerateConfig config, bool streaming)
     {
-        if (!UsesResponses(config)) throw new PrerequisiteError("Chat Completions support is not installed in this stage. Set responses_api=true for Responses.");
+        if (!UsesResponses(config))
+        {
+            var chat = ChatCompletionsProtocol.Build(this, input, tools, toolChoice, config, streaming);
+            CommonFields(chat);
+            foreach (var pair in Options.BodyExtras(config)) if (pair.Key != "metadata") chat[pair.Key] = pair.Value?.DeepClone();
+            if (config.PromptLogprobs is { } prompt) chat["prompt_logprobs"] = prompt;
+            return chat;
+        }
         var extras = Options.BodyExtras(config);
         var request = new ResponsesProtocol(ModelName, new Dictionary<string, object?>()).BuildRequest(input, tools, toolChoice,
             config with { ExtraBody = null, Logprobs = null, TopLogprobs = null, Temperature = null, TopP = null }, streaming && !Background(config));
@@ -97,19 +104,26 @@ public sealed class OpenAIModelApi : DirectModelApi
                     ? phases[i] : original.ToolCalls is { Count: > 0 } ? "commentary" : "final_answer").ToList();
             IEnumerable<JsonNode?> converted = message is ChatMessageAssistant assistant
                 ? ResponsesInput.AssistantItems(assistant, phases) : ResponsesInput.InputItems([message]);
-            foreach (var item in converted) items.Add(item!.DeepClone());
+            foreach (var item in converted)
+            {
+                var clone = item!.DeepClone();
+                if (clone["role"]?.ToString() == "assistant" && clone["content"] is JsonArray content)
+                    foreach (var part in content) if (part?["type"]?.ToString() == "output_text") part["logprobs"] = new JsonArray();
+                items.Add(clone);
+            }
         }
         return items;
     }
     protected override ModelOutput ParseOutput(JsonObject response, GenerateConfig config)
     {
+        if (!UsesResponses(config)) return ChatCompletionsProtocol.Parse(response, ModelName);
         var output = ResponsesOutput.Parse(response, ModelName);
         var phases = (response["output"] as JsonArray ?? []).Where(p => p?["type"]?.ToString() == "message")
             .SelectMany(p => (p!["content"] as JsonArray ?? []).Where(c => c?["type"]?.ToString() is "output_text" or "refusal").Select(_ => p["phase"]?.ToString())).ToList();
         if (phases.Any(p => p is not null)) output = output with { Choices = output.Choices.Select(c => c with { Message = c.Message with { Metadata = new Dictionary<string, object?> { ["openai_text_phases"] = phases } } }).ToList() };
         return output with { Metadata = response["metadata"]?.Deserialize<Dictionary<string, object?>>() };
     }
-    protected override Task<JsonObject> AccumulateAsync(IAsyncEnumerable<JsonObject> events, GenerateConfig config, CancellationToken cancellationToken) => ResponsesStreamAccumulator.AccumulateAsync(events, cancellationToken);
+    protected override Task<JsonObject> AccumulateAsync(IAsyncEnumerable<JsonObject> events, GenerateConfig config, CancellationToken cancellationToken) => UsesResponses(config) ? ResponsesStreamAccumulator.AccumulateAsync(events, cancellationToken) : ChatCompletionsProtocol.AccumulateAsync(events, cancellationToken);
     protected override async Task<JsonObject> CompleteResponseAsync(JsonObject response, GenerateConfig config, CancellationToken cancellationToken)
     {
         var id = response["id"]?.ToString();
