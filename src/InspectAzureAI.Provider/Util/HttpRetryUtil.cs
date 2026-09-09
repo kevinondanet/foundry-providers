@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text.RegularExpressions;
 using Azure;
+using InspectAzureAI.Provider.Core;
 
 namespace InspectAzureAI.Provider.Util;
 
@@ -36,7 +37,7 @@ public static partial class HttpRetryUtil
     public static bool IsRetryableHttpStatus(int statusCode) => statusCode is 408 or 429 || (statusCode >= 500 && statusCode < 600);
 
     /// <summary>Port of <c>status_code_of</c>: the HTTP status carried by a <see cref="RequestFailedException"/>.</summary>
-    public static int? StatusCodeOf(Exception ex) => ex is RequestFailedException { Status: > 0 } rfe ? rfe.Status : null;
+    public static int? StatusCodeOf(Exception ex) => ex is ProviderHttpException direct ? direct.Status : ex is RequestFailedException { Status: > 0 } rfe ? rfe.Status : null;
 
     /// <summary>Port of <c>parse_retry_after</c> over a case-insensitive header collection.</summary>
     public static double? ParseRetryAfter(IEnumerable<KeyValuePair<string, string>> headers)
@@ -67,6 +68,7 @@ public static partial class HttpRetryUtil
     /// <summary>Port of <c>parse_retry_after_from_exception</c>: reads the response headers of a <see cref="RequestFailedException"/>.</summary>
     public static double? ParseRetryAfterFromException(Exception ex)
     {
+        if (ex is ProviderHttpException direct) return ParseRetryAfter(direct.Headers);
         var response = (ex as RequestFailedException)?.GetRawResponse();
         if (response is null)
         {
@@ -81,6 +83,15 @@ public static partial class HttpRetryUtil
         {
             return null;
         }
+    }
+
+    public static RetryDecision RetryDecisionFor(Exception ex)
+    {
+        var status = StatusCodeOf(ex) ?? 0;
+        var delay = ParseRetryAfterFromException(ex);
+        return status == 429 ? RetryDecision.RateLimit(delay)
+            : IsRetryableHttpStatus(status) || ex is HttpRequestException or IOException or ServiceResponseException
+                ? RetryDecision.Transient(delay) : RetryDecision.No();
     }
 
     private static double? PositiveSeconds(double seconds) =>

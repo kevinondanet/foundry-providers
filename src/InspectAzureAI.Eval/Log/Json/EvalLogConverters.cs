@@ -87,7 +87,7 @@ internal sealed class EvalSpecConverter : JsonConverter<EvalSpec>
         writer.WriteString("model", value.Model);
         JsonIo.Obj(writer, "model_generate_config", value.ModelGenerateConfig, options, always: true);
         JsonIo.Str(writer, "model_base_url", value.ModelBaseUrl);
-        JsonIo.Obj(writer, "model_args", value.ModelArgs, options, always: true);
+        JsonIo.Obj(writer, "model_args", InspectAzureAI.Provider.Util.ModelArgumentSanitizer.ForLog(value.ModelArgs), options, always: true);
         WriteModelRoles(writer, value.ModelRoles, options);
         JsonIo.Obj(writer, "config", value.Config, options, always: true);
         JsonIo.Obj(writer, "revision", value.Revision, options);

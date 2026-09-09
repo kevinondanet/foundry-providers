@@ -139,7 +139,7 @@ public sealed partial class Model
         cache ??= resolvedConfig.Cache switch { CachePolicy policy => policy, true => CachePolicy.Default, _ => null };
         if (resolvedConfig.MaxTokens is null)
         {
-            resolvedConfig = resolvedConfig with { MaxTokens = Api.MaxTokens() };
+            resolvedConfig = resolvedConfig with { MaxTokens = Api.MaxTokensForConfig(resolvedConfig) };
         }
 
         // Python counts the caller's conversation, before its own config.system_message is inserted.
