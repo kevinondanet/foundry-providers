@@ -14,13 +14,16 @@ public sealed class AnthropicModelApi : DirectModelApi
         : base(modelName, config, new DirectProviderOptions("anthropic", baseUrl, apiKey, streaming, modelArgs, settings, "betas", "anthropic_beta")) { }
 
     private string Family => ModelName.ToLowerInvariant().Replace('.', '-');
-    private bool Claude3 => Regex.IsMatch(Family, @"claude-3-[a-z]") || Family.Contains("claude-3-5");
-    private bool Claude4 => Regex.IsMatch(Family, @"claude-[a-z]+-4(?:-|$)") || Family.Contains("claude-4");
-    private bool Claude5 => Regex.IsMatch(Family, @"claude-[a-z]+-5(?:-|$)") || Family.Contains("claude-5");
-    private bool Minor(int minor) => Family.Contains($"claude-4-{minor}") || Regex.IsMatch(Family, @"claude-[a-z]+-4-" + minor + @"(?:-|$)");
-    private bool Latest => !Claude3 && !Family.Contains("claude-3-7") && !Claude5 && (!Claude4 || !(Minor(0) || Minor(1) || Minor(5) || Minor(6) || Minor(7) || Minor(8)));
-    private bool Frontier => Minor(6) || Minor(7) || Minor(8) || Claude5 || Latest;
-    private bool AdaptiveOnly => Minor(7) || Minor(8) || Claude5 || Latest;
+    private Match Version => Regex.Match(Family, @"^claude-(?:(?:opus|sonnet|haiku)-)?(\d+)(?:-(\d{1,2})(?:-|$))?");
+    private int Major => Version.Success ? int.Parse(Version.Groups[1].Value) : 0;
+    private int MinorVersion => Version.Groups[2].Success ? int.Parse(Version.Groups[2].Value) : 0;
+    private bool Claude3 => Major == 3 && MinorVersion < 7;
+    private bool Claude4 => Major == 4;
+    private bool Claude5 => Major == 5;
+    private bool Minor(int minor) => Claude4 && MinorVersion == minor;
+    private bool Latest => !Version.Success;
+    private bool Frontier => Major > 4 || Claude4 && MinorVersion >= 6 || Latest;
+    private bool AdaptiveOnly => Major > 4 || Claude4 && MinorVersion >= 7 || Latest;
     private bool CanDisable => AdaptiveOnly && (!Claude5 || Family.Contains("claude-opus-5") || Family.Contains("claude-sonnet-5"));
     private static int? EffortTokens(string? effort) => effort switch { "minimal" => 2048, "low" => 4096, "medium" => 10000, "high" => 16000, "xhigh" or "max" => 32000, _ => null };
     private string? ReasoningEffort(GenerateConfig config) => Frontier ? config.ReasoningEffort switch
@@ -86,8 +89,17 @@ public sealed class AnthropicModelApi : DirectModelApi
         body["tools"] ??= new JsonArray();
         if (Thinking(config)) body.Remove("tool_choice");
         foreach (var message in body["messages"]!.AsArray())
-            if (message?["content"] is JsonArray { Count: 1 } blocks && blocks[0]?["type"]?.ToString() == "text")
-                message["content"] = blocks[0]!["text"]!.ToString();
+        {
+            if (message?["content"] is not JsonArray blocks) continue;
+            foreach (var block in blocks)
+            {
+                if (block?["type"]?.ToString() == "tool_result" && block["content"] is JsonValue value)
+                    block["content"] = new JsonArray(new JsonObject { ["type"] = "text", ["text"] = value.ToString() });
+                if (message["role"]?.ToString() == "user" && block?["type"]?.ToString() == "text" && blocks.Count > 1)
+                    block["citations"] = null;
+            }
+            if (blocks.Count == 1 && blocks[0]?["type"]?.ToString() == "text") message["content"] = blocks[0]!["text"]!.ToString();
+        }
         if (!forbidSampling && config.TopK is { } topK) body["top_k"] = topK;
         if (config.Effort is { } effort)
             body["output_config"] = new JsonObject { ["effort"] = effort == "max" && !Frontier || effort == "xhigh" && !AdaptiveOnly ? "high" : effort };

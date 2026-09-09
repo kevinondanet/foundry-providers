@@ -1,0 +1,192 @@
+{
+  "python_revision": "76f1aa761aa7fa7785ca7ea878f00f3ef3704efb",
+  "notes": [
+    "Reasoning summaries disabled unless explicit: no live verification probe.",
+    "Responses store=true is sent explicitly by C#, equivalent to the Python SDK default."
+  ],
+  "cases": [
+    {
+      "provider": "openai",
+      "scenario": "simple",
+      "model": "gpt-4",
+      "config": {
+        "max_tokens": 50,
+        "temperature": 0.2,
+        "top_p": 0.8,
+        "num_choices": 2,
+        "stop_seqs": [
+          "STOP"
+        ],
+        "frequency_penalty": 0.1,
+        "presence_penalty": 0.2,
+        "logprobs": true,
+        "top_logprobs": 2,
+        "seed": 17
+      },
+      "model_args": {},
+      "path": "/v1/chat/completions",
+      "body": {
+        "messages": [
+          {
+            "role": "system",
+            "content": "Be brief."
+          },
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ],
+        "model": "gpt-4",
+        "frequency_penalty": 0.1,
+        "logprobs": true,
+        "max_tokens": 50,
+        "n": 2,
+        "presence_penalty": 0.2,
+        "seed": 17,
+        "stop": [
+          "STOP"
+        ],
+        "temperature": 0.2,
+        "top_logprobs": 2,
+        "top_p": 0.8
+      },
+      "headers": {}
+    },
+    {
+      "provider": "openai",
+      "scenario": "simple",
+      "model": "gpt-5.6-sol",
+      "config": {
+        "num_choices": 1,
+        "max_tokens": 100,
+        "reasoning_effort": "max",
+        "temperature": 0.2
+      },
+      "model_args": {},
+      "path": "/v1/chat/completions",
+      "body": {
+        "messages": [
+          {
+            "role": "developer",
+            "content": "Be brief."
+          },
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ],
+        "model": "gpt-5.6-sol",
+        "max_completion_tokens": 100,
+        "n": 1,
+        "reasoning_effort": "max"
+      },
+      "headers": {}
+    },
+    {
+      "provider": "openai",
+      "scenario": "simple",
+      "model": "gpt-5.4-mini",
+      "config": {},
+      "model_args": {
+        "responses_api": false
+      },
+      "path": "/v1/chat/completions",
+      "body": {
+        "messages": [
+          {
+            "role": "developer",
+            "content": "Be brief."
+          },
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ],
+        "model": "gpt-5.4-mini"
+      },
+      "headers": {}
+    },
+    {
+      "provider": "openai",
+      "scenario": "tools_images",
+      "model": "gpt-5.6-sol",
+      "config": {
+        "max_tokens": 100,
+        "parallel_tool_calls": false
+      },
+      "model_args": {
+        "responses_api": false
+      },
+      "path": "/v1/chat/completions",
+      "body": {
+        "messages": [
+          {
+            "role": "developer",
+            "content": "Be brief."
+          },
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "hi"
+              },
+              {
+                "type": "image_url",
+                "image_url": {
+                  "url": "data:image/png;base64,aGk=",
+                  "detail": "auto"
+                }
+              }
+            ]
+          },
+          {
+            "role": "assistant",
+            "content": "Checking",
+            "tool_calls": [
+              {
+                "id": "call1",
+                "function": {
+                  "name": "f",
+                  "arguments": "{\"x\": \"v\"}"
+                },
+                "type": "function"
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "content": "done",
+            "tool_call_id": "call1"
+          }
+        ],
+        "model": "gpt-5.6-sol",
+        "max_completion_tokens": 100,
+        "parallel_tool_calls": false,
+        "tool_choice": "auto",
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "f",
+              "description": "Test function",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "x": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "x"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        ]
+      },
+      "headers": {}
+    }
+  ]
+}
