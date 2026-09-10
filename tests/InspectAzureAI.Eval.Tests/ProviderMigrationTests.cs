@@ -30,14 +30,14 @@ public class ProviderMigrationTests
         var roles = ModelRoles.Resolve(new Dictionary<string, object> { ["grader"] = role });
         var log = await EvalRunner.RunAsync(task, new() { Model = model, ModelRoles = new Dictionary<string, object> { ["grader"] = role } });
         var qualified = log with { Eval = log.Eval with { Model = model.Api.QualifiedModelName, ModelRoles = new Dictionary<string, IReadOnlyList<ModelConfig>> { ["grader"] = [new("anthropic/azure/judge") { Config = role.Config }] } } };
-        var legacy = log with { Eval = log.Eval with { Model = model.Name, ModelRoles = new Dictionary<string, IReadOnlyList<ModelConfig>> { ["grader"] = [new("judge") { Config = role.Config }] } } };
+        var legacy = log with { Eval = log.Eval with { Model = model.Api.ModelName, ModelRoles = new Dictionary<string, IReadOnlyList<ModelConfig>> { ["grader"] = [new("judge") { Config = role.Config }] } } };
         var candidate = new ResolvedTask(task, model, roles, 0, "new-id", TaskIdentifier.Compute(qualified));
         var historical = new EvalSetLog("old.eval", DateTimeOffset.UtcNow, legacy, TaskIdentifier.Compute(legacy));
         Assert.Same(candidate, TaskIdentityMatcher.Match(historical, [candidate]));
         Assert.Equal(candidate.Identifier, EvalSetLogs.ValidateEvalSetPrerequisites([candidate], [historical], false)[0].TaskIdentifier);
         Assert.Equal(log.Eval.TaskId, EvalSetInfo.Build("set", [candidate], [historical]).Tasks[0].TaskId);
-        Assert.Equal(model.Name, historical.Header.Eval.Model);
-        var direct = new EvalModel(new IdentityApi(model.Name, "openai/gpt-5.6-sol", false));
+        Assert.Equal(model.Api.ModelName, historical.Header.Eval.Model);
+        var direct = new EvalModel(new IdentityApi(model.Api.ModelName, "openai/gpt-5.6-sol", false));
         Assert.Null(TaskIdentityMatcher.Match(historical, [candidate with { Model = direct }]));
         var different = historical with { Header = legacy with { Eval = legacy.Eval with { TaskVersion = "different" } } };
         Assert.Null(TaskIdentityMatcher.Match(different, [candidate]));
@@ -123,6 +123,32 @@ public class ProviderMigrationTests
         public int? MaxTokens() => script.MaxTokens();
         public Task<GenerateResult> GenerateAsync(IReadOnlyList<ChatMessage> input, IReadOnlyList<ToolInfo> tools, ToolChoice choice, GenerateConfig config, CancellationToken ct = default) => script.GenerateAsync(input, tools, choice, config, ct);
         public Task<GenerateResult> GenerateAsync(IReadOnlyList<ChatMessage> input, IReadOnlyList<ToolInfo> tools, ToolChoice choice, GenerateConfig config, StreamHandler? onStream, CancellationToken ct = default) => script.GenerateAsync(input, tools, choice, config, onStream, ct);
+    }
+    [Fact]
+    public async Task same_direct_model_at_two_endpoints_cannot_reuse_cached_answers()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "provider-cache-" + Guid.NewGuid().ToString("N"));
+        var previous = Environment.GetEnvironmentVariable(CacheOps.CacheDirVar);
+        Environment.SetEnvironmentVariable(CacheOps.CacheDirVar, directory);
+        try
+        {
+            var calls = 0;
+            ReplyHandler Handler(string text) => new(_ => { calls++; return new(HttpStatusCode.OK) { Content = new StringContent(new JsonObject {
+                ["status"] = "completed", ["model"] = "gpt-5.6-sol", ["output"] = new JsonArray(new JsonObject { ["type"] = "message", ["content"] = new JsonArray(new JsonObject { ["type"] = "output_text", ["text"] = text }) }) }.ToJsonString(), Encoding.UTF8, "application/json") }; });
+            using var one = new OpenAIModelApi("gpt-5.6-sol", "https://one.invalid/v1", "test", settings: new() { Handler = Handler("one") });
+            using var two = new OpenAIModelApi("gpt-5.6-sol", "https://two.invalid/v1", "test", settings: new() { Handler = Handler("two") });
+            var first = new EvalModel(one);
+            var second = new EvalModel(two);
+            Assert.Equal("one", (await first.GenerateAsync("same prompt", cache: true)).Completion);
+            Assert.Equal("two", (await second.GenerateAsync("same prompt", cache: true)).Completion);
+            Assert.Equal("one", (await first.GenerateAsync("same prompt", cache: true)).Completion);
+            Assert.Equal(2, calls);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(CacheOps.CacheDirVar, previous);
+            if (Directory.Exists(directory)) Directory.Delete(directory, true);
+        }
     }
     private sealed class ReplyHandler(Func<HttpRequestMessage, HttpResponseMessage> reply) : HttpMessageHandler
     {

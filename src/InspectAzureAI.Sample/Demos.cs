@@ -43,7 +43,7 @@ internal static partial class Cli
         var model = new Model(api, DefaultConfig(api));
         var input = new List<ChatMessage> { new ChatMessageUser(Prompt(prompt)) };
         Console.WriteLine($"model     : {model.Name}");
-        Console.WriteLine($"cache dir : {CacheOps.CachePath(model.Name)}");
+        Console.WriteLine($"cache dir : {CacheOps.CachePath(InspectAzureAI.Eval.Model.ModelIdentity.ForCache(api))}");
         Console.WriteLine($"policy    : expiry {policy.Expiry ?? "never"} ({policy.ExpirySeconds?.ToString(CultureInfo.InvariantCulture) ?? "-"}s), per_epoch {policy.PerEpoch}");
 
         var sink = new RecordingSink();
@@ -65,8 +65,8 @@ internal static partial class Cli
             }
         }
 
-        var entries = Directory.Exists(CacheOps.CachePath(model.Name)) ? Directory.EnumerateFiles(CacheOps.CachePath(model.Name)).Count(file => !file.EndsWith(".tmp", StringComparison.Ordinal)) : 0;
-        Console.WriteLine($"entries   : {entries} for {model.Name}");
+        var entries = Directory.Exists(CacheOps.CachePath(InspectAzureAI.Eval.Model.ModelIdentity.ForCache(api))) ? Directory.EnumerateFiles(CacheOps.CachePath(InspectAzureAI.Eval.Model.ModelIdentity.ForCache(api))).Count(file => !file.EndsWith(".tmp", StringComparison.Ordinal)) : 0;
+        Console.WriteLine($"entries   : {entries} for {InspectAzureAI.Eval.Model.ModelIdentity.ForCache(api)}");
         return 0;
     }
 

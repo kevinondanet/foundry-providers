@@ -38,13 +38,18 @@ public static class Models
         if (model.Split('/', 2) is [var registered, _] && Factories.TryGetValue(registered, out var factory)) return factory(model, config, baseUrl, modelArgs).Api;
         if (model.Split('/', 2) is [var provider, var rest])
         {
+            if (provider is "openai" or "anthropic" && !rest.StartsWith("azure/", StringComparison.Ordinal))
+            {
+                Provider.Util.ProviderLogger.WarnOnce($"Migration: {provider}/ now calls the direct {provider} service. Use {provider}/azure/<deployment> for Azure AI Foundry.");
+                return CreateDirect(provider, rest, config, baseUrl, streaming, modelArgs, directSettings);
+            }
             route = provider switch
             {
                 "openai" => "responses", "anthropic" => "anthropic",
                 "azureai" or "azure" or "foundry" => "models",
                 _ => throw new PrerequisiteError($"Unknown model provider '{provider}'."),
             };
-            model = rest;
+            model = provider is "openai" or "anthropic" && rest.StartsWith("azure/", StringComparison.Ordinal) ? rest[6..] : rest;
         }
         return FoundryModels.RouteFor(model, route) switch
         {

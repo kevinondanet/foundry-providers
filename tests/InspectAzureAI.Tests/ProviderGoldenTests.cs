@@ -16,7 +16,7 @@ public class ProviderGoldenTests
         Assert.Equal(40, fixture["python_revision"]!.ToString().Length);
         foreach (var entry in fixture["cases"]!.AsArray())
         {
-            using var api = new AnthropicModelApi(entry!["model"]!.ToString(), apiKey: "fixture-key");
+            using var api = new AnthropicModelApi(entry!["model"]!.ToString(), baseUrl: "https://api.anthropic.com", apiKey: "fixture-key");
             var config = Config(entry["config"]!);
             var (input, tools) = Inputs(entry);
             var body = api.BuildRequest(input, tools, ToolChoice.Auto, config, false);
@@ -33,7 +33,7 @@ public class ProviderGoldenTests
         foreach (var entry in fixture["cases"]!.AsArray())
         {
             var handler = new DirectTestHandler(_ => DirectTestHandler.Json(DirectOpenAITests.Reply));
-            using var api = new OpenAIModelApi(entry!["model"]!.ToString(), apiKey: "fixture-key", streaming: false,
+            using var api = new OpenAIModelApi(entry!["model"]!.ToString(), baseUrl: "https://api.openai.com/v1", apiKey: "fixture-key", streaming: false,
                 modelArgs: entry["model_args"]!.Deserialize<Dictionary<string, object?>>(), settings: new() { Handler = handler });
             var (input, tools) = Inputs(entry);
             await api.GenerateAsync(input, tools, ToolChoice.Auto, Config(entry["config"]!));

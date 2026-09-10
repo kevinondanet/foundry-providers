@@ -10,6 +10,7 @@ namespace InspectAzureAI.Provider.Util;
 internal sealed class DirectProviderOptions
 {
     private readonly string? _explicitKey;
+    private readonly bool _explicitEndpoint;
     private readonly DirectClientSettings _settings;
     private readonly string _keyVar;
     public string Provider { get; }
@@ -39,6 +40,8 @@ internal sealed class DirectProviderOptions
             Values[key] = value is JsonNode node ? node.DeepClone() : JsonSerializer.SerializeToNode(value);
         }
         _explicitKey = apiKey ?? String("api_key");
+        _explicitEndpoint = !string.IsNullOrWhiteSpace(baseUrl) || !string.IsNullOrWhiteSpace(String("base_url")) ||
+            !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(provider.ToUpperInvariant() + "_BASE_URL"));
         BaseUrl = (baseUrl ?? String("base_url") ?? Environment.GetEnvironmentVariable(provider.ToUpperInvariant() + "_BASE_URL")
             ?? (provider == "openai" ? "https://api.openai.com/v1" : "https://api.anthropic.com")).TrimEnd('/');
         if (!Uri.TryCreate(BaseUrl, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https"))
@@ -62,6 +65,10 @@ internal sealed class DirectProviderOptions
         && (uri.Host.EndsWith(".azure.com", StringComparison.OrdinalIgnoreCase) || uri.Host.EndsWith(".azure.us", StringComparison.OrdinalIgnoreCase) || uri.Host.EndsWith(".azure.cn", StringComparison.OrdinalIgnoreCase));
     public string ResolveKey()
     {
+        var azureVariables = new[] { "AZUREAI_BASE_URL", "AZUREAI_ENDPOINT_URL", "AZURE_ENDPOINT_URL", "AZURE_AI_ENDPOINT",
+            "AZUREAI_" + Provider.ToUpperInvariant() + "_BASE_URL", "AZURE_" + Provider.ToUpperInvariant() + "_BASE_URL", "AZURE_" + Provider.ToUpperInvariant() + "_ENDPOINT" };
+        if (!_explicitEndpoint && azureVariables.Any(name => !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(name))))
+            throw new PrerequisiteError($"Azure endpoint settings are present. Use {Provider}/azure/<deployment> for Foundry, or explicitly configure the direct endpoint with base_url, --model-base-url, or {Provider.ToUpperInvariant()}_BASE_URL before using {Provider}/<model>.");
         var key = _explicitKey ?? Environment.GetEnvironmentVariable(_keyVar);
         key = _settings.ApiKeyOverride?.Invoke(_keyVar, key) ?? key;
         if (string.IsNullOrWhiteSpace(key)) throw new PrerequisiteError($"{_keyVar} is required for direct {Provider} calls. For Foundry, use {Provider}/azure/<deployment>.");

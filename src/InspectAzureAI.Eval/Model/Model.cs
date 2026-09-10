@@ -31,7 +31,7 @@ public sealed partial class Model
         Retry = retry ?? new ModelRetryOptions();
     }
 
-    public string Name => Api.ModelName;
+    public string Name => ModelIdentity.ForLog(Api);
 
     public IModelApi Api { get; }
 

@@ -36,7 +36,7 @@ public class DirectAnthropicTests
     public async Task adaptive_only_models_reject_budgets_before_http(string model)
     {
         var handler = new DirectTestHandler(_ => throw new Exception("must not send"));
-        using var api = new AnthropicModelApi(model, apiKey: "test", settings: new() { Handler = handler });
+        using var api = new AnthropicModelApi(model, baseUrl: "https://api.anthropic.com", apiKey: "test", settings: new() { Handler = handler });
         var ex = await Assert.ThrowsAsync<PrerequisiteError>(() => api.GenerateAsync([new ChatMessageUser("hi")], [], ToolChoice.Auto, new() { ReasoningTokens = 1024 }));
         Assert.Contains("reasoning_effort", ex.Message);
         Assert.Empty(handler.Calls);
@@ -49,7 +49,7 @@ public class DirectAnthropicTests
     [InlineData("claude-opus-5", "max", "adaptive", 64000)]
     public void thinking_is_chosen_per_generation(string model, string effort, string? thinking, int tokens)
     {
-        using var api = new AnthropicModelApi(model, apiKey: "test");
+        using var api = new AnthropicModelApi(model, baseUrl: "https://api.anthropic.com", apiKey: "test");
         var config = new GenerateConfig { ReasoningEffort = effort };
         var body = api.BuildRequest([new ChatMessageUser("hi")], [], ToolChoice.Auto, config, false);
         Assert.Equal(thinking, body["thinking"]?["type"]?.ToString());
@@ -61,7 +61,7 @@ public class DirectAnthropicTests
     [Fact]
     public void betas_are_merged_per_request_and_full_thinking_removes_display()
     {
-        using var api = new AnthropicModelApi("claude-opus-5", apiKey: "test", modelArgs: new Dictionary<string, object?> { ["betas"] = new[] { "custom", "custom" } });
+        using var api = new AnthropicModelApi("claude-opus-5", baseUrl: "https://api.anthropic.com", apiKey: "test", modelArgs: new Dictionary<string, object?> { ["betas"] = new[] { "custom", "custom" } });
         var config = new GenerateConfig { ReasoningEffort = "high", ExtraHeaders = new Dictionary<string,string> { ["Anthropic-Beta"] = "dev-full-thinking-2025-05-14,custom" } };
         Assert.Equal("custom,dev-full-thinking-2025-05-14,output-128k-2025-02-19,interleaved-thinking-2025-05-14", api.BetaHeader(config));
         Assert.Null(api.BuildRequest([new ChatMessageUser("hi")], [], ToolChoice.Auto, config, false)["thinking"]!["display"]);
@@ -74,7 +74,7 @@ public class DirectAnthropicTests
         response["content"] = JsonNode.Parse("[{\"type\":\"thinking\",\"thinking\":\"first\",\"signature\":\"sig1\"},{\"type\":\"tool_use\",\"id\":\"call1\",\"name\":\"f\",\"input\":{}},{\"type\":\"thinking\",\"thinking\":\"second\",\"signature\":\"sig2\"}]");
         response["stop_reason"] = "tool_use";
         var handler = new DirectTestHandler(_ => DirectTestHandler.Json(response.ToJsonString()));
-        using var api = new AnthropicModelApi("claude-opus-5", apiKey: "test", streaming: false, settings: new() { Handler = handler });
+        using var api = new AnthropicModelApi("claude-opus-5", baseUrl: "https://api.anthropic.com", apiKey: "test", streaming: false, settings: new() { Handler = handler });
         var result = await api.GenerateAsync([new ChatMessageUser("hi")], [], ToolChoice.Auto, new());
         var body = api.BuildRequest([new ChatMessageUser("hi"), result.OutputOrThrow().Choices[0].Message, new ChatMessageTool("ok", "call1", "f")], [], ToolChoice.Auto, new(), false);
         Assert.Equal(new[] { "thinking", "tool_use", "thinking" }, body["messages"]![1]!["content"]!.AsArray().Select(b => b!["type"]!.ToString()));
@@ -84,20 +84,20 @@ public class DirectAnthropicTests
     public async Task truncated_stream_is_retryable_and_error_events_retain_status()
     {
         var handler = new DirectTestHandler(_ => DirectTestHandler.Sse("data: {\"type\":\"message_start\",\"message\":{\"usage\":{}}}\n\n"));
-        using var api = new AnthropicModelApi("claude-opus-5", apiKey: "test", streaming: true, settings: new() { Handler = handler });
+        using var api = new AnthropicModelApi("claude-opus-5", baseUrl: "https://api.anthropic.com", apiKey: "test", streaming: true, settings: new() { Handler = handler });
         var error = await Assert.ThrowsAsync<ServiceResponseException>(() => api.GenerateAsync([new ChatMessageUser("hi")], [], ToolChoice.Auto, new()));
         Assert.True(api.ShouldRetry(error).Retry);
         var overloaded = new DirectTestHandler(_ => DirectTestHandler.Sse("data: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"busy\"}}\n\n"));
-        using var busy = new AnthropicModelApi("claude-opus-5", apiKey: "test", settings: new() { Handler = overloaded });
+        using var busy = new AnthropicModelApi("claude-opus-5", baseUrl: "https://api.anthropic.com", apiKey: "test", settings: new() { Handler = overloaded });
         var http = await Assert.ThrowsAsync<ProviderHttpException>(() => busy.GenerateAsync([new ChatMessageUser("hi")], [], ToolChoice.Auto, new()));
         Assert.Equal(529, http.Status);
     }
     [Fact]
     public void unknown_options_and_credential_body_fields_fail_without_leaking_values()
     {
-        var error = Assert.Throws<PrerequisiteError>(() => new AnthropicModelApi("claude-opus-5", apiKey: "test", modelArgs: new Dictionary<string,object?> { ["auth_token"] = "secret" }));
+        var error = Assert.Throws<PrerequisiteError>(() => new AnthropicModelApi("claude-opus-5", baseUrl: "https://api.anthropic.com", apiKey: "test", modelArgs: new Dictionary<string,object?> { ["auth_token"] = "secret" }));
         Assert.DoesNotContain("secret", error.Message);
-        using var api = new AnthropicModelApi("claude-opus-5", modelArgs: new Dictionary<string,object?> { ["api_key"] = "secret" });
+        using var api = new AnthropicModelApi("claude-opus-5", baseUrl: "https://api.anthropic.com", modelArgs: new Dictionary<string,object?> { ["api_key"] = "secret" });
         Assert.Empty(api.ModelArgsForLog);
         Assert.Throws<PrerequisiteError>(() => api.BuildRequest([], [], ToolChoice.Auto, new() { ExtraBody = new JsonObject { ["api_key"] = "secret" } }, false));
     }

@@ -396,7 +396,7 @@ set, so `n`, `logprobs`, `seed`, penalties and `response_format` do not exist he
 
 | Deployment | Format | What happens |
 |---|---|---|
-| gpt-5.4-pro | OpenAI | Responses-API only (`chatCompletion: false` in ARM): HTTP 400 "The requested operation is unsupported." on chat completions. Served on the Responses route, now its default (`--route responses`, `openai/gpt-5.4-pro`); a call can take minutes, so that route sets no HTTP timeout and the model layer's attempt timeout governs |
+| gpt-5.4-pro | OpenAI | Responses-API only (`chatCompletion: false` in ARM): HTTP 400 "The requested operation is unsupported." on chat completions. Served on the Responses route, now its default (`--route responses`, `openai/azure/gpt-5.4-pro`); a call can take minutes, so that route sets no HTTP timeout and the model layer's attempt timeout governs |
 | Cohere-parse-v5 | Cohere | document parsing model: HTTP 404 "Requested API is currently not supported" |
 | FLUX.2-pro | Black Forest Labs | image generation: HTTP 404 "Service request failed." on chat completions; ARM still marks it chat-capable, so use `--only` to exclude it |
 
@@ -433,3 +433,5 @@ Practical rules that fall out of the table:
   (which rejects both JSON modes). Claude has no `response_format`; use a tool with `tool_choice` instead.
 - **Multiple choices** (`n`) fail on grok and are ignored by MAI-Thinking-1.
 - **Token budgets** are honoured by Cohere (`token_budget`) and Claude (`budget_tokens`) only.
+
+Direct providers use separate model-family rules and constructor options; see [direct providers](direct-providers.md).

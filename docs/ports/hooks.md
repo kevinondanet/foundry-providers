@@ -87,3 +87,5 @@ entry points; model hooks outside a run; pending events; and the api-key overrid
 - The legacy telemetry / api-key-override module hooks (`hooks/_legacy.py`) and `send_telemetry_legacy`.
 - `emit_launch_handoff` (`inspect ctl`), `SampleQueueHooks` (queue lifecycle) — not hook subscribers.
 - Python's `on_sample_event` re-delivery of a completed pending event: this transcript records events once, complete.
+
+Direct OpenAI and Anthropic factory instances consult enabled credential override hooks for every request, including authentication retries. Foundry remains Entra-only. See [direct providers](../direct-providers.md).

@@ -182,6 +182,10 @@ public static class ModelInfoLookup
             return custom;
         }
 
+        var bareFoundry = model.StartsWith(AzureAIPrefix, StringComparison.OrdinalIgnoreCase) ? model[AzureAIPrefix.Length..]
+            : model.Split('/', 3) is [_, "azure", var deployment] ? deployment : null;
+        if (bareFoundry is not null && CustomModels.TryGetValue(bareFoundry, out custom)) return custom;
+
         if (!model.Contains('/'))
         {
             // a Foundry deployment name: an override keyed the Python way (azureai/<name>) applies to it

@@ -18,7 +18,7 @@ public class DirectOpenAITests
     [InlineData("codex", null, true)]
     public void selection_uses_direct_families_and_any_explicit_num_choices(string model, int? n, bool responses)
     {
-        using var api = new OpenAIModelApi(model, apiKey: "test");
+        using var api = new OpenAIModelApi(model, baseUrl: "https://api.openai.com/v1", apiKey: "test");
         Assert.Equal(responses, api.UsesResponses(new() { NumChoices = n }));
     }
     [Fact]
@@ -42,7 +42,7 @@ public class DirectOpenAITests
         var polls = 0;
         var handler = new DirectTestHandler(call => call.Method == "POST" ? DirectTestHandler.Json("{\"id\":\"resp_1\",\"status\":\"queued\"}") :
             ++polls == 1 ? DirectTestHandler.Json("{\"error\":{\"code\":\"server_error\"}}", HttpStatusCode.ServiceUnavailable) : DirectTestHandler.Json(Reply));
-        using var api = new OpenAIModelApi("gpt-5.4-pro", apiKey: "test", settings: new() { Handler = handler, Delay = (_, _) => Task.CompletedTask });
+        using var api = new OpenAIModelApi("gpt-5.4-pro", baseUrl: "https://api.openai.com/v1", apiKey: "test", settings: new() { Handler = handler, Delay = (_, _) => Task.CompletedTask });
         var result = await api.GenerateAsync([new ChatMessageUser("hi")], [], ToolChoice.Auto, new());
         Assert.Equal("hello", result.OutputOrThrow().Completion);
         Assert.Equal(new[] { "POST", "GET", "GET" }, handler.Calls.Select(c => c.Method));
@@ -55,7 +55,7 @@ public class DirectOpenAITests
     {
         using var cancel = new CancellationTokenSource();
         var handler = new DirectTestHandler(call => DirectTestHandler.Json(call.Url.EndsWith("/cancel", StringComparison.Ordinal) ? "{}" : "{\"id\":\"resp_1\",\"status\":\"in_progress\"}"));
-        using var api = new OpenAIModelApi("gpt-5.4-pro", apiKey: "test", settings: new() { Handler = handler, Delay = (_, ct) => { cancel.Cancel(); ct.ThrowIfCancellationRequested(); return Task.CompletedTask; } });
+        using var api = new OpenAIModelApi("gpt-5.4-pro", baseUrl: "https://api.openai.com/v1", apiKey: "test", settings: new() { Handler = handler, Delay = (_, ct) => { cancel.Cancel(); ct.ThrowIfCancellationRequested(); return Task.CompletedTask; } });
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => api.GenerateAsync([new ChatMessageUser("hi")], [], ToolChoice.Auto, new(), cancel.Token));
         Assert.Equal("https://api.openai.com/v1/responses/resp_1/cancel", handler.Calls[1].Url);
     }
@@ -66,7 +66,7 @@ public class DirectOpenAITests
     public async Task only_automatic_stream_rejection_falls_back(bool? streaming, string parameter, int calls)
     {
         var handler = new DirectTestHandler(call => call.Body?["stream"]?.GetValue<bool>() == true ? DirectTestHandler.Json(new JsonObject { ["error"] = new JsonObject { ["param"] = parameter, ["message"] = "unsupported" } }.ToJsonString(), HttpStatusCode.BadRequest) : DirectTestHandler.Json(Reply));
-        using var api = new OpenAIModelApi("gpt-5.6-sol", apiKey: "test", streaming: streaming, settings: new() { Handler = handler });
+        using var api = new OpenAIModelApi("gpt-5.6-sol", baseUrl: "https://api.openai.com/v1", apiKey: "test", streaming: streaming, settings: new() { Handler = handler });
         var task = api.GenerateAsync([new ChatMessageUser("hi")], [], ToolChoice.Auto, new(), _ => Task.CompletedTask);
         if (calls == 1) await Assert.ThrowsAsync<ProviderHttpException>(() => task); else Assert.Equal("hello", (await task).OutputOrThrow().Completion);
         Assert.Equal(calls, handler.Calls.Count);
@@ -75,7 +75,7 @@ public class DirectOpenAITests
     public async Task failed_responses_preserve_classification_and_do_not_return_empty_success()
     {
         var handler = new DirectTestHandler(_ => DirectTestHandler.Json("{\"status\":\"failed\",\"error\":{\"code\":\"server_error\",\"message\":\"busy\"}}"));
-        using var api = new OpenAIModelApi("gpt-5.6-sol", apiKey: "test", settings: new() { Handler = handler });
+        using var api = new OpenAIModelApi("gpt-5.6-sol", baseUrl: "https://api.openai.com/v1", apiKey: "test", settings: new() { Handler = handler });
         var ex = await Assert.ThrowsAsync<ProviderHttpException>(() => api.GenerateAsync([], [], ToolChoice.Auto, new()));
         Assert.Equal(500, ex.Status);
         Assert.True(api.ShouldRetry(ex).Retry);
@@ -90,7 +90,7 @@ public class DirectOpenAITests
         };
         var handler = new DirectTestHandler(_ => DirectTestHandler.Sse(string.Join("", chunks.Select(c => "data: " + c + "\n\n")) + "data: [DONE]\n\n"));
         var deltas = new List<StreamEvent>();
-        using var api = new OpenAIModelApi("gpt-4", apiKey: "test", streaming: true, settings: new() { Handler = handler });
+        using var api = new OpenAIModelApi("gpt-4", baseUrl: "https://api.openai.com/v1", apiKey: "test", streaming: true, settings: new() { Handler = handler });
         var result = (await api.GenerateAsync([new ChatMessageUser("hi")], [], ToolChoice.Auto, new() { NumChoices = 2 }, e => { deltas.Add(e); return Task.CompletedTask; })).OutputOrThrow();
         Assert.Equal(2, result.Choices.Count);
         Assert.Equal("second", result.Choices[1].Message.Text);
@@ -105,7 +105,7 @@ public class DirectOpenAITests
     public async Task chat_truncated_stream_is_retryable()
     {
         var handler = new DirectTestHandler(_ => DirectTestHandler.Sse("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"unfinished\"}}]}\n\n"));
-        using var api = new OpenAIModelApi("gpt-4", apiKey: "test", streaming: true, settings: new() { Handler = handler });
+        using var api = new OpenAIModelApi("gpt-4", baseUrl: "https://api.openai.com/v1", apiKey: "test", streaming: true, settings: new() { Handler = handler });
         var ex = await Assert.ThrowsAsync<ServiceResponseException>(() => api.GenerateAsync([], [], ToolChoice.Auto, new()));
         Assert.True(api.ShouldRetry(ex).Retry);
     }

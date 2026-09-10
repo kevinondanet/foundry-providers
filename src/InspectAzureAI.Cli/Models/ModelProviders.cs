@@ -16,7 +16,7 @@ public delegate Model ModelFactory(ModelSpec spec);
 /// <summary>
 /// Port of the provider half of <c>get_model()</c> for the CLI: a <c>provider/name</c> model string is routed to a
 /// registered factory (<c>mockllm/model</c> is built in, as in Python; tests register their own), the
-/// <c>azureai/</c> and <c>anthropic/</c> prefixes pick the Foundry route explicitly, and a bare deployment name goes
+/// <c>openai/</c> and <c>anthropic/</c> prefixes pick direct services; <c>/azure/</c> selects Foundry. A bare deployment name goes
 /// to <see cref="FoundryModels"/> (<c>claude*</c> to the Anthropic route). A name with an unknown prefix is a
 /// <see cref="PrerequisiteError"/>. With no name, <c>INSPECT_EVAL_MODEL</c> is read, then the Foundry defaults.
 /// </summary>

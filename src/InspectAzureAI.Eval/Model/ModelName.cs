@@ -32,7 +32,7 @@ public sealed class ModelName : IEquatable<ModelName>
     {
         ArgumentNullException.ThrowIfNull(model);
         Api = ProviderName(model.Api);
-        Name = model.Name;
+        Name = model.Name.StartsWith(Api + "/", StringComparison.Ordinal) ? model.Name[(Api.Length + 1)..] : model.Name;
     }
 
     /// <summary>A model name from an explicit api and name (no parsing).</summary>
