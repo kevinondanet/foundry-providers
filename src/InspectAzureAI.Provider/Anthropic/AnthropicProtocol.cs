@@ -210,6 +210,8 @@ internal sealed class AnthropicProtocol(string DeploymentName, IReadOnlyDictiona
     /// the Messages API requires on later turns), then text and images, then <c>tool_use</c>. A reasoning
     /// item without a signature cannot be replayed and is dropped with a one-time warning.
     /// </summary>
+    internal static string BlockOrderKey(JsonNode? block) => $"{block?["type"]}:{block?["id"] ?? block?["signature"] ?? block?["data"] ?? block?["text"]}";
+
     private static JsonArray AssistantBlocks(ChatMessageAssistant assistant)
     {
         var blocks = ContentBlocks(assistant.ContentList);
@@ -235,6 +237,11 @@ internal sealed class AnthropicProtocol(string DeploymentName, IReadOnlyDictiona
             blocks.Add(new JsonObject { ["type"] = "tool_use", ["id"] = call.Id, ["name"] = call.Function, ["input"] = call.Arguments.DeepClone() });
         }
 
+        if (assistant.Metadata?.TryGetValue("anthropic_block_order", out var recorded) == true && JsonSerializer.SerializeToNode(recorded) is JsonArray order)
+        {
+            var keys = order.Select(n => n!.ToString()).ToList();
+            return new JsonArray(blocks.OrderBy(n => { var i = keys.IndexOf(BlockOrderKey(n)); return i < 0 ? int.MaxValue : i; }).Select(n => n!.DeepClone()).ToArray());
+        }
         return blocks;
     }
 
