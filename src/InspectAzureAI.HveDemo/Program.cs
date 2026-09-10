@@ -17,22 +17,29 @@ using Eval = InspectAzureAI.Eval.Runner.Eval;
 using Model = InspectAzureAI.Eval.Model.Model;
 
 /// <summary>
-/// A console app that runs one Inspect eval end to end: the HVE Core tasks (see <see cref="HveTasks"/>) with the
-/// GitHub Copilot CLI as the agent, against either a scripted model (<c>--fake</c>, no network) or an Azure AI
-/// Foundry deployment, with every sample inside its own Docker container (or the fake sandbox that plays one on this host).
+/// A console app that runs one Inspect eval end to end: the HVE Core tasks (see <see cref="HveTasks"/>) in one cell of
+/// the harness x framework matrix (<see cref="HveVariant"/>: the GitHub Copilot CLI or Inspect's generic agent loop, with
+/// or without the HVE Core plugin), against either a scripted model (<c>--fake</c>, no network) or an Azure AI Foundry
+/// deployment, with every sample inside its own Docker container (or the fake sandbox that plays one on this host).
 /// </summary>
 public static class Program
 {
     private const string Usage = """
-        InspectAzureAI.HveDemo: the GitHub Copilot CLI running Microsoft HVE Core (agents, skills, instructions, prompts)
-        as an Inspect agent, in Docker, with the dataset, solver, scorer and task components spelled out.
+        InspectAzureAI.HveDemo: the GitHub Copilot CLI or Inspect's generic agent loop, with or without Microsoft HVE Core
+        (agents, skills, instructions, prompts), as an Inspect eval in Docker, with the dataset, solver, scorer and task
+        components spelled out.
 
         usage: dotnet run --project src/InspectAzureAI.HveDemo -- [options]
 
           --task implement|review|skill|suite
                                  which task to run (default: suite, every sample with a per-kind breakdown)
-          --solver copilot|basic copilot (default) runs the Copilot CLI with the HVE plugin; basic is the plain
-                                 basic_agent + bash baseline for comparison
+          --harness copilot|generic
+                                 the agent runtime: copilot (default) runs the GitHub Copilot CLI inside the sandbox, bridged
+                                 to the model; generic is Inspect's own agent loop (basic_agent + sandbox bash + submit)
+          --framework hve|none   the engineering framework layered on the harness: hve (default) provisions the vendored
+                                 HVE Core plugin and briefs the agent to use it; none provisions and briefs nothing
+          --solver copilot|basic deprecated aliases: copilot = --harness copilot --framework hve, basic = --harness generic
+                                 --framework none; a later --harness/--framework wins
           --fake                 drive the eval with a scripted model (no network, deterministic); default when
                                  AZUREAI_BASE_URL is not set. With the fake sandbox a fake copilot binary plays the CLI
                                  against the real bridge; with docker the real CLI runs on the scripted model.
@@ -50,7 +57,7 @@ public static class Program
           --log-dir <dir>        where the .eval log goes (default ./logs)
           --copilot-version <v>  auto (default: a sandbox copilot, else the pinned 1.0.83), sandbox, or a version
           --plugin-dir <path>    use a plugin directory that already exists in the sandbox instead of copying the
-                                 vendored HVE Core subset to /opt/hve-core
+                                 vendored HVE Core subset to /opt/hve-core (only with --framework hve)
           --debug                keep the CLI's raw stdout/stderr in the sample store (copilot_cli_debug)
           --no-cleanup           keep the containers after the run for inspection
           --help
@@ -117,6 +124,13 @@ public static class Program
     public static async Task<int> RunAsync(Options options, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(options);
+        if (options.SolverAlias is { } alias)
+        {
+            // One line. --solver basic accepted a --plugin-dir before the split (it only suppressed the plugin copy), so the alias
+            // still parses with one and the note says it is ignored rather than the run failing on an old command line.
+            var ignored = options.PluginDir is not null && !options.Variant.UsesFramework ? " (--plugin-dir is ignored: none provisions no plugin)" : "";
+            Console.Error.WriteLine($"note: --solver {alias} is deprecated; use --harness {options.Harness} --framework {options.Framework}{ignored}");
+        }
 
         // 1. The sandbox spec. "docker" with a directory means "build the Dockerfile in it"; "fake" registers the scripted sandbox.
         FakeSandboxScript? script = null;
@@ -134,7 +148,9 @@ public static class Program
                 break;
         }
 
-        // 2. Where the plugin lives in the sandbox: copied to /opt/hve-core, or (local) the host copy, or the caller's directory.
+        // 2. The cell, and where the plugin lives in the sandbox: copied to /opt/hve-core, or (local) the host copy, or the
+        //    caller's directory. Under --framework none the task provisions nothing at that path and nothing reads it.
+        var variant = options.Variant;
         var pluginSandboxPath = options.PluginDir is not null ? null : options.Sandbox == "local" ? null : HveData.PluginSandboxPath;
         var pluginDir = options.PluginDir ?? (options.Sandbox == "local" ? HveData.PluginDirectory : HveData.PluginSandboxPath);
 
@@ -145,23 +161,27 @@ public static class Program
         var anthropic = string.Equals(options.Route, "anthropic", StringComparison.OrdinalIgnoreCase)
             || (options.Route is null && options.Model?.StartsWith("claude", StringComparison.OrdinalIgnoreCase) == true);
 
-        // 4. The solver options: how the Copilot CLI is installed and pointed at the bridge.
+        // 4. The solver options: how the Copilot CLI is installed and pointed at the bridge, and (generic+hve) where the
+        //    host can read the plugin to embed a sample's agent body: the vendored copy, or a --plugin-dir that exists on
+        //    this host under --sandbox local; a sandbox-only --plugin-dir leaves it null and the agent reads its own agent file.
         var solverOptions = new HveSolverOptions
         {
             CopilotVersion = script is not null ? HveFake.CopilotVersion : options.CopilotVersion,
             PluginDir = pluginDir,
+            HostPluginDirectory = options.PluginDir is null ? HveData.PluginDirectory : options.Sandbox == "local" && Directory.Exists(options.PluginDir) ? options.PluginDir : null,
             Provider = anthropic && !options.Fake ? CopilotCliProvider.Anthropic : CopilotCliProvider.OpenAI,
             Debug = options.Debug,
         };
 
         // 5. The task: dataset + solver + scorers + sandbox + limits.
-        var task = HveTasks.Build(options.Task, options.Solver, sandbox, solverOptions, pluginSandboxPath: pluginSandboxPath);
+        var task = HveTasks.Build(options.Task, variant, sandbox, solverOptions, pluginSandboxPath: pluginSandboxPath);
 
         Console.WriteLine("InspectAzureAI HVE Core demo");
         Console.WriteLine($"task     : {task.Name} ({task.Dataset.Count} samples, kinds: {string.Join(", ", HveDataset.KindsOf(task.Dataset))})");
         Console.WriteLine($"model    : {model.Name}{(options.Fake ? " (scripted, offline)" : "")}");
-        Console.WriteLine($"sandbox  : {SandboxText(sandbox)}");
-        Console.WriteLine($"solver   : {SolverText(options.Solver, solverOptions)}");
+        Console.WriteLine($"sandbox  : {SandboxText(sandbox, variant.UsesFramework ? pluginSandboxPath : null)}");
+        Console.WriteLine($"harness  : {HarnessText(variant, solverOptions)}");
+        Console.WriteLine($"framework: {FrameworkText(variant, solverOptions)}");
         Console.WriteLine($"scorers  : {string.Join(", ", task.Scorers.Select(s => s.Name))}");
         Console.WriteLine($"log dir  : {Path.GetFullPath(options.LogDir)}");
         Console.WriteLine();
@@ -189,17 +209,23 @@ public static class Program
         return log.Status == EvalStatus.Success ? 0 : 1;
     }
 
-    private static string SandboxText(SandboxSpec sandbox) => sandbox.Type switch
+    private static string SandboxText(SandboxSpec sandbox, string? pluginSandboxPath) => sandbox.Type switch
     {
-        "docker" => $"docker, image built from {Path.Combine(sandbox.Config!, "Dockerfile")}; plugin copied to {HveData.PluginSandboxPath}",
+        "docker" => $"docker, image built from {Path.Combine(sandbox.Config!, "Dockerfile")}{(pluginSandboxPath is not null ? $"; plugin copied to {pluginSandboxPath}" : "")}",
         "local" => "local temp directory on this host (demo only, no isolation; the host's copilot and plugin copy are used)",
         _ => "fake, scripted on this host (a mirror directory plays /workspace; FakeCopilotCli plays the CLI against the real bridge)",
     };
 
-    private static string SolverText(string solver, HveSolverOptions options) => solver.ToLowerInvariant() switch
+    private static string HarnessText(HveVariant variant, HveSolverOptions options) => variant.IsCopilot
+        ? $"copilot: GitHub Copilot CLI inside the sandbox, bridged to the model (version {options.CopilotVersion}, {options.Provider} wire)"
+        : "generic: Inspect basic_agent loop with the sandbox bash tool and submit (no external CLI)";
+
+    private static string FrameworkText(HveVariant variant, HveSolverOptions options) => (variant.UsesFramework, variant.IsCopilot, options.HostPluginDirectory) switch
     {
-        HveSolvers.BasicName => "system_message -> basic_agent(bash, submit)  [baseline, no plugin]",
-        _ => $"system_message -> copilot_cli(--plugin-dir {options.PluginDir}, --agent from metadata, version {options.CopilotVersion}, {options.Provider} wire)",
+        (false, _, _) => "none: no plugin provisioned or briefed (the repository's .github overlay stays)",
+        (true, true, _) => $"hve: HVE Core plugin at {options.PluginDir} (--plugin-dir, --agent from metadata; the briefing names its agents, skills, prompts and instruction files)",
+        (true, false, not null) => $"hve: HVE Core plugin at {options.PluginDir}, read with bash; the briefing describes its layout and embeds the sample's agent body",
+        (true, false, null) => $"hve: HVE Core plugin at {options.PluginDir}, read with bash; the briefing describes its layout (the host cannot read the plugin: the agent reads its own agent file)",
     };
 
     /// <summary>Per-sample scores, the metrics (including the suite's per-kind breakdown) and a legend of the components that ran.</summary>
@@ -246,10 +272,13 @@ public static class Program
         }
 
         Console.WriteLine();
+        // The legend derives from the task's metadata and scorer list, so it adapts to the cell: the plugin clause and the
+        // hve_artefact_used entry appear under hve only.
+        var variant = VariantOf(task);
         Console.WriteLine("components:");
-        Console.WriteLine($"  dataset  {task.Dataset.Name}: hve/dataset.json via Datasets.Json + FieldSpec; per-sample files = .github overlay + workspace/<id> + the vendored plugin");
-        Console.WriteLine($"  solver   {task.Metadata?.GetValueOrDefault("solver")}: {(string.Equals(task.Metadata?.GetValueOrDefault("solver")?.ToString(), HveSolvers.BasicName, StringComparison.Ordinal) ? "Solvers.Chain(SystemMessage, BasicAgent(bash))" : "Solvers.Chain(SystemMessage, Agents.AsSolver(CopilotCli.Agent(...)))")}");
-        Console.WriteLine($"  scorers  {HveScorers.ExecCheckName} (metadata.check in the sandbox), {HveScorers.ArtefactReportedName} (Scorers.Includes over the final message), {HveScorers.ArtefactQualityName} (Scorers.ModelGradedQa over the artefact), {HveScorers.ArtefactUsedName} (transcript evidence of the HVE components)");
+        Console.WriteLine($"  dataset  {task.Dataset.Name}: hve/dataset.json via Datasets.Json + FieldSpec; per-sample files = .github overlay + workspace/<id>{(variant.UsesFramework ? $" + the vendored plugin at {HveData.PluginSandboxPath}" : "")}");
+        Console.WriteLine($"  solver   {task.Metadata?.GetValueOrDefault("solver") ?? variant.Label}: {HveSolvers.Describe(variant)}");
+        Console.WriteLine($"  scorers  {string.Join(", ", task.Scorers.Select(scorer => ScorerLegend(scorer.Name)))}");
         Console.WriteLine($"  task     {task.Name}: sandbox {task.Sandbox?.Type}, message limit {task.MessageLimit}, time limit {task.TimeLimit?.TotalMinutes} min, fail_on_error {task.FailOnError.Flag?.ToString().ToLowerInvariant() ?? "threshold"}{(task.Scorers.Any(scorer => scorer.Metrics.Any(metric => metric.Name == "grouped")) ? ", each scorer's headline metric also grouped by kind" : "")}");
     }
 
@@ -270,12 +299,28 @@ public static class Program
         return line.Length <= width ? line : line[..(width - 1)] + "…";
     }
 
+    /// <summary>The cell a task was built for, from its <c>harness</c>/<c>framework</c> metadata (the default cell when a key is missing).</summary>
+    private static HveVariant VariantOf(EvalTask task) => new(
+        Convert.ToString(task.Metadata?.GetValueOrDefault("harness"), CultureInfo.InvariantCulture) is { Length: > 0 } harness ? harness : HveVariant.Default.Harness,
+        Convert.ToString(task.Metadata?.GetValueOrDefault("framework"), CultureInfo.InvariantCulture) is { Length: > 0 } framework ? framework : HveVariant.Default.Framework);
+
+    private static string ScorerLegend(string name) => name switch
+    {
+        HveScorers.ExecCheckName => $"{name} (metadata.check in the sandbox)",
+        HveScorers.ArtefactReportedName => $"{name} (Scorers.Includes over the final message)",
+        HveScorers.ArtefactQualityName => $"{name} (Scorers.ModelGradedQa over the artefact)",
+        HveScorers.ArtefactUsedName => $"{name} (transcript evidence of the HVE components)",
+        _ => name,
+    };
+
     /// <summary>The parsed command line.</summary>
     public sealed record Options(
         bool Help,
         bool Fake,
         string Task,
-        string Solver,
+        string Harness,
+        string Framework,
+        string? SolverAlias,
         string? Model,
         string? Route,
         string Sandbox,
@@ -288,12 +333,23 @@ public static class Program
         bool Debug,
         bool Cleanup)
     {
+        /// <summary>The validated cell; throws the flag message for a hand-built record with a bad name.</summary>
+        public HveVariant Variant => HveVariant.Parse(Harness, Framework);
+
+        /// <summary>
+        /// Left to right, last flag wins. The two axes default to <see cref="HveVariant.Default"/>; the deprecated
+        /// <c>--solver</c> sets both at once (and is remembered in <see cref="SolverAlias"/> for the stderr note), so a later
+        /// <c>--harness</c> or <c>--framework</c> overrides one axis and a later <c>--solver</c> overrides an earlier flag.
+        /// <c>--plugin-dir</c> is rejected with an explicit <c>--framework none</c> (nothing would use it) but tolerated when
+        /// the <c>none</c> came from <c>--solver basic</c>, which accepted one before the split; <see cref="RunAsync"/> then
+        /// notes that it is ignored.
+        /// </summary>
         public static Options Parse(string[] args)
         {
             ArgumentNullException.ThrowIfNull(args);
-            bool help = false, fake = false, debug = false, cleanup = true;
-            string? model = null, route = null, pluginDir = null, sandbox = null;
-            string task = "suite", solver = HveSolvers.CopilotName, logDir = "logs", copilotVersion = "auto";
+            bool help = false, fake = false, debug = false, cleanup = true, frameworkFromAlias = false;
+            string? model = null, route = null, pluginDir = null, sandbox = null, solverAlias = null;
+            string task = "suite", harness = HveVariant.Default.Harness, framework = HveVariant.Default.Framework, logDir = "logs", copilotVersion = "auto";
             int? limit = null, epochs = null, maxSamples = null;
 
             for (var i = 0; i < args.Length; i++)
@@ -315,14 +371,24 @@ public static class Program
                         }
 
                         break;
-                    case "--solver":
-                        solver = Value("--solver").ToLowerInvariant();
-                        if (!HveSolvers.Names.Contains(solver, StringComparer.Ordinal))
-                        {
-                            throw new ArgumentException("--solver expects copilot or basic");
-                        }
-
+                    case "--harness":
+                        harness = HveVariant.Parse(Value("--harness"), framework).Harness;
                         break;
+                    case "--framework":
+                        framework = HveVariant.Parse(harness, Value("--framework")).Framework;
+                        frameworkFromAlias = false;
+                        break;
+                    case "--solver":
+                    {
+                        var alias = Value("--solver");
+                        var cell = HveVariant.FromSolverAlias(alias);
+                        harness = cell.Harness;
+                        framework = cell.Framework;
+                        frameworkFromAlias = true;
+                        solverAlias = alias.ToLowerInvariant();
+                        break;
+                    }
+
                     case "--model": model = Value("--model"); break;
                     case "--route": route = Value("--route"); break;
                     case "--sandbox":
@@ -358,7 +424,15 @@ public static class Program
                 throw new ArgumentException("--sandbox fake needs --fake (the fake copilot binary is driven by the scripted model)");
             }
 
-            return new Options(help, fake, task, solver, model, route, sandbox, limit, epochs, maxSamples, logDir, copilotVersion, pluginDir, debug, cleanup);
+            // Under none no plugin is copied and no briefing names one, so a plugin directory would be silently ignored. The
+            // deprecated --solver basic took one before the split (it only suppressed the plugin copy), so an old command line
+            // keeps parsing; RunAsync's deprecation note says the directory is ignored.
+            if (pluginDir is not null && framework == HveFramework.None && !frameworkFromAlias)
+            {
+                throw new ArgumentException("--plugin-dir needs --framework hve (with none no plugin is provisioned or briefed)");
+            }
+
+            return new Options(help, fake, task, harness, framework, solverAlias, model, route, sandbox, limit, epochs, maxSamples, logDir, copilotVersion, pluginDir, debug, cleanup);
         }
     }
 }

@@ -3,6 +3,7 @@ using InspectAzureAI.Eval.Sandbox;
 using InspectAzureAI.Eval.Scorers;
 using InspectAzureAI.Eval.Solvers;
 using InspectAzureAI.Eval.Testing;
+using InspectAzureAI.HveDemo;
 using InspectAzureAI.Provider.Core;
 
 // The demo registers a process-wide sandbox provider and writes to Console.Out, so tests in this assembly run one at a time.
@@ -12,7 +13,7 @@ namespace InspectAzureAI.HveDemo.Tests;
 
 using Model = InspectAzureAI.Eval.Model.Model;
 
-/// <summary>Builders shared by the scorer and task tests: a sample context over a fake sandbox, and task states with HVE metadata.</summary>
+/// <summary>Builders shared by the scorer and task tests: a sample context over a fake sandbox, task states with HVE metadata, and a captured run of the program.</summary>
 internal static class TestSupport
 {
     /// <summary>The metadata of an HVE sample as the dataset loader produces it.</summary>
@@ -62,4 +63,29 @@ internal static class TestSupport
         ScoreValue.Num n => n.Value.ToString(System.Globalization.CultureInfo.InvariantCulture),
         _ => score.Value.ToString() ?? "",
     };
+
+    /// <summary>
+    /// Runs <see cref="Program.RunAsync"/> with both console streams captured (the header, the reporter and the summary go
+    /// to stdout, the <c>--solver</c> deprecation note to stderr) and restored afterwards; the streams are process-wide,
+    /// which is one reason this assembly's tests run serially.
+    /// </summary>
+    public static async Task<(int Exit, string Stdout, string Stderr)> RunProgramAsync(Program.Options options)
+    {
+        var stdout = Console.Out;
+        var stderr = Console.Error;
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+        Console.SetOut(output);
+        Console.SetError(error);
+        try
+        {
+            var exit = await Program.RunAsync(options, CancellationToken.None);
+            return (exit, output.ToString(), error.ToString());
+        }
+        finally
+        {
+            Console.SetOut(stdout);
+            Console.SetError(stderr);
+        }
+    }
 }

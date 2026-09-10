@@ -12,7 +12,7 @@ namespace InspectAzureAI.HveDemo.Tests;
 
 using Model = InspectAzureAI.Eval.Model.Model;
 
-/// <summary>Each of the four scorers in isolation, over a fake sandbox and a synthetic transcript.</summary>
+/// <summary>Each of the four scorers in isolation, over a fake sandbox and a synthetic transcript: the Copilot CLI's JSONL trail and the generic harness's tool events.</summary>
 public sealed class HveScorersTests
 {
     [Fact]
@@ -204,6 +204,198 @@ public sealed class HveScorersTests
         var names = HveScorers.All().Select(s => s.Name).ToList();
         Assert.Equal([HveScorers.ExecCheckName, HveScorers.ArtefactReportedName, HveScorers.ArtefactQualityName, HveScorers.ArtefactUsedName], names);
     }
+
+    [Fact]
+    public void artefact_used_evidence_reads_generic_bash_tool_events()
+    {
+        // The generic harness leaves no CLI JSONL: its trail is Inspect's own ToolEvents of the bash tool (Arguments["cmd"])
+        // and the B.4 briefing in the model events. Sample 1 reads a skill, an instruction file and a prompt command in one
+        // command; sample 2 is the heredoc write; sample 3 the submit, whose answer names skills it never read.
+        var components = new[] { "skill/python-foundational", "prompt/git-commit-message", "instructions/python-script", "skill/documentation", "skill/rpi-plan", "skill/rpi-plan-critique", "instructions/markdown", "instructions/python-tests" };
+        var events = new List<TranscriptEvent>
+        {
+            Bash("1", "cat '/opt/hve-core/.github/skills/coding-standards/python-foundational/SKILL.md' '.github/instructions/python-script.instructions.md' '/opt/hve-core/.github/prompts/hve-core/git-commit-message.prompt.md'", "---\nname: python-foundational\n---\n"),
+            Bash("2", "cat > textkit/slug.py <<'EOF'\n# uses documentation\nEOF\n", ""),
+            new ToolEvent("3", "submit", new JsonObject { ["answer"] = "I used the documentation skill and rpi-plan" }, ""),
+            SystemPromptEvent("HVE plugin directory: /opt/hve-core\n- skills: .github/skills/**/<name>/SKILL.md (code-review, python-foundational, documentation, rpi-quick, rpi-research, rpi-plan, rpi-plan-critique, rpi-implement, rpi-review)\n- prompt commands: .github/prompts/**/<name>.prompt.md (git-commit-message.prompt)\n- instruction files: .github/instructions/**/<name>.instructions.md (markdown.instructions.md, python-script.instructions.md)"),
+        };
+
+        var evidence = HveScorers.Evidence(components, events, HveData.PluginDirectory);
+
+        Assert.Equal(HveScorers.StrongEvidence, evidence["skill/python-foundational"].Weight);
+        Assert.Equal("the python-foundational skill files were read by a tool call", evidence["skill/python-foundational"].Note);
+        Assert.Equal(HveScorers.StrongEvidence, evidence["prompt/git-commit-message"].Weight);
+        Assert.Equal("git-commit-message.prompt.md was read by a tool call", evidence["prompt/git-commit-message"].Note);
+        Assert.Equal(HveScorers.StrongEvidence, evidence["instructions/python-script"].Weight);
+        Assert.Equal("python-script.instructions.md was read by a tool call", evidence["instructions/python-script"].Note);
+
+        // Listed in the briefing only: weak. submit is not a read tool and a heredoc mention is not a path.
+        Assert.Equal(HveScorers.WeakEvidence, evidence["skill/documentation"].Weight);
+        Assert.Equal("'documentation' was listed in the briefing but never loaded or read", evidence["skill/documentation"].Note);
+        Assert.Equal(HveScorers.WeakEvidence, evidence["skill/rpi-plan"].Weight);
+        Assert.Equal(HveScorers.WeakEvidence, evidence["skill/rpi-plan-critique"].Weight);
+        Assert.Equal(HveScorers.WeakEvidence, evidence["instructions/markdown"].Weight);
+        Assert.Contains("never read", evidence["instructions/markdown"].Note);
+        Assert.Equal(0, evidence["instructions/python-tests"].Weight);
+        Assert.Equal("no trace of python-tests.instructions.md", evidence["instructions/python-tests"].Note);
+    }
+
+    [Fact]
+    public void skill_token_match_does_not_credit_a_prefix()
+    {
+        var evidence = HveScorers.Evidence(["skill/rpi-plan", "skill/rpi-plan-critique"], [SystemPromptEvent("skills: rpi-plan-critique")], HveData.PluginDirectory);
+
+        Assert.Equal(0, evidence["skill/rpi-plan"].Weight);
+        Assert.Equal("no trace of 'rpi-plan'", evidence["skill/rpi-plan"].Note);
+        Assert.Equal(HveScorers.WeakEvidence, evidence["skill/rpi-plan-critique"].Weight);
+
+        // A path segment is also whole: reading rpi-plan-critique's files is not reading rpi-plan's.
+        var read = HveScorers.Evidence(["skill/rpi-plan", "skill/rpi-plan-critique"], [Bash("1", "cat /opt/hve-core/.github/skills/rpi/rpi-plan-critique/SKILL.md /opt/hve-core/.github/skills/rpi/rpi-plan-critique/references/a.md", "")], HveData.PluginDirectory);
+        Assert.Equal(0, read["skill/rpi-plan"].Weight);
+        Assert.Equal(HveScorers.StrongEvidence, read["skill/rpi-plan-critique"].Weight);
+    }
+
+    [Fact]
+    public void agent_evidence_from_the_generic_briefing()
+    {
+        var embedded = HveScorers.Evidence(["agent/rpi-agent"], [SystemPromptEvent("<agent_instructions>\npreamble\n\n# RPI Agent\nbody\n</agent_instructions>")], HveData.PluginDirectory)["agent/rpi-agent"];
+        var fallback = HveScorers.Evidence(["agent/rpi-agent"], [SystemPromptEvent(HveBriefing.AgentFallbackPrefix + "hve-core:rpi-agent: read its definition first")], HveData.PluginDirectory)["agent/rpi-agent"];
+        var read = HveScorers.Evidence(["agent/rpi-agent"], [Bash("4", "cat /opt/hve-core/.github/agents/hve-core/rpi-agent.agent.md", "")], HveData.PluginDirectory)["agent/rpi-agent"];
+        var none = HveScorers.Evidence(["agent/rpi-agent"], [], HveData.PluginDirectory)["agent/rpi-agent"];
+
+        Assert.Equal(HveScorers.StrongEvidence, embedded.Weight);
+        Assert.Equal("the hve-core:rpi-agent agent body was embedded in the system prompt", embedded.Note);
+        Assert.Equal(HveScorers.WeakEvidence, fallback.Weight);
+        Assert.Equal("the briefing asked for hve-core:rpi-agent but its body was neither embedded nor read", fallback.Note);
+        Assert.Equal(HveScorers.StrongEvidence, read.Weight);
+        Assert.Equal("rpi-agent.agent.md was read by a tool call", read.Note);
+        Assert.Equal(0, none.Weight);
+        Assert.Equal("no trace of hve-core:rpi-agent", none.Note);
+
+        // The fallback names one agent; a sibling with the same prefix is not credited.
+        var sibling = HveScorers.Evidence(["agent/rpi-researcher"], [SystemPromptEvent(HveBriefing.AgentFallbackPrefix + "hve-core:rpi-agent: read its definition first")], HveData.PluginDirectory)["agent/rpi-researcher"];
+        Assert.Equal(0, sibling.Weight);
+    }
+
+    [Fact]
+    public void cli_tool_events_count_like_the_cli_tool_starts()
+    {
+        // The bridge records the CLI's tool calls as ToolEvents too; the rules read them like tool.execution_start lines.
+        var skill = HveScorers.Evidence(["skill/code-review"], [new ToolEvent("5", "skill", new JsonObject { ["skill"] = "code-review" }, "")], HveData.PluginDirectory)["skill/code-review"];
+        var view = HveScorers.Evidence(["instructions/bash"], [new ToolEvent("6", "view", new JsonObject { ["path"] = "/workspace/.github/instructions/bash.instructions.md" }, "")], HveData.PluginDirectory)["instructions/bash"];
+        var task = HveScorers.Evidence(["agent/code-review-functional"], [new ToolEvent("7", "task", new JsonObject { ["agent_type"] = "hve-core:code-review-functional" }, "")], HveData.PluginDirectory)["agent/code-review-functional"];
+        var cliBash = HveScorers.Evidence(["skill/documentation"], [new ToolEvent("8", "bash", new JsonObject { ["command"] = "cat /opt/hve-core/.github/skills/docs/documentation/SKILL.md", ["description"] = "read the skill" }, "")], HveData.PluginDirectory)["skill/documentation"];
+
+        Assert.Equal(HveScorers.StrongEvidence, skill.Weight);
+        Assert.Equal("the skill tool loaded 'code-review'", skill.Note);
+        Assert.Equal(HveScorers.StrongEvidence, view.Weight);
+        Assert.Equal("bash.instructions.md was read by a tool call", view.Note);
+        Assert.Equal(HveScorers.WeakEvidence, task.Weight);
+        Assert.Equal(HveScorers.StrongEvidence, cliBash.Weight);
+    }
+
+    [Fact]
+    public void argument_text_joins_string_values_with_newlines_and_ignores_json_escaping()
+    {
+        Assert.Equal("/x/\nSKILL.md", HveScorers.ArgumentText(new JsonObject { ["command"] = "/x/", ["description"] = "SKILL.md" }));
+        Assert.Equal("", HveScorers.ArgumentText(null));
+        Assert.Equal("", HveScorers.ArgumentText(new JsonObject()));
+        Assert.Equal("a\nb\nc", HveScorers.ArgumentText(new JsonObject { ["outer"] = new JsonObject { ["inner"] = "a", ["n"] = 1 }, ["list"] = new JsonArray("b", new JsonObject { ["deep"] = "c" }), ["flag"] = true }));
+
+        // Two values never join into one path, and an apostrophe stays an apostrophe (ToJsonString would write \u0027).
+        var split = HveScorers.Evidence(["skill/x"], [new ToolEvent("7", "bash", new JsonObject { ["command"] = "/x/", ["description"] = "SKILL.md" }, "")], HveData.PluginDirectory)["skill/x"];
+        var apostrophe = HveScorers.Evidence(["instructions/it's"], [new ToolEvent("8", "view", new JsonObject { ["path"] = "/workspace/.github/instructions/it's.instructions.md" }, "")], HveData.PluginDirectory)["instructions/it's"];
+
+        Assert.Equal(0, split.Weight);
+        Assert.Equal(HveScorers.StrongEvidence, apostrophe.Weight);
+    }
+
+    [Fact]
+    public async Task artefact_used_scores_a_generic_transcript_from_the_sample_context()
+    {
+        // The scorer reads the ambient sample transcript, where the engine records the bash ToolEvents and model events.
+        var transcript = new Transcript();
+        transcript.Add(SystemPromptEvent("HVE plugin directory: /opt/hve-core\n- skills: (python-foundational, documentation)\n- instruction files: (python-script.instructions.md)"));
+        transcript.Add(Bash("1", "cat '/opt/hve-core/.github/skills/coding-standards/python-foundational/SKILL.md' '.github/instructions/python-script.instructions.md'", "---\nname: python-foundational\n---\n"));
+        transcript.Add(Bash("2", "mkdir -p textkit && cat > textkit/slug.py <<'EOF'\nx = 1\nEOF\n", ""));
+        var (_, scope) = TestSupport.Begin(new FakeSandboxEnvironment(), transcript: transcript);
+        using (scope)
+        {
+            var score = await HveScorers.ArtefactUsed().Score(TestSupport.State(TestSupport.Metadata(components: ["skill/python-foundational", "instructions/python-script", "skill/documentation"])), new Target("t"), CancellationToken.None);
+
+            Assert.Equal((1.0 + 1.0 + 0.5) / 3, ((ScoreValue.Num)score.Value).Value, 6);
+            Assert.Equal("skill/python-foundational, instructions/python-script, skill/documentation", score.Answer);
+            Assert.Equal(1.0, score.Metadata!["skill/python-foundational"]);
+            Assert.Equal(1.0, score.Metadata["instructions/python-script"]);
+            Assert.Equal(0.5, score.Metadata["skill/documentation"]);
+            Assert.Contains("the python-foundational skill files were read by a tool call", score.Explanation);
+        }
+    }
+
+    [Fact]
+    public void a_write_a_description_and_a_failed_read_are_not_reads()
+    {
+        // Under the generic harness every write is a bash call too, and the plugin's own instructions tell the agent to cite
+        // the files it worked from: a research note that names an instruction file and a skill path inside a heredoc is not a
+        // read. Neither is the CLI's prose description of a command, nor a cat that came back "No such file or directory".
+        var wrote = HveScorers.Evidence(
+            ["instructions/python-script", "skill/rpi-plan"],
+            [Bash("1", "mkdir -p .copilot-tracking/research && cat > .copilot-tracking/research/notes.md <<'EOF'\nFollowing python-script.instructions.md and /opt/hve-core/.github/skills/rpi/rpi-plan/SKILL.md\nEOF\n", "")],
+            HveData.PluginDirectory);
+
+        Assert.Equal(0, wrote["instructions/python-script"].Weight);
+        Assert.Equal(0, wrote["skill/rpi-plan"].Weight);
+
+        var described = HveScorers.Evidence(
+            ["instructions/python-script"],
+            [new ToolEvent("2", "bash", new JsonObject { ["command"] = "ls -la", ["description"] = "read python-script.instructions.md" }, "")],
+            HveData.PluginDirectory);
+        Assert.Equal(0, described["instructions/python-script"].Weight);
+
+        // A call the engine marked as failed, and a call that succeeded but whose result reports that very path missing.
+        var errored = HveScorers.Evidence(
+            ["skill/python-foundational"],
+            [new ToolEvent("3", "bash", new JsonObject { ["cmd"] = "cat /opt/hve-core/.github/skills/python-foundational/SKILL.md" }, "", new ToolCallError("unknown", "exit code 1"))],
+            HveData.PluginDirectory);
+        Assert.Equal(0, errored["skill/python-foundational"].Weight);
+
+        // cat a b with b missing: a keeps its credit, b loses it.
+        var partial = HveScorers.Evidence(
+            ["instructions/python-script", "skill/python-foundational"],
+            [Bash("4", "cat '.github/instructions/python-script.instructions.md' '/opt/hve-core/.github/skills/python-foundational/SKILL.md'", "# python scripts\ncat: /opt/hve-core/.github/skills/python-foundational/SKILL.md: No such file or directory")],
+            HveData.PluginDirectory);
+        Assert.Equal(HveScorers.StrongEvidence, partial["instructions/python-script"].Weight);
+        Assert.Equal(0, partial["skill/python-foundational"].Weight);
+    }
+
+    [Fact]
+    public void a_read_that_never_spelled_the_path_is_recognised_from_the_result()
+    {
+        // cd + a relative cat, a glob over every skill and a find -exec all read the file without naming its path in one
+        // argument; what came back identifies it (the SKILL.md front matter, the agent body's H1).
+        var relative = HveScorers.Evidence(
+            ["skill/python-foundational"],
+            [Bash("1", "cd /opt/hve-core/.github/skills/coding-standards/python-foundational && cat SKILL.md references/*.md", "---\nname: python-foundational\ndescription: python\n---\n# Python")],
+            HveData.PluginDirectory)["skill/python-foundational"];
+        Assert.Equal(HveScorers.StrongEvidence, relative.Weight);
+        Assert.Equal("the python-foundational skill's SKILL.md came back in a tool result", relative.Note);
+
+        var globbed = HveScorers.Evidence(
+            ["skill/rpi-plan", "skill/rpi-plan-critique"],
+            [Bash("2", "cat \"/opt/hve-core\"/.github/skills/*/*/SKILL.md", "---\nname: rpi-plan\n---\n# RPI Plan\n---\nname: rpi-plan-critique\n---\n# RPI Plan Critique")],
+            HveData.PluginDirectory);
+        Assert.Equal(HveScorers.StrongEvidence, globbed["skill/rpi-plan"].Weight);
+        Assert.Equal(HveScorers.StrongEvidence, globbed["skill/rpi-plan-critique"].Weight);
+
+        var found = HveScorers.Evidence(
+            ["agent/rpi-agent"],
+            [Bash("3", "find /opt/hve-core -name '*.agent.md' -exec cat {} +", "# RPI Agent\nresearch, plan, implement")],
+            HveData.PluginDirectory)["agent/rpi-agent"];
+        Assert.Equal(HveScorers.StrongEvidence, found.Weight);
+        Assert.Equal("the hve-core:rpi-agent agent body came back in a tool result", found.Note);
+    }
+
+    private static ToolEvent Bash(string id, string cmd, string result) => new(id, "bash", new JsonObject { ["cmd"] = cmd }, result);
 
     private static InfoEvent Cli(string type, JsonObject data) => new(CopilotCliEvents.Source, new JsonObject { ["type"] = type, ["data"] = data });
 }

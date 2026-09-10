@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using InspectAzureAI.Eval.Context;
 using InspectAzureAI.Eval.Model;
 using InspectAzureAI.Eval.Sandbox;
@@ -11,12 +12,13 @@ using InspectAzureAI.Swe.CopilotCli;
 namespace InspectAzureAI.HveDemo.Components;
 
 using Model = InspectAzureAI.Eval.Model.Model;
+using ToolCall = (string Name, System.Text.Json.Nodes.JsonObject? Arguments, string? Result, bool Failed);
 
 /// <summary>
 /// COMPONENT: Scorer.
 ///
 /// A scorer is a delegate <c>(TaskState, Target, CancellationToken) -> Score</c> plus the metrics that aggregate its
-/// per-sample scores. Every task runs four scorers side by side, each answering a different question about the run:
+/// per-sample scores. Every task runs up to four scorers side by side, each answering a different question about the run:
 ///
 /// <list type="bullet">
 ///   <item><see cref="ExecCheck"/> (<c>hve_check</c>): did the artefact pass? Restores the sample's check assets from
@@ -31,14 +33,16 @@ using Model = InspectAzureAI.Eval.Model.Model;
 ///   <item><see cref="ArtefactUsed"/> (<c>hve_artefact_used</c>): did the run actually use the HVE plugin pieces it was
 ///   designed around? A custom scorer over the transcript: the <c>copilot_cli</c> info events (the CLI's own JSONL: skill
 ///   invocations, sub-agent starts, instruction files viewed) and the bridged model events (whether the custom agent's
-///   body reached the system prompt). Reports the fraction of <c>metadata.hve_components</c> with evidence.</item>
+///   body reached the system prompt), or, under the generic harness, Inspect's own <see cref="ToolEvent"/>s of the
+///   <c>bash</c> tool and the briefing in the model events. Reports the fraction of <c>metadata.hve_components</c> with
+///   evidence. Left out of the task under <c>--framework none</c> (there is nothing to use).</item>
 /// </list>
 /// The first three report <c>accuracy</c> and <c>stderr</c>; the last reports <c>mean</c> and <c>stderr</c>. The suite
 /// adds a <see cref="Metrics.Grouped"/> of each scorer's own headline metric per <c>kind</c> (see <see cref="All"/>),
 /// so <c>hve_artefact_used</c> keeps its <c>mean</c> label in every task instead of being relabelled by a task-level
 /// override.
 /// </summary>
-public static class HveScorers
+public static partial class HveScorers
 {
     public const string ExecCheckName = "hve_check";
 
@@ -169,7 +173,7 @@ public static class HveScorers
     /// <summary>
     /// The built-in <see cref="Scorers.Includes"/> scorer (the CTF docs' scorer) applied with a per-sample target: the
     /// artefact path from <c>metadata.artefact</c> instead of the sample's descriptive target. Correct when the agent's
-    /// final message mentions the file it produced, which both system messages ask for.
+    /// final message mentions the file it produced, which every briefing (all four cells) asks for.
     /// </summary>
     public static ScorerDef ArtefactReported()
     {
@@ -255,15 +259,36 @@ public static class HveScorers
     public sealed record ComponentEvidence(double Weight, string Note);
 
     /// <summary>
-    /// The evidence rules, one per component kind, over the sample's transcript events:
+    /// The evidence rules, one per component kind, over the sample's transcript events. The two harnesses leave two
+    /// different trails, so every rule reads both: the Copilot CLI's own JSONL (the <c>copilot_cli</c> info events:
+    /// <c>tool.execution_start</c>, <c>session.skills_loaded</c>, <c>subagent.started</c>) and Inspect's own
+    /// <see cref="ToolEvent"/>s (the generic harness's <c>bash</c> tool; under the copilot harness the bridge records the
+    /// CLI's calls this way too, which is harmless because every rule asks "any"). Per component the first rule that
+    /// matches wins; strong is <see cref="StrongEvidence"/>, weak <see cref="WeakEvidence"/>, otherwise 0:
     /// <list type="bullet">
-    ///   <item><c>skill/x</c> and <c>prompt/x</c>: strong when a <c>tool.execution_start</c> line of the CLI invoked the <c>skill</c>
-    ///   tool for it; weak when <c>session.skills_loaded</c> announced it.</item>
-    ///   <item><c>agent/x</c>: strong when a <c>subagent.started</c> line names <c>hve-core:x</c> or a bridged model event's system
-    ///   prompt embeds the agent's markdown body (what <c>--agent</c> does); weak when the <c>task</c> tool was asked for it.</item>
-    ///   <item><c>instructions/x</c>: strong when the CLI viewed or read <c>x.instructions.md</c> (a <c>view</c>, <c>bash</c> or
-    ///   <c>grep</c> call naming it); weak when a model event's system prompt listed the file for the model to read.</item>
+    ///   <item><c>skill/x</c>: strong when the <c>skill</c> tool was invoked for it, a read tool (<c>view</c>, <c>bash</c>,
+    ///   <c>grep</c>, <c>glob</c>) named <c>/x/SKILL.md</c>, <c>/x/references/</c> or <c>/x/templates/</c>, or a read tool's
+    ///   result carries the skill's front matter line <c>name: x</c> (a <c>cd</c> then a relative <c>cat</c>, a globbed
+    ///   <c>*/*/SKILL.md</c> or a <c>find -exec cat</c> all read the file without naming its path); weak when
+    ///   <c>session.skills_loaded</c> announced it or a system prompt named it as a whole token (so <c>rpi-plan</c> is not
+    ///   credited for <c>rpi-plan-critique</c>).</item>
+    ///   <item><c>prompt/x</c>: strong when the <c>skill</c> tool was invoked for <c>x.prompt</c> or a read tool named
+    ///   <c>/x.prompt.md</c>; weak when <c>x.prompt</c> was announced or listed in a system prompt.</item>
+    ///   <item><c>agent/x</c>: strong when a <c>subagent.started</c> line names <c>hve-core:x</c>, a system prompt embeds the
+    ///   agent's markdown body (what the CLI's <c>--agent</c> and the generic HVE briefing both do), a read tool named
+    ///   <c>/x.agent.md</c>, or a read tool's result carries the body's first line; weak when the <c>task</c> tool was asked
+    ///   for it, or the briefing told the agent to read its definition (<see cref="HveBriefing.AgentFallbackPrefix"/>).</item>
+    ///   <item><c>instructions/x</c>: strong when a read tool named <c>x.instructions.md</c>; weak when a system prompt listed
+    ///   the file for the model to read.</item>
     /// </list>
+    /// What counts as "named" a path is deliberately narrow, because under the generic harness every write is a <c>bash</c>
+    /// call too: the path rules match over the call's arguments with heredoc bodies cut out and the CLI's <c>description</c>
+    /// field ignored (<see cref="ReadText"/>), so a research note that cites <c>python-script.instructions.md</c> inside a
+    /// <c>cat &gt; ... &lt;&lt;'EOF'</c> is not a read, and never over the arguments' JSON text (<see cref="ArgumentText"/>).
+    /// A read that failed does not count either: a call the engine or the CLI marked as failed, or one whose result reports
+    /// <c>No such file or directory</c> for the very path (a wrong <c>--plugin-dir</c>, a mistyped skill directory), so a
+    /// <c>cat a b</c> with <c>b</c> missing still credits <c>a</c>. The briefings list every component they provision, so a
+    /// run that reads nothing still scores the weak floor (the README quotes it); a compliant run scores 1.0.
     /// </summary>
     public static IReadOnlyDictionary<string, ComponentEvidence> Evidence(IReadOnlyList<string> components, IReadOnlyList<TranscriptEvent> events, string pluginDirectory)
     {
@@ -273,6 +298,10 @@ public static class HveScorers
         var cli = events.OfType<InfoEvent>()
             .Where(e => e.Source == CopilotCliEvents.Source && e.Data is JsonObject)
             .Select(e => (JsonObject)e.Data!)
+            .ToList();
+        // The CLI's start lines carry no outcome (never failed, no result); Inspect's ToolEvents carry both.
+        var toolCalls = ToolStarts(cli)
+            .Concat(events.OfType<ToolEvent>().Select(e => new ToolCall(e.Function, e.Arguments, e.Result, e.Error is not null || e.Failed == true)))
             .ToList();
         var systemPrompts = events.OfType<ModelEvent>()
             .SelectMany(e => e.Input.OfType<ChatMessageSystem>().Select(m => m.Text))
@@ -287,10 +316,10 @@ public static class HveScorers
             var name = separator > 0 ? component[(separator + 1)..] : "";
             result[component] = kind switch
             {
-                "skill" => SkillEvidence(cli, name, name),
-                "prompt" => SkillEvidence(cli, name + ".prompt", name),
-                "agent" => AgentEvidence(cli, systemPrompts, name, pluginDirectory),
-                "instructions" => InstructionsEvidence(cli, systemPrompts, name),
+                "skill" => SkillEvidence(cli, toolCalls, systemPrompts, name),
+                "prompt" => PromptEvidence(cli, toolCalls, systemPrompts, name),
+                "agent" => AgentEvidence(cli, toolCalls, systemPrompts, name, pluginDirectory),
+                "instructions" => InstructionsEvidence(toolCalls, systemPrompts, name),
                 _ => new ComponentEvidence(0, $"unknown component kind '{kind}'"),
             };
         }
@@ -298,23 +327,139 @@ public static class HveScorers
         return result;
     }
 
-    private static ComponentEvidence SkillEvidence(IReadOnlyList<JsonObject> cli, string skillName, string alias)
+    /// <summary>
+    /// The text the path rules match: every string value of a tool's arguments object (recursively), joined with newlines,
+    /// so a path split across values never joins into a false match and no JSON escaping (<c>'</c> as <c>\u0027</c>) gets
+    /// in the way. Null (a call without arguments) is the empty string.
+    /// </summary>
+    public static string ArgumentText(JsonObject? arguments)
     {
-        var invoked = ToolStarts(cli).Any(call => call.Name == "skill" && (Str(call.Arguments?["skill"]) is { } s && (s == skillName || s == alias || s.EndsWith(":" + skillName, StringComparison.Ordinal))));
-        if (invoked)
+        if (arguments is null)
+        {
+            return "";
+        }
+
+        var values = new List<string>();
+        Collect(arguments, values);
+        return string.Join("\n", values);
+    }
+
+    /// <summary>
+    /// The text the path rules actually match, narrower than <see cref="ArgumentText"/> in two ways that keep a write from
+    /// looking like a read: the top-level <c>description</c> property (the CLI's bash tool carries prose about the command
+    /// there) is left out, and every heredoc body (from <c>&lt;&lt;TAG</c> to the terminator line) is cut out of the command,
+    /// so a file the agent writes may cite instruction files and skill paths without being credited for reading them.
+    /// </summary>
+    private static string ReadText(JsonObject? arguments)
+    {
+        if (arguments is null)
+        {
+            return "";
+        }
+
+        var values = new List<string>();
+        foreach (var property in arguments)
+        {
+            if (property.Key == "description")
+            {
+                continue;
+            }
+
+            Collect(property.Value, values);
+        }
+
+        return HereDocBody().Replace(string.Join("\n", values), " ");
+    }
+
+    private static void Collect(JsonNode? node, List<string> values)
+    {
+        switch (node)
+        {
+            case JsonObject obj:
+                foreach (var property in obj)
+                {
+                    Collect(property.Value, values);
+                }
+
+                break;
+            case JsonArray array:
+                foreach (var item in array)
+                {
+                    Collect(item, values);
+                }
+
+                break;
+            case JsonValue value when value.TryGetValue<string>(out var text):
+                values.Add(text);
+                break;
+        }
+    }
+
+    /// <summary>
+    /// The tools whose arguments name the files they read (the CLI's <c>view</c>/<c>grep</c>/<c>glob</c> and both harnesses'
+    /// <c>bash</c>); a path in one of their calls is evidence the file was read. <c>submit</c> is deliberately not one: a
+    /// summary that names a skill is not a read.
+    /// </summary>
+    private static readonly string[] ReadTools = ["view", "bash", "grep", "glob"];
+
+    private static ComponentEvidence SkillEvidence(IReadOnlyList<JsonObject> cli, IReadOnlyList<ToolCall> toolCalls, IReadOnlyList<string> systemPrompts, string name)
+    {
+        if (SkillInvoked(toolCalls, name, name))
+        {
+            return new ComponentEvidence(StrongEvidence, $"the skill tool loaded '{name}'");
+        }
+
+        // The leading slash makes the name a whole path segment: /rpi-plan/SKILL.md never matches under rpi-plan-critique/.
+        if (ReadPathMatches(toolCalls, "/" + Regex.Escape(name) + @"/(SKILL\.md|references/|templates/)"))
+        {
+            return new ComponentEvidence(StrongEvidence, $"the {name} skill files were read by a tool call");
+        }
+
+        // Every vendored SKILL.md opens with "name: <skill>" front matter, so a read that never spelled the path (cd + cat,
+        // a glob over every skill, find -exec) is still recognised from what came back; whole-line, so rpi-plan-critique's
+        // front matter does not credit rpi-plan.
+        if (ReadResultMatches(toolCalls, @"(?m)^name:[ \t]*" + Regex.Escape(name) + @"[ \t]*\r?$"))
+        {
+            return new ComponentEvidence(StrongEvidence, $"the {name} skill's SKILL.md came back in a tool result");
+        }
+
+        if (SkillAnnounced(cli, name, name))
+        {
+            return new ComponentEvidence(WeakEvidence, $"'{name}' was announced in session.skills_loaded but never invoked");
+        }
+
+        // A whole-token match, so a briefing that lists rpi-plan-critique does not also credit rpi-plan.
+        var token = @"(?<![\w-])" + Regex.Escape(name) + @"(?![\w-])";
+        return systemPrompts.Any(prompt => Regex.IsMatch(prompt, token))
+            ? new ComponentEvidence(WeakEvidence, $"'{name}' was listed in the briefing but never loaded or read")
+            : new ComponentEvidence(0, $"no trace of '{name}'");
+    }
+
+    private static ComponentEvidence PromptEvidence(IReadOnlyList<JsonObject> cli, IReadOnlyList<ToolCall> toolCalls, IReadOnlyList<string> systemPrompts, string name)
+    {
+        // The CLI registers a prompt command as the skill "<name>.prompt"; the generic harness reads <name>.prompt.md.
+        var skillName = name + ".prompt";
+        if (SkillInvoked(toolCalls, skillName, name))
         {
             return new ComponentEvidence(StrongEvidence, $"the skill tool loaded '{skillName}'");
         }
 
-        var loaded = cli.Where(line => Type(line) == "session.skills_loaded")
-            .SelectMany(line => (line["data"]?["skills"] as JsonArray) ?? [])
-            .Any(skill => Str(skill?["name"]) is { } n && (n == skillName || n == alias));
-        return loaded
-            ? new ComponentEvidence(WeakEvidence, $"'{skillName}' was announced in session.skills_loaded but never invoked")
+        if (ReadPathMatches(toolCalls, "/" + Regex.Escape(name) + @"\.prompt\.md"))
+        {
+            return new ComponentEvidence(StrongEvidence, $"{name}.prompt.md was read by a tool call");
+        }
+
+        if (SkillAnnounced(cli, skillName, name))
+        {
+            return new ComponentEvidence(WeakEvidence, $"'{skillName}' was announced in session.skills_loaded but never invoked");
+        }
+
+        return systemPrompts.Any(prompt => prompt.Contains(skillName, StringComparison.Ordinal))
+            ? new ComponentEvidence(WeakEvidence, $"'{skillName}' was listed in the briefing but never loaded or read")
             : new ComponentEvidence(0, $"no trace of '{skillName}'");
     }
 
-    private static ComponentEvidence AgentEvidence(IReadOnlyList<JsonObject> cli, IReadOnlyList<string> systemPrompts, string agentName, string pluginDirectory)
+    private static ComponentEvidence AgentEvidence(IReadOnlyList<JsonObject> cli, IReadOnlyList<ToolCall> toolCalls, IReadOnlyList<string> systemPrompts, string agentName, string pluginDirectory)
     {
         var qualified = "hve-core:" + agentName;
         var started = cli.Any(line => Type(line) == "subagent.started" && Str(line["data"]?["agentName"]) == qualified);
@@ -331,17 +476,34 @@ public static class HveScorers
             return new ComponentEvidence(StrongEvidence, $"the {qualified} agent body was embedded in the system prompt");
         }
 
-        var requested = ToolStarts(cli).Any(call => call.Name == "task" && Str(call.Arguments?["agent_type"]) == qualified);
-        return requested
-            ? new ComponentEvidence(WeakEvidence, $"the task tool asked for {qualified} but no sub-agent start was recorded")
+        if (ReadPathMatches(toolCalls, "/" + Regex.Escape(agentName) + @"\.agent\.md"))
+        {
+            return new ComponentEvidence(StrongEvidence, $"{agentName}.agent.md was read by a tool call");
+        }
+
+        // The same whole-line marker over what a read tool returned: a find -exec cat or a glob over the agents directory.
+        if (marker is not null && toolCalls.Any(call => IsReadTool(call) && call.Result is { } result && ContainsLine(result, marker)))
+        {
+            return new ComponentEvidence(StrongEvidence, $"the {qualified} agent body came back in a tool result");
+        }
+
+        var requested = toolCalls.Any(call => call.Name == "task" && Str(call.Arguments?["agent_type"]) == qualified);
+        if (requested)
+        {
+            return new ComponentEvidence(WeakEvidence, $"the task tool asked for {qualified} but no sub-agent start was recorded");
+        }
+
+        // The generic HVE briefing's fallback when the host could not embed the body: it asks the agent to read it.
+        var asked = systemPrompts.Any(prompt => prompt.Contains(HveBriefing.AgentFallbackPrefix + qualified, StringComparison.Ordinal));
+        return asked
+            ? new ComponentEvidence(WeakEvidence, $"the briefing asked for {qualified} but its body was neither embedded nor read")
             : new ComponentEvidence(0, $"no trace of {qualified}");
     }
 
-    private static ComponentEvidence InstructionsEvidence(IReadOnlyList<JsonObject> cli, IReadOnlyList<string> systemPrompts, string name)
+    private static ComponentEvidence InstructionsEvidence(IReadOnlyList<ToolCall> toolCalls, IReadOnlyList<string> systemPrompts, string name)
     {
         var file = name + ".instructions.md";
-        var read = ToolStarts(cli).Any(call => call.Name is "view" or "bash" or "grep" or "glob" && call.Arguments?.ToJsonString().Contains(file, StringComparison.Ordinal) == true);
-        if (read)
+        if (ReadPathMatches(toolCalls, Regex.Escape(file)))
         {
             return new ComponentEvidence(StrongEvidence, $"{file} was read by a tool call");
         }
@@ -351,6 +513,42 @@ public static class HveScorers
             ? new ComponentEvidence(WeakEvidence, $"{file} was listed in the system prompt but never read")
             : new ComponentEvidence(0, $"no trace of {file}");
     }
+
+    /// <summary>Whether the <c>skill</c> tool was called for <paramref name="skillName"/> (or its <paramref name="alias"/>, or a <c>plugin:name</c> spelling of it), by either harness.</summary>
+    private static bool SkillInvoked(IReadOnlyList<ToolCall> toolCalls, string skillName, string alias) =>
+        toolCalls.Any(call => call.Name == "skill" && Str(call.Arguments?["skill"]) is { } s && (s == skillName || s == alias || s.EndsWith(":" + skillName, StringComparison.Ordinal)));
+
+    /// <summary>Whether the CLI's <c>session.skills_loaded</c> line named the skill (the CLI lists every plugin skill at start-up).</summary>
+    private static bool SkillAnnounced(IReadOnlyList<JsonObject> cli, string skillName, string alias) =>
+        cli.Where(line => Type(line) == "session.skills_loaded")
+            .SelectMany(line => (line["data"]?["skills"] as JsonArray) ?? [])
+            .Any(skill => Str(skill?["name"]) is { } n && (n == skillName || n == alias));
+
+    /// <summary>
+    /// Whether a read tool named a path matching <paramref name="pattern"/> (over <see cref="ReadText"/>) and the read
+    /// did not fail: the call itself succeeded and its result does not report that very path as missing.
+    /// </summary>
+    private static bool ReadPathMatches(IReadOnlyList<ToolCall> toolCalls, string pattern) =>
+        toolCalls.Any(call => IsReadTool(call) && !call.Failed && Regex.IsMatch(ReadText(call.Arguments), pattern) && !ReportsMissing(call.Result, pattern));
+
+    /// <summary>Whether a read tool's result (the text the model saw) matches <paramref name="pattern"/>; the CLI's start lines have no result.</summary>
+    private static bool ReadResultMatches(IReadOnlyList<ToolCall> toolCalls, string pattern) =>
+        toolCalls.Any(call => IsReadTool(call) && call.Result is { } result && Regex.IsMatch(result, pattern));
+
+    /// <summary>
+    /// Whether <paramref name="result"/> has a <c>No such file or directory</c> line naming a path that matches
+    /// <paramref name="pattern"/> (the shell's <c>cat: /opt/x/SKILL.md: No such file or directory</c>), so that in
+    /// <c>cat a b</c> with <c>b</c> missing only <c>b</c> loses its credit.
+    /// </summary>
+    private static bool ReportsMissing(string? result, string pattern) =>
+        result is not null && result.Split('\n').Any(line => line.Contains("No such file or directory", StringComparison.Ordinal) && Regex.IsMatch(line, pattern));
+
+    private static bool IsReadTool(ToolCall call) => ReadTools.Contains(call.Name, StringComparer.Ordinal);
+
+    // A heredoc from its <<TAG (quoted or not, <<- allowed, never a <<< here-string) through the line holding the bare
+    // terminator; an unterminated one runs to the end of the command. Replaced by a space so the surrounding tokens stay apart.
+    [GeneratedRegex(@"(?<!<)<<-?[ \t]*(['""]?)(\w+)\1[^\n]*\n(?:(?:[\s\S]*?\n)?[ \t]*\2[ \t]*(?=\n|$)|[\s\S]*$)")]
+    private static partial Regex HereDocBody();
 
     /// <summary>Whether <paramref name="text"/> has a line equal (after trimming) to <paramref name="line"/>.</summary>
     public static bool ContainsLine(string text, string line)
@@ -390,9 +588,10 @@ public static class HveScorers
         return lines.Skip(index).Select(line => line.Trim()).FirstOrDefault(line => line.Length > 0);
     }
 
-    private static IEnumerable<(string Name, JsonObject? Arguments)> ToolStarts(IReadOnlyList<JsonObject> cli) =>
+    /// <summary>The CLI's own record of its tool calls: one <c>tool.execution_start</c> line per call, with the tool name and its arguments.</summary>
+    private static IEnumerable<ToolCall> ToolStarts(IReadOnlyList<JsonObject> cli) =>
         cli.Where(line => Type(line) == "tool.execution_start")
-            .Select(line => (Str(line["data"]?["toolName"]) ?? "", line["data"]?["arguments"] as JsonObject));
+            .Select(line => new ToolCall(Str(line["data"]?["toolName"]) ?? "", line["data"]?["arguments"] as JsonObject, null, false));
 
     private static string? Type(JsonObject line) => Str(line["type"]);
 
