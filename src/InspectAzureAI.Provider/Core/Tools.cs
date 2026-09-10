@@ -223,8 +223,20 @@ public sealed record ToolCall(string Id, string Function, JsonObject Arguments)
     /// <summary>Error which occurred parsing tool call arguments (reported back to the model).</summary>
     public string? ParseError { get; init; }
 
+    /// <summary>
+    /// Port of <c>ToolCall.view</c>: a custom rendering of the call for the log viewer, written inside
+    /// <c>tool_calls[*]</c> as <c>view</c> and omitted when null. Never sent to a model provider.
+    /// </summary>
+    public ToolCallContent? View { get; init; }
+
     /// <summary>Call type: <c>function</c> or <c>custom</c>.</summary>
     public string Type { get; init; } = "function";
+}
+
+/// <summary>Port of <c>tool/_tool_call.py</c> <c>ToolCallContent</c>: a custom rendering of a tool call (<see cref="Format"/> is "text" or "markdown").</summary>
+public sealed record ToolCallContent(string Format, string Content = "")
+{
+    public string? Title { get; init; }
 }
 
 /// <summary>Error raised by a tool call (port of <c>ToolCallError</c>, <c>_tool_call.py</c>).</summary>

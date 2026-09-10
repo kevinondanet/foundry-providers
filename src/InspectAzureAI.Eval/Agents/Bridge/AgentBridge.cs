@@ -39,6 +39,8 @@ public sealed class AgentBridge
 
     private int _lastMessageCount;
 
+    private volatile BridgedToolRegistry _bridgedTools = BridgedToolRegistry.Empty;
+
     public AgentBridge(
         AgentState state,
         Model model,
@@ -47,7 +49,9 @@ public sealed class AgentBridge
         bool forwardGenerationConfig = false,
         IModelEventSink? modelEventSink = null,
         IReadOnlyList<ApprovalPolicy>? approval = null,
-        CachePolicy? cache = null)
+        CachePolicy? cache = null,
+        GenerateFilter? filter = null,
+        bool webSearch = false)
     {
         ArgumentNullException.ThrowIfNull(state);
         ArgumentNullException.ThrowIfNull(model);
@@ -59,6 +63,8 @@ public sealed class AgentBridge
         ModelEventSink = modelEventSink;
         Approval = approval;
         Cache = cache;
+        Filter = filter;
+        WebSearch = webSearch;
 
         var initialMessages = state.Messages.Where(m => m.Role != "system").ToList();
         _initialFps = initialMessages.Select(MessageFingerprint.Of).ToList();
@@ -102,6 +108,49 @@ public sealed class AgentBridge
     /// the .NET showcase's <c>--cache</c> flag reaches the bridged Claude Code CLI through it).
     /// </summary>
     public CachePolicy? Cache { get; }
+
+    /// <summary>
+    /// Port of <c>filter</c>: inspects each bridged generation attempt before the model is called, and may answer it
+    /// (<see cref="GenerateFilterResult.Output"/>, the model is not called) or replace its inputs
+    /// (<see cref="GenerateFilterResult.Input"/>). It sees the tools after the web-search grant is applied.
+    /// </summary>
+    public GenerateFilter? Filter { get; }
+
+    /// <summary>
+    /// Port of the <c>sandbox_agent_bridge(web_search=...)</c> grant: whether a web search tool the scaffold declares
+    /// may reach the served model (<see cref="BridgeBuiltinTools.ApplyGrants"/>). False (the default) withholds it.
+    /// </summary>
+    public bool WebSearch { get; }
+
+    /// <summary>
+    /// Bridged host tools served by a <see cref="SandboxAgentBridge"/> wrapping this bridge (<see cref="BridgedToolRegistry.Empty"/>
+    /// until one is attached). <see cref="GenerateAsync"/> registers execution grants on it for approved tool calls
+    /// (port of <c>agent/_bridge/util.py</c> <c>bridge.register_tool_execution_grants</c>).
+    /// </summary>
+    public BridgedToolRegistry BridgedTools => _bridgedTools;
+
+    /// <summary>
+    /// Attaches the bridged tools a <see cref="SandboxAgentBridge"/> serves. Attaching an empty registry keeps the
+    /// current one; attaching a non-empty registry when one is already attached is an <see cref="InvalidOperationException"/>.
+    /// </summary>
+    internal void AttachBridgedTools(BridgedToolRegistry registry)
+    {
+        ArgumentNullException.ThrowIfNull(registry);
+        lock (_sync)
+        {
+            if (registry.Count == 0)
+            {
+                return;
+            }
+
+            if (_bridgedTools.Count > 0)
+            {
+                throw new InvalidOperationException("Bridged tools are already attached to this agent bridge; serve them from a single SandboxAgentBridge.");
+            }
+
+            _bridgedTools = registry;
+        }
+    }
 
     /// <summary>
     /// Port of <c>request_terminate</c>: terminates the sample from a bridged generation by throwing
@@ -152,15 +201,22 @@ public sealed class AgentBridge
             TopLogprobs = null,
             ReasoningEffort = null,
             ReasoningTokens = null,
+            ReasoningSummary = null,
+            Verbosity = null,
+            Effort = null,
+            LogitBias = null,
         };
     }
 
     /// <summary>
     /// Resolve the requested model name (alias → Model; "inspect" or "inspect/&lt;x&gt;" or unknown → the default
-    /// model), apply config precedence, generate (retrying refusals up to retryRefusals), approve the tool calls
-    /// the scaffold is about to run (a rejection is replayed to the model and generation retried, so the scaffold
-    /// never sees the rejected response; <see cref="BridgeApproval.MaxConsecutiveRejections"/> rejections in a
-    /// row terminate the sample), then track state against the original input.
+    /// model), apply config precedence, then per attempt: apply the web-search grant, run the <see cref="Filter"/>
+    /// (which may answer or rewrite the attempt), generate (retrying refusals up to retryRefusals, the filter
+    /// re-running each time), approve the tool calls the scaffold is about to run (a rejection is replayed to the model
+    /// and generation retried, so the scaffold never sees the rejected response;
+    /// <see cref="BridgeApproval.MaxConsecutiveRejections"/> rejections in a row terminate the sample), register
+    /// execution grants for approved calls to <see cref="BridgedTools"/>, and finally track state against the
+    /// original input.
     /// </summary>
     public async Task<ModelOutput> GenerateAsync(
         string requestedModel,
@@ -180,16 +236,43 @@ public sealed class AgentBridge
         var config = ResolveGenerateConfig(model, ForwardGenerationConfig ? requestConfig : ClearGenerationParams(requestConfig));
         var messages = ApplyMessageIds(input);
         // rejections accumulate onto the model's input; the scaffold's conversation (and state tracking) keep the original
-        var generateInput = messages;
+        var originalInput = messages;
 
         var refusals = 0;
         var rejections = 0;
         ModelOutput output;
         while (true)
         {
-            using (ModelEventSink is null ? null : ModelEventSinks.Install(ModelEventSink))
+            // every attempt starts over from the originals (rejections included): a filter's rewrite is per attempt
+            var attemptInput = originalInput;
+            var (attemptTools, attemptToolChoice) = BridgeBuiltinTools.ApplyGrants(model, tools, toolChoice, WebSearch);
+            var attemptConfig = config;
+
+            ModelOutput? filtered = null;
+            if (Filter is { } filter)
             {
-                output = await model.GenerateAsync(generateInput, tools, toolChoice, config, cache: Cache, cancellationToken: cancellationToken).ConfigureAwait(false);
+                var result = await filter(model, attemptInput, attemptTools, attemptToolChoice, attemptConfig, cancellationToken).ConfigureAwait(false);
+                if (result?.Output is { } filterOutput)
+                {
+                    filtered = filterOutput;
+                }
+                else if (result?.Input is { } replacement)
+                {
+                    (attemptInput, attemptTools, attemptToolChoice, attemptConfig) = (replacement.Input, replacement.Tools, replacement.ToolChoice, replacement.Config);
+                }
+            }
+
+            if (filtered is not null)
+            {
+                // Python does not call model.generate here, so no ModelEvent is recorded
+                output = filtered;
+            }
+            else
+            {
+                using (ModelEventSink is null ? null : ModelEventSinks.Install(ModelEventSink))
+                {
+                    output = await model.GenerateAsync(attemptInput, attemptTools, attemptToolChoice, attemptConfig, cache: Cache, cancellationToken: cancellationToken).ConfigureAwait(false);
+                }
             }
 
             if (!output.Empty && output.StopReason == StopReason.ContentFilter && RetryRefusals is { } limit && refusals < limit)
@@ -198,10 +281,11 @@ public sealed class AgentBridge
                 continue;
             }
 
-            var reviewed = await BridgeApproval.ApplyAsync(this, output, generateInput, cancellationToken).ConfigureAwait(false);
+            var reviewed = await BridgeApproval.ApplyAsync(this, output, attemptInput, cancellationToken).ConfigureAwait(false);
             if (reviewed.Rejection is null)
             {
                 output = reviewed.Output;
+                RegisterBridgedToolGrants(output);
                 break;
             }
 
@@ -211,11 +295,33 @@ public sealed class AgentBridge
                 BridgeApproval.TerminateForRepeatedRejections(this, rejections);
             }
 
-            generateInput = [.. generateInput, .. reviewed.Rejection];
+            originalInput = [.. originalInput, .. reviewed.Rejection];
         }
 
         TrackState(messages, output);
         return output;
+    }
+
+    /// <summary>
+    /// Port of <c>bridge.register_tool_execution_grants(reviewed.output.message.tool_calls)</c> and its
+    /// <c>tool_approval_required()</c> gate: once a response is approved, each of its (possibly modified) tool calls
+    /// that denotes a bridged tool gets a one-shot execution grant — only while an approval policy is active.
+    /// </summary>
+    private void RegisterBridgedToolGrants(ModelOutput output)
+    {
+        var registry = BridgedTools;
+        if (registry.Count == 0 || output.Empty)
+        {
+            return;
+        }
+
+        using (ToolApproval.BeginIfAny(Approval))
+        {
+            if (ToolApproval.HaveToolApproval)
+            {
+                registry.RegisterToolExecutionGrants(output.Message.ToolCalls ?? []);
+            }
+        }
     }
 
     /// <summary>

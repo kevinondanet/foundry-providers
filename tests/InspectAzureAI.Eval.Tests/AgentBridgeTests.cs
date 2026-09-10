@@ -1,7 +1,10 @@
+using System.Text.Json.Nodes;
 using InspectAzureAI.Eval.Agents;
 using InspectAzureAI.Eval.Agents.Bridge;
+using InspectAzureAI.Eval.Approval;
 using InspectAzureAI.Eval.Model;
 using InspectAzureAI.Eval.Testing;
+using InspectAzureAI.Eval.Tools;
 using InspectAzureAI.Provider.Core;
 
 namespace InspectAzureAI.Eval.Tests;
@@ -428,5 +431,107 @@ public class AgentBridgeTests
         var e = Assert.Single(sink.Events);
         Assert.Equal("a", e.Output.Completion);
         Assert.Null(ModelEventSinks.Current);
+    }
+
+    [Fact]
+    public void clear_generation_params_clears_the_python_field_list_and_keeps_structural_fields()
+    {
+        var cleared = AgentBridge.ClearGenerationParams(new GenerateConfig
+        {
+            ReasoningSummary = "auto",
+            Verbosity = "low",
+            Effort = "high",
+            LogitBias = new Dictionary<int, double> { [42] = -100 },
+            ReasoningEffort = "high",
+            ParallelToolCalls = false,
+            StopSeqs = ["END"],
+        });
+
+        Assert.Null(cleared.ReasoningSummary);
+        Assert.Null(cleared.Verbosity);
+        Assert.Null(cleared.Effort);
+        Assert.Null(cleared.LogitBias);
+        Assert.Null(cleared.ReasoningEffort);
+        Assert.False(cleared.ParallelToolCalls);
+        Assert.Equal(["END"], cleared.StopSeqs);
+    }
+
+    [Fact]
+    public void new_options_default_to_no_filter_and_no_web_search()
+    {
+        var bridge = TaskBridge();
+
+        Assert.Null(bridge.Filter);
+        Assert.False(bridge.WebSearch);
+        Assert.Same(BridgedToolRegistry.Empty, bridge.BridgedTools);
+    }
+
+    private static BridgedToolRegistry SecretsRegistry(string server = "secrets") =>
+        new([new BridgedToolsSpec(server, [new ToolDef("secret_lookup", "Look up a secret.", new ToolParams(), (_, _) => Task.FromResult<ToolResult>("hunter2"))])]);
+
+    [Fact]
+    public void attaching_bridged_tools_twice_throws_and_an_empty_attach_keeps_the_current_registry()
+    {
+        var bridge = TaskBridge();
+        var registry = SecretsRegistry();
+
+        bridge.AttachBridgedTools(BridgedToolRegistry.Empty);
+        bridge.AttachBridgedTools(registry);
+        bridge.AttachBridgedTools(BridgedToolRegistry.Empty);
+
+        Assert.Same(registry, bridge.BridgedTools);
+        Assert.Throws<InvalidOperationException>(() => bridge.AttachBridgedTools(SecretsRegistry("other")));
+        Assert.Same(registry, bridge.BridgedTools);
+    }
+
+    private static ModelOutput TwoCalls() => new()
+    {
+        Model = ScriptedModelApi.DefaultModelName,
+        Choices =
+        [
+            new ChatCompletionChoice(
+                new ChatMessageAssistant("", toolCalls:
+                [
+                    new ToolCall("call_1", "mcp__secrets__secret_lookup", new JsonObject { ["key"] = "db" }),
+                    new ToolCall("call_2", "bash", new JsonObject { ["cmd"] = "ls" }),
+                ]),
+                StopReason.ToolCalls),
+        ],
+    };
+
+    [Fact]
+    public async Task generate_registers_one_grant_per_approved_bridged_call_under_an_approving_policy()
+    {
+        var bridge = new AgentBridge(new AgentState([new ChatMessageUser(TaskPrompt)]), new Model(new ScriptedModelApi(ScriptedTurn.From(TwoCalls()))), approval: [new ApprovalPolicy(Approvers.Auto(), "*")]);
+        bridge.AttachBridgedTools(SecretsRegistry());
+
+        await bridge.GenerateAsync("inspect", [new ChatMessageUser(TaskPrompt)], [], ToolChoice.Auto, new GenerateConfig());
+
+        Assert.Equal(1, bridge.BridgedTools.GrantCount);
+        Assert.True(bridge.BridgedTools.ConsumeToolExecutionGrant("secrets", "secret_lookup", new JsonObject { ["key"] = "db" }));
+    }
+
+    [Fact]
+    public async Task generate_registers_no_grant_without_an_approval_policy()
+    {
+        var bridge = new AgentBridge(new AgentState([new ChatMessageUser(TaskPrompt)]), new Model(new ScriptedModelApi(ScriptedTurn.From(TwoCalls()))));
+        bridge.AttachBridgedTools(SecretsRegistry());
+
+        await bridge.GenerateAsync("inspect", [new ChatMessageUser(TaskPrompt)], [], ToolChoice.Auto, new GenerateConfig());
+
+        Assert.Equal(0, bridge.BridgedTools.GrantCount);
+    }
+
+    [Fact]
+    public async Task generate_registers_no_grant_for_a_rejected_response()
+    {
+        var api = new ScriptedModelApi(ScriptedTurn.From(TwoCalls()), ScriptedTurn.Text("I will not."));
+        var bridge = new AgentBridge(new AgentState([new ChatMessageUser(TaskPrompt)]), new Model(api), approval: [new ApprovalPolicy(Approvers.Auto(ApprovalDecision.Reject), "*")]);
+        bridge.AttachBridgedTools(SecretsRegistry());
+
+        var output = await bridge.GenerateAsync("inspect", [new ChatMessageUser(TaskPrompt)], [], ToolChoice.Auto, new GenerateConfig());
+
+        Assert.Equal("I will not.", output.Completion);
+        Assert.Equal(0, bridge.BridgedTools.GrantCount);
     }
 }

@@ -81,7 +81,9 @@ public class AnthropicBridgeApiTests
         Assert.Equal(new ToolCallError("unknown", "permission denied"), result2.Error);
         Assert.Equal("continue", Assert.IsType<ChatMessageUser>(messages[6]).Text);
 
-        var tool = Assert.Single(parsed.Tools);
+        Assert.Equal(["bash", "web_search"], parsed.Tools.Select(t => t.Name).ToArray());
+        Assert.True(BridgeBuiltinTools.IsWebSearchMarker(parsed.Tools[1]));
+        var tool = parsed.Tools[0];
         Assert.Equal("bash", tool.Name);
         Assert.Equal(["string"], tool.Parameters.Properties["cmd"].Type);
         Assert.Equal(["cmd"], tool.Parameters.Required);
@@ -284,5 +286,97 @@ public class AnthropicBridgeApiTests
         var result = Assert.IsType<ChatMessageTool>(parsed.Messages[1]);
         Assert.Equal("unknown", result.Error!.Type);
         Assert.Contains("\"type\": \"image\"", result.Error.Message);
+    }
+
+    [Fact]
+    public void a_web_search_server_tool_becomes_the_marker_and_other_server_tools_are_dropped()
+    {
+        var tools = AnthropicBridgeApi.ToolsFromAnthropicTools(JsonNode.Parse("""
+            [
+              {"type": "web_search_20250305", "name": "web_search", "allowed_domains": ["docs.python.org"], "max_uses": 5},
+              {"type": "bash_20250124", "name": "bash"},
+              {"type": "text_editor_20250728", "name": "str_replace_based_edit_tool"}
+            ]
+            """));
+
+        var marker = Assert.Single(tools);
+        Assert.Equal("web_search", marker.Name);
+        Assert.Empty(marker.Parameters.Properties);
+        Assert.Equal(
+            """{"type": "web_search_20250305", "name": "web_search", "allowed_domains": ["docs.python.org"], "max_uses": 5}""",
+            InspectAzureAI.Provider.Util.PythonJson.Dumps(marker.Options![BridgeBuiltinTools.WebSearchMarker]));
+    }
+
+    private static ModelOutput WebSearchOutput(string arguments, string result) => new()
+    {
+        Model = "claude-sonnet-4-6",
+        Choices =
+        [
+            new ChatCompletionChoice(
+                new ChatMessageAssistant(new Content[]
+                {
+                    new ContentText("Let me search."),
+                    new ContentToolUse("web_search", "srvtoolu_1", "web_search", arguments, result),
+                    new ContentText("Found it."),
+                }),
+                StopReason.Stop),
+        ],
+    };
+
+    [Fact]
+    public void a_web_search_tool_use_renders_server_tool_blocks()
+    {
+        var response = AnthropicBridgeApi.ResponseFromOutput(
+            WebSearchOutput("""{"query": "python 3.13"}""", """[{"type": "web_search_result", "url": "https://docs.python.org", "title": "Docs"}]"""),
+            "claude-sonnet-4-6");
+
+        Assert.Equal(
+            """[{"type": "text", "text": "Let me search."}, {"type": "server_tool_use", "id": "srvtoolu_1", "name": "web_search", "input": {"query": "python 3.13"}}, """
+            + """{"type": "web_search_tool_result", "tool_use_id": "srvtoolu_1", "content": [{"type": "web_search_result", "url": "https://docs.python.org", "title": "Docs"}]}, {"type": "text", "text": "Found it."}]""",
+            InspectAzureAI.Provider.Util.PythonJson.Dumps(response["content"]));
+    }
+
+    [Fact]
+    public void server_tool_blocks_stream_as_start_and_stop_without_deltas()
+    {
+        var response = AnthropicBridgeApi.ResponseFromOutput(WebSearchOutput("""{"query": "q"}""", "[]"), "claude-sonnet-4-6");
+
+        var events = AnthropicBridgeApi.StreamEvents(response);
+
+        Assert.Equal(
+        [
+            "message_start",
+            "content_block_start", "content_block_delta", "content_block_stop",
+            "content_block_start", "content_block_stop",
+            "content_block_start", "content_block_stop",
+            "content_block_start", "content_block_delta", "content_block_stop",
+            "message_delta",
+            "message_stop",
+        ], events.Select(e => e.Event!).ToArray());
+        Assert.Equal("""{"type": "server_tool_use", "id": "srvtoolu_1", "name": "web_search", "input": {"query": "q"}}""", InspectAzureAI.Provider.Util.PythonJson.Dumps(events[4].Data["content_block"]));
+        Assert.Equal(1, events[4].Data["index"]!.GetValue<int>());
+        Assert.Equal("web_search_tool_result", events[6].Data["content_block"]!["type"]!.GetValue<string>());
+        Assert.Equal(2, events[7].Data["index"]!.GetValue<int>());
+        Assert.Equal(3, events[8].Data["index"]!.GetValue<int>());
+    }
+
+    [Fact]
+    public void non_json_web_search_arguments_and_results_fall_back_to_strings()
+    {
+        var content = AnthropicBridgeApi.ResponseFromOutput(WebSearchOutput("python 3.13", ""), "claude-sonnet-4-6")["content"]!;
+
+        Assert.Equal("python 3.13", content[1]!["input"]!.GetValue<string>());
+        Assert.Equal("", content[2]!["content"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public void other_server_tool_uses_are_not_rendered()
+    {
+        var message = new ChatMessageAssistant(new Content[] { new ContentToolUse("code_execution", "srvtoolu_2", "code_execution", "{}", "{}"), new ContentText("Done") });
+        var output = new ModelOutput { Model = "m", Choices = [new ChatCompletionChoice(message, StopReason.Stop)] };
+
+        var content = AnthropicBridgeApi.ResponseFromOutput(output, "claude-sonnet-4-6")["content"];
+
+        Assert.Equal("""[{"type": "text", "text": "Done"}]""", InspectAzureAI.Provider.Util.PythonJson.Dumps(content));
     }
 }

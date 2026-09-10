@@ -131,9 +131,11 @@ public static class AnthropicBridgeApi
     }
 
     /// <summary>
-    /// Port of <c>tools_from_anthropic_tools</c> for client tools (<c>{name, description, input_schema}</c>).
-    /// Server and built-in tools (a <c>type</c> such as <c>web_search_20250305</c> or <c>bash_20250124</c>) are
-    /// dropped: this port has no host tools to substitute for them and never forwards server tools.
+    /// Port of <c>tools_from_anthropic_tools</c> for client tools (<c>{name, description, input_schema}</c>). A web
+    /// search server tool (a <c>type</c> starting with <c>web_search_</c>) becomes the marker
+    /// <see cref="BridgeBuiltinTools.WebSearchTool"/>, which the bridge's web-search grant later serves or withholds.
+    /// Other server and built-in tools (a <c>type</c> such as <c>bash_20250124</c>) are dropped: this port has no host
+    /// tools to substitute for them.
     /// </summary>
     public static IReadOnlyList<ToolInfo> ToolsFromAnthropicTools(JsonNode? tools)
     {
@@ -145,8 +147,18 @@ public static class AnthropicBridgeApi
         var result = new List<ToolInfo>();
         foreach (var node in BridgeJson.RequireArray(tools, "tools"))
         {
-            if (node is not JsonObject tool || !tool.ContainsKey("input_schema"))
+            if (node is not JsonObject tool)
             {
+                continue;
+            }
+
+            if (!tool.ContainsKey("input_schema"))
+            {
+                if (tool["type"] is JsonValue typeValue && typeValue.TryGetValue<string>(out var type) && type.StartsWith("web_search_", StringComparison.Ordinal))
+                {
+                    result.Add(BridgeBuiltinTools.WebSearchTool(tool));
+                }
+
                 continue;
             }
 
@@ -402,6 +414,11 @@ public static class AnthropicBridgeApi
                     case ContentReasoning unsigned:
                         blocks.Add(new JsonObject { ["type"] = "text", ["text"] = ReasoningText(unsigned) });
                         break;
+                    case ContentToolUse { ToolType: "web_search" } webSearch:
+                        // the served model's native search, rendered as the Messages API's server tool blocks
+                        blocks.Add(new JsonObject { ["type"] = "server_tool_use", ["id"] = webSearch.Id, ["name"] = "web_search", ["input"] = ParseJson(webSearch.Arguments) });
+                        blocks.Add(new JsonObject { ["type"] = "web_search_tool_result", ["tool_use_id"] = webSearch.Id, ["content"] = ParseJson(webSearch.Result) });
+                        break;
                 }
             }
         }
@@ -518,6 +535,11 @@ public static class AnthropicBridgeApi
                     }));
                     events.Add(BlockStop(index));
                     break;
+                case "server_tool_use" or "web_search_tool_result":
+                    // server tool blocks arrive whole: start (carrying the full block) and stop, no deltas
+                    events.Add(BlockStart(index, block.DeepClone().AsObject()));
+                    events.Add(BlockStop(index));
+                    break;
                 default:
                     continue;
             }
@@ -626,6 +648,27 @@ public static class AnthropicBridgeApi
         }
 
         return (content, toolCalls);
+    }
+
+    /// <summary>
+    /// A JSON string field of a <see cref="ContentToolUse"/> as JSON: the parsed value, or a string node holding
+    /// <paramref name="json"/> when it is empty or does not parse.
+    /// </summary>
+    internal static JsonNode? ParseJson(string json)
+    {
+        if (string.IsNullOrEmpty(json))
+        {
+            return JsonValue.Create(json ?? "");
+        }
+
+        try
+        {
+            return JsonNode.Parse(json);
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return JsonValue.Create(json);
+        }
     }
 
     private static void FlushPending(List<ChatMessage> messages, List<Content> pending)

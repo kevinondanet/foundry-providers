@@ -56,12 +56,6 @@ public sealed record StoreEvent(JsonElement Changes) : TranscriptEvent
     public IReadOnlyList<JsonChange> GetChanges() => JsonChanges.FromJson(Changes);
 }
 
-/// <summary>Port of <c>tool/_tool_call.py</c> <c>ToolCallContent</c>: a custom rendering of a tool call (<see cref="Format"/> is "text" or "markdown").</summary>
-public sealed record ToolCallContent(string Format, string Content = "")
-{
-    public string? Title { get; init; }
-}
-
 /// <summary>Port of <c>tool/_tool_call.py</c> <c>ToolCallView</c>: the view presented for approval.</summary>
 public sealed record ToolCallView
 {

@@ -9,16 +9,18 @@ using System.Text.Json.Nodes;
 using InspectAzureAI.Eval.Context;
 using InspectAzureAI.Eval.Model;
 using InspectAzureAI.Eval.Sandbox;
+using InspectAzureAI.Eval.Tools.Mcp;
 using InspectAzureAI.Provider.Util;
 
 namespace InspectAzureAI.Eval.Agents.Bridge;
 
 /// <summary>
 /// Port of <c>agent/_bridge/sandbox/</c> plus the HTTP front of <c>inspect_sandbox_tools/_agent_bridge/proxy.py</c>:
-/// the server a sandboxed agent talks to as if it were the Anthropic Messages API or the OpenAI chat
-/// completions API. Unlike Python (a proxy inside the sandbox relaying over file RPC) it runs on the host
-/// and is reached through the sandbox's host address, so every request must carry this instance's random
-/// token (a container on the same network could otherwise reach the eval's model).
+/// the server a sandboxed agent talks to as if it were the Anthropic Messages API, the OpenAI chat completions API or
+/// the OpenAI Responses API, and the streamable-HTTP MCP endpoint (<c>/mcp/{server}</c>) serving bridged host tools.
+/// Unlike Python (a proxy inside the sandbox relaying over file RPC) it runs on the host and is reached through the
+/// sandbox's host address, so every request must carry this instance's random token (a container on the same network
+/// could otherwise reach the eval's model).
 /// </summary>
 public sealed class SandboxAgentBridge : IAsyncDisposable
 {
@@ -76,12 +78,30 @@ public sealed class SandboxAgentBridge : IAsyncDisposable
     /// request must carry it as bearer/x-api-key (401 otherwise). <paramref name="cancellationToken"/>
     /// also cancels in-flight handlers and skips the disposal grace period.
     /// </summary>
-    public static Task<SandboxAgentBridge> StartAsync(AgentBridge bridge, ISandboxEnvironment sandbox, int port = 0, CancellationToken cancellationToken = default)
+    public static Task<SandboxAgentBridge> StartAsync(AgentBridge bridge, ISandboxEnvironment sandbox, int port = 0, CancellationToken cancellationToken = default) =>
+        StartAsync(bridge, sandbox, port, null, cancellationToken);
+
+    /// <summary>
+    /// <see cref="StartAsync(AgentBridge, ISandboxEnvironment, int, CancellationToken)"/> that also serves
+    /// <paramref name="bridgedTools"/> as MCP servers at <c>/mcp/{name}</c> (port of <c>sandbox_agent_bridge(bridged_tools=...)</c>).
+    /// The registry is built (and validated, <see cref="BridgedToolRegistry(IEnumerable{BridgedToolsSpec})"/>) before the
+    /// listener starts and attached to <paramref name="bridge"/>, whose generations register execution grants on it;
+    /// <see cref="McpServerConfigs"/> are the configs to hand the scaffold.
+    /// </summary>
+    public static Task<SandboxAgentBridge> StartAsync(
+        AgentBridge bridge,
+        ISandboxEnvironment sandbox,
+        int port,
+        IReadOnlyList<BridgedToolsSpec>? bridgedTools,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(bridge);
         ArgumentNullException.ThrowIfNull(sandbox);
         ArgumentOutOfRangeException.ThrowIfNegative(port);
         cancellationToken.ThrowIfCancellationRequested();
+
+        var registry = new BridgedToolRegistry(bridgedTools ?? []);
+        bridge.AttachBridgedTools(registry);
 
         var hostAddress = sandbox.HostAddress;
         var bindHosts = BindHosts(hostAddress);
@@ -131,6 +151,15 @@ public sealed class SandboxAgentBridge : IAsyncDisposable
     public string AuthToken { get; }
 
     public AgentState State => _bridge.State;
+
+    /// <summary>The bridged host tools served at <c>/mcp/{server}</c> (the wrapped bridge's <see cref="AgentBridge.BridgedTools"/>).</summary>
+    public BridgedToolRegistry BridgedTools => _bridge.BridgedTools;
+
+    /// <summary>
+    /// One MCP config per bridged tools server, for the scaffold: <c>http</c> at <c>{BaseUrl}/mcp/{name}</c> with
+    /// <c>Authorization: Bearer {AuthToken}</c> and all tools. Empty when no bridged tools are served.
+    /// </summary>
+    public IReadOnlyList<McpServerConfigHttp> McpServerConfigs => BridgedTools.McpServerConfigs(BaseUrl, AuthToken);
 
     /// <summary>
     /// The first sample limit hit by a bridged generation. Python's bridge service re-raises
@@ -287,19 +316,29 @@ public sealed class SandboxAgentBridge : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Serves one request. The dialect (which decides every error body's shape) is derived from the path before
+    /// anything else, so even the 401 of an unauthenticated request is in the client's own shape; the MCP endpoint is
+    /// dispatched right after authentication, and the API routes through the single route switch.
+    /// </summary>
     private async Task HandleAsync(HttpListenerContext context)
     {
         var request = context.Request;
         var response = context.Response;
         var cancellationToken = _shutdown.Token;
-        var path = (request.Url?.AbsolutePath ?? "/").TrimEnd('/');
-        var openAiDialect = path.StartsWith("/v1/chat", StringComparison.Ordinal);
-        var responseStarted = false;
+        var path = RequestPath(request);
+        var dialect = DialectOf(path);
         try
         {
             if (!Authorized(request))
             {
-                await WriteJsonAsync(response, 401, AnthropicBridgeApi.ErrorBody(401, "invalid x-api-key / bearer token"), cancellationToken).ConfigureAwait(false);
+                await WriteJsonAsync(context, 401, ErrorBody(dialect, 401, "invalid x-api-key / bearer token"), cancellationToken).ConfigureAwait(false);
+                return;
+            }
+
+            if (dialect == Dialect.Mcp)
+            {
+                await HandleMcpAsync(context, path, cancellationToken).ConfigureAwait(false);
                 return;
             }
 
@@ -308,18 +347,19 @@ public sealed class SandboxAgentBridge : IAsyncDisposable
                 ("POST", "/v1/messages") => Route.Messages,
                 ("POST", "/v1/messages/count_tokens") => Route.CountTokens,
                 ("POST", "/v1/chat/completions") => Route.Completions,
+                ("POST", "/v1/responses") => Route.Responses,
                 _ => Route.None,
             };
             if (route == Route.None)
             {
-                await WriteJsonAsync(response, 404, AnthropicBridgeApi.ErrorBody(404, $"Not found: {request.HttpMethod} {request.Url?.PathAndQuery}"), cancellationToken).ConfigureAwait(false);
+                await WriteJsonAsync(context, 404, ErrorBody(dialect, 404, $"Not found: {request.HttpMethod} {request.Url?.PathAndQuery}"), cancellationToken).ConfigureAwait(false);
                 return;
             }
 
             var body = await ReadBodyAsync(request, cancellationToken).ConfigureAwait(false);
             if (body is null)
             {
-                await WriteJsonAsync(response, 413, ErrorBody(openAiDialect, 413, $"Request body exceeds {BodyLimit} bytes."), cancellationToken).ConfigureAwait(false);
+                await WriteJsonAsync(context, 413, ErrorBody(dialect, 413, $"Request body exceeds {BodyLimit} bytes."), cancellationToken).ConfigureAwait(false);
                 return;
             }
 
@@ -331,21 +371,20 @@ public sealed class SandboxAgentBridge : IAsyncDisposable
             catch (JsonException ex)
             {
                 RecordError(ex);
-                json = null;
-                await WriteJsonAsync(response, 400, ErrorBody(openAiDialect, 400, $"Invalid JSON body: {ex.Message}"), cancellationToken).ConfigureAwait(false);
+                await WriteJsonAsync(context, 400, ErrorBody(dialect, 400, $"Invalid JSON body: {ex.Message}"), cancellationToken).ConfigureAwait(false);
                 return;
             }
 
             if (json is null)
             {
-                await WriteJsonAsync(response, 400, ErrorBody(openAiDialect, 400, "Request body must be a JSON object."), cancellationToken).ConfigureAwait(false);
+                await WriteJsonAsync(context, 400, ErrorBody(dialect, 400, "Request body must be a JSON object."), cancellationToken).ConfigureAwait(false);
                 return;
             }
 
             switch (route)
             {
                 case Route.CountTokens:
-                    await WriteJsonAsync(response, 200, AnthropicBridgeApi.CountTokens(json), cancellationToken).ConfigureAwait(false);
+                    await WriteJsonAsync(context, 200, AnthropicBridgeApi.CountTokens(json), cancellationToken).ConfigureAwait(false);
                     break;
 
                 case Route.Messages:
@@ -355,12 +394,11 @@ public sealed class SandboxAgentBridge : IAsyncDisposable
                         var message = AnthropicBridgeApi.ResponseFromOutput(output, parsed.Model);
                         if (!parsed.Stream)
                         {
-                            await WriteJsonAsync(response, 200, message, cancellationToken).ConfigureAwait(false);
+                            await WriteJsonAsync(context, 200, message, cancellationToken).ConfigureAwait(false);
                             break;
                         }
 
                         var writer = StartStream(response);
-                        responseStarted = true;
                         foreach (var sseEvent in AnthropicBridgeApi.StreamEvents(message))
                         {
                             await writer.WriteAsync(sseEvent, cancellationToken).ConfigureAwait(false);
@@ -379,13 +417,12 @@ public sealed class SandboxAgentBridge : IAsyncDisposable
                         var completion = CompletionsBridgeApi.ResponseFromOutput(output, _bridge.ResolveModel(parsed.Model).Name);
                         if (!parsed.Stream)
                         {
-                            await WriteJsonAsync(response, 200, completion, cancellationToken).ConfigureAwait(false);
+                            await WriteJsonAsync(context, 200, completion, cancellationToken).ConfigureAwait(false);
                             break;
                         }
 
                         var includeUsage = json["stream_options"] is JsonObject options && BridgeJson.GetBool(options, "include_usage") == true;
                         var writer = StartStream(response);
-                        responseStarted = true;
                         foreach (var chunk in CompletionsBridgeApi.StreamChunks(completion, includeUsage))
                         {
                             await writer.WriteDataAsync(chunk, cancellationToken).ConfigureAwait(false);
@@ -394,43 +431,35 @@ public sealed class SandboxAgentBridge : IAsyncDisposable
                         await writer.WriteDoneAsync(cancellationToken).ConfigureAwait(false);
                         break;
                     }
+
+                case Route.Responses:
+                    await HandleResponsesAsync(context, json, cancellationToken).ConfigureAwait(false);
+                    break;
             }
         }
         catch (LimitExceededException ex)
         {
-            RecordError(ex);
-            lock (_errorsSync)
-            {
-                _limitError ??= ex;
-            }
-
-            await _limitReached.CancelAsync().ConfigureAwait(false);
-            await AnswerErrorAsync(response, openAiDialect, responseStarted, 500, ex.Message).ConfigureAwait(false);
+            await SignalLimitAsync(ex).ConfigureAwait(false);
+            await AnswerErrorAsync(context, dialect, 500, ex.Message).ConfigureAwait(false);
         }
         catch (Approval.TerminateSampleException ex)
         {
             // an approver ended the sample from inside a bridged generation: keep the reason for the agent to
             // rethrow, signal it, and still answer so the scaffold gets an error rather than a hung request
-            RecordError(ex);
-            lock (_errorsSync)
-            {
-                _terminateError ??= ex;
-            }
-
-            await _terminateRequested.CancelAsync().ConfigureAwait(false);
-            await AnswerErrorAsync(response, openAiDialect, responseStarted, 500, ex.Message).ConfigureAwait(false);
+            await SignalTerminateAsync(ex).ConfigureAwait(false);
+            await AnswerErrorAsync(context, dialect, 500, ex.Message).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (_shutdown.IsCancellationRequested)
         {
             // Not an error of the bridge: the sample is being torn down. Still answer, or the client would read
             // an empty 200 out of the closed response.
-            await AnswerErrorAsync(response, openAiDialect, responseStarted, 500, "The sandbox agent bridge is shutting down.").ConfigureAwait(false);
+            await AnswerErrorAsync(context, dialect, 500, "The sandbox agent bridge is shutting down.").ConfigureAwait(false);
         }
         catch (Exception ex)
         {
             RecordError(ex);
             var status = ex is ModelGenerateException or BridgeRequestException ? 400 : 500;
-            await AnswerErrorAsync(response, openAiDialect, responseStarted, status, ex.Message).ConfigureAwait(false);
+            await AnswerErrorAsync(context, dialect, status, ex.Message).ConfigureAwait(false);
         }
         finally
         {
@@ -445,15 +474,115 @@ public sealed class SandboxAgentBridge : IAsyncDisposable
         }
     }
 
-    private static async Task AnswerErrorAsync(HttpListenerResponse response, bool openAiDialect, bool responseStarted, int status, string message)
+    /// <summary>
+    /// The <c>POST /v1/responses</c> route (the OpenAI Responses API dialect). This build does not serve it yet and
+    /// answers 404 in the OpenAI error shape; the route, authentication and dialect-shaped errors are in place.
+    /// </summary>
+    private Task HandleResponsesAsync(HttpListenerContext context, JsonObject json, CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(json);
+        return WriteJsonAsync(context, 404, ErrorBody(Dialect.Responses, 404, "The Responses route is not available in this build."), cancellationToken);
+    }
+
+    /// <summary>
+    /// The bridged-tools MCP endpoint (port of the proxy's <c>/mcp/*</c> routes, after authentication): a non-POST
+    /// method is 405 with <c>Allow: POST</c>; a POST body is answered by <see cref="BridgedToolsMcpApi.HandleAsync"/>
+    /// as JSON with <c>MCP-Protocol-Version</c>, or a bare 202. A sample limit or an approver's termination raised by a
+    /// tool is signalled as for a generation and answered with a <c>-32603</c> error.
+    /// </summary>
+    private async Task HandleMcpAsync(HttpListenerContext context, string path, CancellationToken cancellationToken)
+    {
+        var request = context.Request;
+        var response = context.Response;
+        response.Headers["MCP-Protocol-Version"] = BridgedToolsMcpApi.ProtocolVersion;
+        if (request.HttpMethod != "POST")
+        {
+            response.Headers["Allow"] = "POST";
+            WriteEmpty(context, 405);
+            return;
+        }
+
+        var bytes = await ReadBodyAsync(request, cancellationToken).ConfigureAwait(false);
+        if (bytes is null)
+        {
+            await WriteJsonAsync(context, 413, BridgedToolsMcpApi.JsonRpcError(null, -32600, $"Request body exceeds {BodyLimit} bytes."), cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        JsonNode? body;
         try
         {
-            if (!responseStarted)
+            body = JsonNode.Parse(bytes);
+        }
+        catch (JsonException ex)
+        {
+            RecordError(ex);
+            await WriteJsonAsync(context, 400, BridgedToolsMcpApi.JsonRpcError(null, -32700, $"Parse error: {ex.Message}"), cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        var id = body is JsonObject message ? message["id"] : null;
+        McpHttpReply reply;
+        try
+        {
+            reply = await BridgedToolsMcpApi.HandleAsync(_bridge.BridgedTools, _bridge.Approval, BridgedToolsMcpApi.ServerFromPath(path), body, cancellationToken).ConfigureAwait(false);
+        }
+        catch (LimitExceededException ex)
+        {
+            await SignalLimitAsync(ex).ConfigureAwait(false);
+            reply = new McpHttpReply(200, BridgedToolsMcpApi.JsonRpcError(id, -32603, ex.Message));
+        }
+        catch (Approval.TerminateSampleException ex)
+        {
+            await SignalTerminateAsync(ex).ConfigureAwait(false);
+            reply = new McpHttpReply(200, BridgedToolsMcpApi.JsonRpcError(id, -32603, ex.Message));
+        }
+
+        if (reply.Body is null)
+        {
+            WriteEmpty(context, reply.Status);
+            return;
+        }
+
+        await WriteJsonAsync(context, reply.Status, reply.Body, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task SignalLimitAsync(LimitExceededException ex)
+    {
+        RecordError(ex);
+        lock (_errorsSync)
+        {
+            _limitError ??= ex;
+        }
+
+        await _limitReached.CancelAsync().ConfigureAwait(false);
+    }
+
+    private async Task SignalTerminateAsync(Approval.TerminateSampleException ex)
+    {
+        RecordError(ex);
+        lock (_errorsSync)
+        {
+            _terminateError ??= ex;
+        }
+
+        await _terminateRequested.CancelAsync().ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Answers a failed request: a JSON error body in the dialect's shape when nothing was sent yet; once a stream
+    /// started, an Anthropic <c>error</c> event (the OpenAI dialects get nothing more).
+    /// </summary>
+    private static async Task AnswerErrorAsync(HttpListenerContext context, Dialect dialect, int status, string message)
+    {
+        var response = context.Response;
+        try
+        {
+            if (!response.SendChunked)
             {
-                await WriteJsonAsync(response, status, ErrorBody(openAiDialect, status, message), CancellationToken.None).ConfigureAwait(false);
+                await WriteJsonAsync(context, status, ErrorBody(dialect, status, message), CancellationToken.None).ConfigureAwait(false);
             }
-            else if (!openAiDialect)
+            else if (dialect == Dialect.Anthropic)
             {
                 var writer = new SseWriter(response.OutputStream);
                 await writer.WriteAsync(new SseEvent("error", AnthropicBridgeApi.ErrorBody(status, message)), CancellationToken.None).ConfigureAwait(false);
@@ -508,13 +637,32 @@ public sealed class SandboxAgentBridge : IAsyncDisposable
         return buffer.ToArray();
     }
 
-    private static async Task WriteJsonAsync(HttpListenerResponse response, int status, JsonNode body, CancellationToken cancellationToken)
+    private static async Task WriteJsonAsync(HttpListenerContext context, int status, JsonNode body, CancellationToken cancellationToken)
     {
+        LogReply(context.Request, status);
+        var response = context.Response;
         var bytes = Encoding.UTF8.GetBytes(PythonJson.Dumps(body));
         response.StatusCode = status;
         response.ContentType = "application/json";
         response.ContentLength64 = bytes.Length;
         await response.OutputStream.WriteAsync(bytes, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static void WriteEmpty(HttpListenerContext context, int status)
+    {
+        LogReply(context.Request, status);
+        context.Response.StatusCode = status;
+        context.Response.ContentLength64 = 0;
+    }
+
+    /// <summary>Every non-2xx reply is logged with its method and path (the live smoke checks the bridge's health through these lines).</summary>
+    private static void LogReply(HttpListenerRequest request, int status)
+    {
+        if (status is < 200 or >= 300)
+        {
+            var path = RequestPath(request);
+            ProviderLogger.Warning($"agent bridge answered {status} to {request.HttpMethod} {(path.Length == 0 ? "/" : path)}");
+        }
     }
 
     private static SseWriter StartStream(HttpListenerResponse response)
@@ -526,8 +674,30 @@ public sealed class SandboxAgentBridge : IAsyncDisposable
         return new SseWriter(response.OutputStream);
     }
 
-    private static JsonObject ErrorBody(bool openAiDialect, int status, string message) =>
-        openAiDialect ? CompletionsBridgeApi.ErrorBody(status, message) : AnthropicBridgeApi.ErrorBody(status, message);
+    private static string RequestPath(HttpListenerRequest request) => (request.Url?.AbsolutePath ?? "/").TrimEnd('/');
+
+    /// <summary>The client dialect a path belongs to, which decides the shape of every error body.</summary>
+    private static Dialect DialectOf(string path)
+    {
+        if (path == "/mcp" || path.StartsWith("/mcp/", StringComparison.Ordinal))
+        {
+            return Dialect.Mcp;
+        }
+
+        if (path == "/v1/responses")
+        {
+            return Dialect.Responses;
+        }
+
+        return path.StartsWith("/v1/chat", StringComparison.Ordinal) ? Dialect.ChatCompletions : Dialect.Anthropic;
+    }
+
+    private static JsonObject ErrorBody(Dialect dialect, int status, string message) => dialect switch
+    {
+        Dialect.ChatCompletions or Dialect.Responses => CompletionsBridgeApi.ErrorBody(status, message),
+        Dialect.Mcp => BridgedToolsMcpApi.JsonRpcError(null, -32600, message),
+        _ => AnthropicBridgeApi.ErrorBody(status, message),
+    };
 
     private void RecordError(Exception ex)
     {
@@ -548,5 +718,14 @@ public sealed class SandboxAgentBridge : IAsyncDisposable
         Messages,
         CountTokens,
         Completions,
+        Responses,
+    }
+
+    private enum Dialect
+    {
+        Anthropic,
+        ChatCompletions,
+        Responses,
+        Mcp,
     }
 }
