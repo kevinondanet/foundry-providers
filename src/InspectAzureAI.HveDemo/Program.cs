@@ -8,6 +8,7 @@ using InspectAzureAI.Eval.Scorers;
 using InspectAzureAI.Eval.Tasks;
 using InspectAzureAI.HveDemo.Components;
 using InspectAzureAI.HveDemo.Fake;
+using InspectAzureAI.Provider.Anthropic;
 using InspectAzureAI.Provider.Core;
 using InspectAzureAI.Swe.CopilotCli;
 
@@ -43,10 +44,15 @@ public static class Program
           --fake                 drive the eval with a scripted model (no network, deterministic); default when
                                  AZUREAI_BASE_URL is not set. With the fake sandbox a fake copilot binary plays the CLI
                                  against the real bridge; with docker the real CLI runs on the scripted model.
-          --model <name>         Foundry deployment name (default: $INSPECT_AZUREAI_MODEL or gpt-5.4-mini)
+          --model <name>         Foundry deployment name (default: $INSPECT_AZUREAI_MODEL or gpt-5.4-mini), or a
+                                 prefixed name: openai/<model> and anthropic/<model> call that vendor's API directly
+                                 (OPENAI_API_KEY / ANTHROPIC_API_KEY; set OPENAI_BASE_URL / ANTHROPIC_BASE_URL when
+                                 Azure endpoint variables are also present), while openai/azure/<deployment> and
+                                 anthropic/azure/<deployment> name a Foundry deployment explicitly
           --route models|anthropic|responses
-                                 Foundry route; claude-* models pick anthropic automatically (the CLI then speaks the
-                                 Anthropic wire to the bridge) and gpt-5.6* / o-series / -pro / codex models pick responses
+                                 Foundry route for an unprefixed name; claude-* models pick anthropic automatically (the
+                                 CLI then speaks the Anthropic wire to the bridge) and gpt-5.6* / o-series / -pro / codex
+                                 models pick responses. A prefixed --model selects its own provider and ignores this.
           --sandbox docker|local|fake
                                  docker (default) builds hve/sandbox/Dockerfile; local runs on this host in a temp
                                  directory with the host's copilot; fake is the scripted sandbox (default with --fake)
@@ -154,12 +160,17 @@ public static class Program
         var pluginSandboxPath = options.PluginDir is not null ? null : options.Sandbox == "local" ? null : HveData.PluginSandboxPath;
         var pluginDir = options.PluginDir ?? (options.Sandbox == "local" ? HveData.PluginDirectory : HveData.PluginSandboxPath);
 
-        // 3. The model. --fake is a ScriptedModelApi; otherwise FoundryModels picks the Azure route for the deployment. The
-        //    bridge forwards no request-level generation config, so the CLI's turns would otherwise run under the provider's
-        //    2048-token default; a file-writing agent needs the headroom the CLI itself asks for on the Anthropic wire (8192).
-        var model = options.Fake ? FakeHveModel.Create() : FoundryModels.Create(options.Model, new GenerateConfig { MaxTokens = MaxOutputTokens }, route: options.Route);
-        var anthropic = string.Equals(options.Route, "anthropic", StringComparison.OrdinalIgnoreCase)
-            || (options.Route is null && options.Model?.StartsWith("claude", StringComparison.OrdinalIgnoreCase) == true);
+        // 3. The model. --fake is a ScriptedModelApi; otherwise Models.Create routes the name: a bare deployment goes to
+        //    Foundry (--route, else the name's own rule), while an openai/ or anthropic/ prefix reaches that vendor's API
+        //    directly and openai/azure/ or anthropic/azure/ names a Foundry deployment explicitly. The bridge forwards no
+        //    request-level generation config, so the CLI's turns would otherwise run under the provider's 2048-token
+        //    default; a file-writing agent needs the headroom the CLI itself asks for on the Anthropic wire (8192).
+        var model = options.Fake ? FakeHveModel.Create() : Models.Create(options.Model, new GenerateConfig { MaxTokens = MaxOutputTokens }, route: options.Route);
+
+        // Which wire the sandboxed CLI speaks to the bridge. Ask the resolved provider rather than re-reading the name, so a
+        // prefixed or environment-supplied Claude deployment lands on the Anthropic wire too. The fake CLI is
+        // chat-completions only, and --fake resolves to a scripted api, so it keeps the OpenAI wire by construction.
+        var anthropic = model.Api is AnthropicFoundryModelApi or AnthropicModelApi;
 
         // 4. The solver options: how the Copilot CLI is installed and pointed at the bridge, and (generic+hve) where the
         //    host can read the plugin to embed a sample's agent body: the vendored copy, or a --plugin-dir that exists on

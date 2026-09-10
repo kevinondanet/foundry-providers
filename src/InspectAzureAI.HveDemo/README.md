@@ -292,6 +292,10 @@ dotnet run --project src/InspectAzureAI.HveDemo -- --task implement --harness ge
 dotnet run --project src/InspectAzureAI.HveDemo -- --task implement --harness copilot --framework none --model gpt-5.4-mini
 dotnet run --project src/InspectAzureAI.HveDemo -- --task implement --harness generic --framework none --model gpt-4o
 
+# the same cell against the vendors directly rather than through Foundry
+dotnet run --project src/InspectAzureAI.HveDemo -- --task implement --limit 1 --model openai/gpt-5.6-sol
+dotnet run --project src/InspectAzureAI.HveDemo -- --task implement --limit 1 --model anthropic/claude-sonnet-4-6
+
 # the CLI's raw output kept in the store
 dotnet run --project src/InspectAzureAI.HveDemo -- --task skill --debug --no-cleanup
 
@@ -304,6 +308,79 @@ The header prints one `harness` and one `framework` line, and the summary prints
 metric (with the suite's per-kind groups) and a legend of which dataset, solver, scorers and task ran — the
 legend names the cell (`solver   generic+hve: ...`) and drops the plugin and `hve_artefact_used` entries
 under `--framework none`.
+
+## Which provider a model name selects
+
+`--model` goes to `Models.Create`, the shared router, so the same name works here as in the example runner
+and the sample. The name itself picks the provider:
+
+| `--model` | Reaches | Credentials |
+|---|---|---|
+| `gpt-5.4-mini` | Foundry, route chosen by the name | `az login` + `AZUREAI_BASE_URL` |
+| `claude-sonnet-4-6` | Foundry Anthropic Messages | same |
+| `gpt-5.6-sol` | Foundry OpenAI Responses | same |
+| `openai/azure/<deployment>` | Foundry Responses, named explicitly | same |
+| `anthropic/azure/<deployment>` | Foundry Anthropic, named explicitly | same |
+| `openai/<model>` | api.openai.com directly | `OPENAI_API_KEY` |
+| `anthropic/<model>` | api.anthropic.com directly | `ANTHROPIC_API_KEY` |
+
+`--route models|anthropic|responses` forces the Foundry route for an unprefixed name; a prefixed name
+carries its own provider and ignores it. Two rules matter for this demo in particular:
+
+* **A Claude model puts the sandboxed CLI on the Anthropic wire.** The wire is chosen from the resolved
+  provider, not from the spelling of the name, so `claude-sonnet-4-6`, `anthropic/azure/...` and a direct
+  `anthropic/...` all reach the bridge the same way.
+* **A gpt-5.6 model needs the Responses API to use function tools at all**, which both the Foundry and the
+  direct route select for it automatically. On chat completions the deployment rejects function tools
+  alongside `reasoning_effort`, so neither harness could make a single tool call.
+
+Direct calls refuse to run while Azure endpoint variables are set, so that a missing prefix cannot silently
+send Foundry traffic to a vendor. Pin the endpoint to override that:
+
+```bash
+OPENAI_BASE_URL=https://api.openai.com/v1 \
+dotnet run --project src/InspectAzureAI.HveDemo -- --task implement --limit 1 --model openai/gpt-5.6-sol
+```
+
+`scripts/hve-matrix.sh` sweeps the routes against the harnesses one sample at a time and handles that
+environment difference per cell, skipping any cell whose credential is absent:
+
+```bash
+scripts/hve-matrix.sh                      # every cell, --task implement --limit 1
+scripts/hve-matrix.sh --cells gpt-direct-generic --dry-run
+```
+
+## Live results (routes x harnesses, 2026-09-09)
+
+`scripts/hve-matrix.sh`, `--task implement --limit 1`, sample `implement-slugify`, Docker, `--framework hve`
+throughout. Every cell scored 1.0 on all four scorers, so the columns that vary are cost and how the model
+was reached. Scores read check / reported / quality / evidence.
+
+| Model as typed | Resolved to | Harness | Scores | Tokens | Seconds |
+|---|---|---|---|---|---|
+| `claude-sonnet-4-6` | `anthropic/azure/claude-sonnet-4-6` | copilot | C/C/C/1.0 | 202,698 | 123.0 |
+| `claude-sonnet-4-6` | `anthropic/azure/claude-sonnet-4-6` | generic | C/C/C/1.0 | 94,188 | 91.1 |
+| `gpt-5.6-sol` | `openai/azure/gpt-5.6-sol` | copilot | C/C/C/1.0 | 189,655 | 75.1 |
+| `gpt-5.6-sol` | `openai/azure/gpt-5.6-sol` | generic | C/C/C/1.0 | 56,446 | 67.4 |
+| `openai/gpt-5.6-sol` | `openai/gpt-5.6-sol` (direct) | copilot | C/C/C/1.0 | 302,419 | 63.6 |
+| `openai/gpt-5.6-sol` | `openai/gpt-5.6-sol` (direct) | generic | C/C/C/1.0 | 44,983 | 49.2 |
+| `anthropic/claude-sonnet-4-6` | direct Anthropic | both | not run | | |
+
+What the sweep establishes:
+
+* **The route does not change the outcome, only the bill.** The same deployment reached through Foundry and
+  through the vendor directly passed identically. The Copilot harness costs three to seven times the generic
+  loop in every pairing, for the reason the earlier comparison found: the CLI resends its system prompt each
+  turn.
+* **A reasoning model works under both harnesses.** `gpt-5.6-sol` drives the Copilot CLI even though the CLI
+  speaks chat completions to the bridge, because the bridge translates to whatever the served model needs,
+  and the Responses API is what makes its function calls legal in the first place.
+* **The direct Copilot cell is the most expensive of the six.** Direct `gpt-5.6-sol` spent 302,419 tokens
+  against 189,655 for the same model through Foundry, on an identical sample, which is worth a second look
+  before reading anything into single-sample costs.
+* **Direct Anthropic is untested.** Those two cells need `ANTHROPIC_API_KEY`, which was not set on this host,
+  so the script skipped them rather than failing. Export a key and rerun `--cells
+  claude-direct-copilot,claude-direct-generic` to fill the last row.
 
 ## Live results (2026-09-08, Docker Desktop on macOS arm64, Foundry)
 

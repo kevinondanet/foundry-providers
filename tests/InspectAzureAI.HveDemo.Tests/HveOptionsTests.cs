@@ -6,6 +6,28 @@ namespace InspectAzureAI.HveDemo.Tests;
 /// <summary>The two axes of the matrix: <see cref="HveVariant"/> and how <c>Program.Options</c> parses <c>--harness</c>, <c>--framework</c> and the deprecated <c>--solver</c>.</summary>
 public sealed class HveOptionsTests
 {
+    [Theory]
+    [InlineData("gpt-5.4-mini")]                    // bare deployment: Foundry, route by name
+    [InlineData("openai/azure/gpt-5.6-sol")]        // Foundry deployment named explicitly
+    [InlineData("anthropic/azure/claude-sonnet-4-6")]
+    [InlineData("openai/gpt-5.6-sol")]              // direct api.openai.com
+    [InlineData("anthropic/claude-sonnet-4-6")]     // direct api.anthropic.com
+    public void model_names_reach_the_router_unchanged(string model)
+    {
+        // The demo hands --model to Models.Create, which owns provider prefixes, so nothing here may
+        // rewrite or reject a name: a prefixed model is how the direct providers are reached at all.
+        Assert.Equal(model, Program.Options.Parse(["--fake", "--model", model]).Model);
+    }
+
+    [Theory]
+    [InlineData("models")]
+    [InlineData("anthropic")]
+    [InlineData("responses")]
+    public void foundry_routes_are_carried_through(string route)
+    {
+        Assert.Equal(route, Program.Options.Parse(["--fake", "--route", route]).Route);
+    }
+
     [Fact]
     public void variant_parses_and_labels_the_four_cells()
     {
