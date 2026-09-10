@@ -277,8 +277,8 @@ public static class ModelRolesConfig
 {
     /// <summary>
     /// The roles a log recorded as the <c>model_roles</c> value <see cref="EvalOptions.ModelRoles"/> takes: each
-    /// role's models created by <paramref name="modelFactory"/> (default <c>FoundryModels.Create(name)</c>) with the
-    /// recorded generate config; null for null roles. Base URLs and model args are not carried (the factory owns them).
+    /// role's models created by <paramref name="modelFactory"/> (default <c>Models.Create</c>) with the
+    /// recorded generate config, base URL and sanitized model arguments; null for null roles. A custom name-only factory owns its endpoint and arguments.
     /// </summary>
     public static IReadOnlyDictionary<string, object>? FromConfig(IReadOnlyDictionary<string, IReadOnlyList<ModelConfig>>? roles, Func<string, Model>? modelFactory = null)
     {
@@ -297,7 +297,7 @@ public static class ModelRolesConfig
         return result;
     }
 
-    /// <summary>Each role's models as <see cref="ModelConfig"/> (name, config, no base URL or args in this port); null for null roles.</summary>
+    /// <summary>Each role's models as <see cref="ModelConfig"/> (qualified name, config, resolved base URL and sanitized args); null for null roles.</summary>
     public static IReadOnlyDictionary<string, IReadOnlyList<ModelConfig>>? ToConfig(ModelRoles? roles)
     {
         if (roles is null)
