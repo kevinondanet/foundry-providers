@@ -342,12 +342,14 @@ OPENAI_BASE_URL=https://api.openai.com/v1 \
 dotnet run --project src/InspectAzureAI.HveDemo -- --task implement --limit 1 --model openai/gpt-5.6-sol
 ```
 
-`scripts/hve-matrix.sh` sweeps the routes against the harnesses one sample at a time and handles that
+`scripts/hve-matrix.sh` sweeps route against harness against framework one sample at a time, naming each
+cell `<route>-<harness>-<framework>`. It handles that
 environment difference per cell, skipping any cell whose credential is absent:
 
 ```bash
-scripts/hve-matrix.sh                      # every cell, --task implement --limit 1
-scripts/hve-matrix.sh --cells gpt-direct-generic --dry-run
+scripts/hve-matrix.sh                       # every route, both harnesses, framework hve
+scripts/hve-matrix.sh --routes direct-anthropic,direct-openai --frameworks hve,none
+scripts/hve-matrix.sh --cells direct-openai-generic-none --dry-run
 ```
 
 ## Live results (routes x harnesses, 2026-09-09)
@@ -364,7 +366,8 @@ was reached. Scores read check / reported / quality / evidence.
 | `gpt-5.6-sol` | `openai/azure/gpt-5.6-sol` | generic | C/C/C/1.0 | 56,446 | 67.4 |
 | `openai/gpt-5.6-sol` | `openai/gpt-5.6-sol` (direct) | copilot | C/C/C/1.0 | 302,419 | 63.6 |
 | `openai/gpt-5.6-sol` | `openai/gpt-5.6-sol` (direct) | generic | C/C/C/1.0 | 44,983 | 49.2 |
-| `anthropic/claude-sonnet-4-6` | direct Anthropic | both | not run | | |
+| `anthropic/claude-sonnet-4-6` | `anthropic/claude-sonnet-4-6` (direct) | copilot | C/C/C/1.0 | 202,444 | 69 |
+| `anthropic/claude-sonnet-4-6` | `anthropic/claude-sonnet-4-6` (direct) | generic | C/C/C/1.0 | 109,061 | 90 |
 
 What the sweep establishes:
 
@@ -378,9 +381,45 @@ What the sweep establishes:
 * **The direct Copilot cell is the most expensive of the six.** Direct `gpt-5.6-sol` spent 302,419 tokens
   against 189,655 for the same model through Foundry, on an identical sample, which is worth a second look
   before reading anything into single-sample costs.
-* **Direct Anthropic is untested.** Those two cells need `ANTHROPIC_API_KEY`, which was not set on this host,
-  so the script skipped them rather than failing. Export a key and rerun `--cells
-  claude-direct-copilot,claude-direct-generic` to fill the last row.
+* **A prefixed Claude name still reaches the Anthropic wire.** `anthropic/claude-sonnet-4-6` does not begin
+  with `claude`, so the wire is chosen from the resolved provider rather than the spelling. The direct
+  Anthropic cells confirm it live.
+
+## Live results (the framework on and off, direct providers, 2026-09-09)
+
+`scripts/hve-matrix.sh --routes direct-anthropic,direct-openai --frameworks hve,none`, one sample as above.
+Every cell passed every scorer it ran. Under `--framework none` the plugin is never provisioned, so the
+evidence scorer is dropped by design and three scores are reported instead of four.
+
+| Route | Harness | Framework | Scores | Tokens | Seconds |
+|---|---|---|---|---|---|
+| direct-anthropic | copilot | hve | C/C/C/1.0 | 202,444 | 69 |
+| direct-anthropic | copilot | none | C/C/C | 163,753 | 57 |
+| direct-anthropic | generic | hve | C/C/C/1.0 | 109,061 | 90 |
+| direct-anthropic | generic | none | C/C/C | 30,113 | 52 |
+| direct-openai | copilot | hve | C/C/C/1.0 | 241,641 | 71 |
+| direct-openai | copilot | none | C/C/C | 161,505 | 58 |
+| direct-openai | generic | hve | C/C/C/1.0 | 37,991 | 67 |
+| direct-openai | generic | none | C/C/C | 55,228 | 88 |
+
+The sample is easy enough that no cell needed the framework to pass it, so this measures cost rather than
+capability. Two things stand out, both on one sample and neither safe to generalise:
+
+* **The framework's price is not the same for both models.** On Claude it is input: the briefing names every
+  component and is resent each turn, and the generic pairing goes from 27,682 input tokens to 104,903. On
+  `gpt-5.6-sol` the framework was *cheaper overall*, 37,991 against 55,228, because the briefed run produced
+  less output and reasoning (3,696 output tokens against 4,630). Guidance that costs a conversational model
+  context can save a reasoning model deliberation.
+* **The harness dominates either way.** Copilot cells cost two to seven times their generic twin in every
+  pairing, for the reason the earlier comparison found: the CLI resends its system prompt every turn. The
+  framework axis moves the total far less than the harness axis does.
+
+To reproduce, export the key rather than relying on a shell profile, which the script cannot see:
+
+```bash
+export ANTHROPIC_API_KEY=...   # or OPENAI_API_KEY
+scripts/hve-matrix.sh --routes direct-anthropic,direct-openai --frameworks hve,none
+```
 
 ## Live results (2026-09-08, Docker Desktop on macOS arm64, Foundry)
 
