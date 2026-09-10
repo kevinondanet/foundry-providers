@@ -8,6 +8,17 @@
     {
       "provider": "openai",
       "scenario": "simple",
+      "input": [
+        {
+          "content": "Be brief.",
+          "role": "system"
+        },
+        {
+          "content": "hi",
+          "role": "user"
+        }
+      ],
+      "tools": [],
       "model": "gpt-5.6-sol",
       "config": {},
       "model_args": {},
@@ -46,6 +57,17 @@
     {
       "provider": "openai",
       "scenario": "simple",
+      "input": [
+        {
+          "content": "Be brief.",
+          "role": "system"
+        },
+        {
+          "content": "hi",
+          "role": "user"
+        }
+      ],
+      "tools": [],
       "model": "gpt-5.4-mini",
       "config": {
         "reasoning_effort": "max",
@@ -90,6 +112,17 @@
     {
       "provider": "openai",
       "scenario": "simple",
+      "input": [
+        {
+          "content": "Be brief.",
+          "role": "system"
+        },
+        {
+          "content": "hi",
+          "role": "user"
+        }
+      ],
+      "tools": [],
       "model": "gpt-5.6-sol",
       "config": {
         "reasoning_effort": "max",
@@ -135,6 +168,17 @@
     {
       "provider": "openai",
       "scenario": "simple",
+      "input": [
+        {
+          "content": "Be brief.",
+          "role": "system"
+        },
+        {
+          "content": "hi",
+          "role": "user"
+        }
+      ],
+      "tools": [],
       "model": "gpt-4",
       "config": {
         "temperature": 0.3
@@ -176,6 +220,17 @@
     {
       "provider": "openai",
       "scenario": "simple",
+      "input": [
+        {
+          "content": "Be brief.",
+          "role": "system"
+        },
+        {
+          "content": "hi",
+          "role": "user"
+        }
+      ],
+      "tools": [],
       "model": "gpt-5.6-sol",
       "config": {
         "num_choices": 1
@@ -218,6 +273,17 @@
     {
       "provider": "openai",
       "scenario": "simple",
+      "input": [
+        {
+          "content": "Be brief.",
+          "role": "system"
+        },
+        {
+          "content": "hi",
+          "role": "user"
+        }
+      ],
+      "tools": [],
       "model": "gpt-5.4-pro",
       "config": {},
       "model_args": {},
@@ -257,6 +323,17 @@
     {
       "provider": "openai",
       "scenario": "simple",
+      "input": [
+        {
+          "content": "Be brief.",
+          "role": "system"
+        },
+        {
+          "content": "hi",
+          "role": "user"
+        }
+      ],
+      "tools": [],
       "model": "o3-deep-research",
       "config": {},
       "model_args": {},
@@ -296,6 +373,17 @@
     {
       "provider": "openai",
       "scenario": "simple",
+      "input": [
+        {
+          "content": "Be brief.",
+          "role": "system"
+        },
+        {
+          "content": "hi",
+          "role": "user"
+        }
+      ],
+      "tools": [],
       "model": "gpt-5.6-sol",
       "config": {},
       "model_args": {
@@ -340,6 +428,64 @@
     {
       "provider": "openai",
       "scenario": "tools_images",
+      "input": [
+        {
+          "content": "Be brief.",
+          "role": "system"
+        },
+        {
+          "content": [
+            {
+              "type": "text",
+              "text": "hi"
+            },
+            {
+              "type": "image",
+              "image": "data:image/png;base64,aGk=",
+              "detail": "auto"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": "Checking",
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "id": "call1",
+              "function": "f",
+              "arguments": {
+                "x": "v"
+              },
+              "type": "function"
+            }
+          ]
+        },
+        {
+          "content": "done",
+          "role": "tool",
+          "tool_call_id": "call1",
+          "function": "f"
+        }
+      ],
+      "tools": [
+        {
+          "name": "f",
+          "description": "Test function",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "x": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "x"
+            ],
+            "additionalProperties": false
+          }
+        }
+      ],
       "model": "gpt-5.6-sol",
       "config": {
         "max_tokens": 100,
@@ -434,6 +580,17 @@
     {
       "provider": "openai",
       "scenario": "simple",
+      "input": [
+        {
+          "content": "Be brief.",
+          "role": "system"
+        },
+        {
+          "content": "hi",
+          "role": "user"
+        }
+      ],
+      "tools": [],
       "model": "gpt-5.6-sol",
       "config": {
         "response_schema": {

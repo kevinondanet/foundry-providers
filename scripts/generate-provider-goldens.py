@@ -18,6 +18,10 @@ def scenario_inputs(scenario):
         return [ChatMessageSystem(content="Be brief."), ChatMessageUser(content=[ContentText(text="hi"), ContentImage(image="data:image/png;base64,aGk=")]), ChatMessageAssistant(content="Checking", tool_calls=[ToolCall(id="call1", function="f", arguments={"x":"v"})]), ChatMessageTool(content="done", tool_call_id="call1", function="f")], [ToolInfo(name="f", description="Test function", parameters=ToolParams(properties={"x":ToolParam(type="string")}, required=["x"]))]
     return [ChatMessageSystem(content="Be brief."), ChatMessageUser(content="hi")], []
 
+def recorded_inputs(scenario):
+    messages, tools = scenario_inputs(scenario)
+    return {"input": [message.model_dump(mode="json", exclude_none=True, exclude={"id"}) for message in messages], "tools": [tool.model_dump(mode="json", exclude_none=True) for tool in tools]}
+
 class Captured(Exception):
     pass
 
@@ -40,7 +44,7 @@ async def anthropic_case(model, config_args, scenario="simple"):
     headers = captured.pop("extra_headers", {})
     headers = {k: v for k, v in headers.items() if k in ("anthropic-version", "anthropic-beta")}
     captured.update(captured.pop("extra_body", {}))
-    return {"provider": "anthropic", "scenario":scenario, "model": model, "config": config_args, "body": captured, "headers": headers}
+    return {"provider": "anthropic", "scenario":scenario, **recorded_inputs(scenario), "model": model, "config": config_args, "body": captured, "headers": headers}
 
 async def main():
     cases = []
@@ -82,7 +86,7 @@ async def openai_case(model, config_args, model_args, scenario="simple"):
         await api.generate(*scenario_inputs(scenario), "auto", config)
     finally:
         await api.aclose()
-    return {"provider":"openai", "scenario":scenario, "model":model, "config":config_args, "model_args":model_args, **captured}
+    return {"provider":"openai", "scenario":scenario, **recorded_inputs(scenario), "model":model, "config":config_args, "model_args":model_args, **captured}
 
 async def openai_main(chat=False):
     cases = []
