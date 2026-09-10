@@ -93,7 +93,7 @@ internal static class Program
     private static async Task<int> RunAsync(Options options, CancellationToken cancellationToken)
     {
         // 1. The model. --fake is a ScriptedModelApi; otherwise FoundryModels picks the Azure route for the deployment.
-        var model = options.Fake ? FakeCtfModel.Create() : FoundryModels.Create(options.Model, route: options.Route);
+        var model = options.Fake ? FakeCtfModel.Create() : InspectAzureAI.Eval.Model.Models.Create(options.Model, route: options.Route);
 
         // 2. The sandbox spec. "docker" with a directory means "build the Dockerfile in it"; each sample gets a fresh container.
         var sandbox = options.Sandbox == "local"

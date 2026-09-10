@@ -31,6 +31,7 @@ public abstract class DirectModelApi : IModelApi, IDisposable
     public string ProviderName => Options.Provider;
     public string QualifiedModelName => $"{ProviderName}/{ModelName}";
     public string BaseUrl => Options.BaseUrl;
+    public GenerateConfig DefaultConfig => Config;
     public GenerateConfig Config { get; }
     public IReadOnlyDictionary<string, object?> ModelArgsForLog => Options.ForLog;
     public string ConnectionKey() => $"{BaseUrl}:{Options.AccountFingerprint}:{ModelName}";
@@ -39,7 +40,7 @@ public abstract class DirectModelApi : IModelApi, IDisposable
     public virtual bool CollapseUserMessages() => false;
     public virtual bool SupportsRemoteMcp() => false;
     public virtual bool ApplyRedactedReasoningTokensToInput() => false;
-    public RetryDecision ShouldRetry(Exception ex) => HttpRetryUtil.RetryDecisionFor(ex);
+    public RetryDecision ShouldRetry(Exception ex) => IsAuthFailure(ex) && Options.Settings.ApiKeyOverride is not null ? RetryDecision.Transient() : HttpRetryUtil.RetryDecisionFor(ex);
     public bool IsAuthFailure(Exception ex) => HttpRetryUtil.StatusCodeOf(ex) == 401;
     public abstract JsonObject BuildRequest(IReadOnlyList<ChatMessage> input, IReadOnlyList<ToolInfo> tools, ToolChoice toolChoice, GenerateConfig config, bool streaming);
     protected abstract string RequestPath(GenerateConfig config);
@@ -99,15 +100,16 @@ public abstract class DirectModelApi : IModelApi, IDisposable
             catch (ProviderHttpException ex)
             {
                 call.SetError(ex.Error ?? JsonValue.Create(ex.Message), watch.Elapsed.TotalSeconds);
-                var code = ex.Error?["code"]?.ToString() ?? ex.Error?["type"]?.ToString();
-                if (ex.Status == 400 && code is "context_length_exceeded" or "content_filter" or "content_policy_violation")
-                    return new GenerateResult(ModelOutput.FromContent(ModelName, "") with { Choices = [new(new ChatMessageAssistant(""), code == "context_length_exceeded" ? StopReason.ModelLength : StopReason.ContentFilter)] }, null, call);
+                if (ProviderName == "openai" && ex.Status is 400 or 422 && OpenAI.ResponsesOutput.RefusalOutput(ModelName, ex.Error?["code"]?.ToString(), ex.Error?["type"]?.ToString(), ex.Error?["message"]?.ToString() ?? "") is { } refusal)
+                    return new GenerateResult(refusal, null, call);
                 throw;
             }
         }
     }
     protected async Task<HttpResponseMessage> SendAsync(HttpMethod method, string path, JsonObject? body, GenerateConfig config, CancellationToken cancellationToken)
     {
+        if (config.ExtraHeaders?.Keys.Any(ModelArgumentSanitizer.IsSecret) == true)
+            throw new PrerequisiteError("Authentication headers are not accepted in extra_headers. Use api_key or DirectClientSettings.ApiKeyOverride.");
         using var request = new HttpRequestMessage(method, BaseUrl + path);
         if (body is not null) request.Content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json");
         foreach (var pair in Options.Headers.Concat(config.ExtraHeaders ?? new Dictionary<string,string>()))

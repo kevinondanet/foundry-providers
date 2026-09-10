@@ -8,6 +8,17 @@
     {
       "provider": "openai",
       "scenario": "simple",
+      "input": [
+        {
+          "content": "Be brief.",
+          "role": "system"
+        },
+        {
+          "content": "hi",
+          "role": "user"
+        }
+      ],
+      "tools": [],
       "model": "gpt-4",
       "config": {
         "max_tokens": 50,
@@ -55,6 +66,17 @@
     {
       "provider": "openai",
       "scenario": "simple",
+      "input": [
+        {
+          "content": "Be brief.",
+          "role": "system"
+        },
+        {
+          "content": "hi",
+          "role": "user"
+        }
+      ],
+      "tools": [],
       "model": "gpt-5.6-sol",
       "config": {
         "num_choices": 1,
@@ -85,6 +107,17 @@
     {
       "provider": "openai",
       "scenario": "simple",
+      "input": [
+        {
+          "content": "Be brief.",
+          "role": "system"
+        },
+        {
+          "content": "hi",
+          "role": "user"
+        }
+      ],
+      "tools": [],
       "model": "gpt-5.4-mini",
       "config": {},
       "model_args": {
@@ -109,6 +142,64 @@
     {
       "provider": "openai",
       "scenario": "tools_images",
+      "input": [
+        {
+          "content": "Be brief.",
+          "role": "system"
+        },
+        {
+          "content": [
+            {
+              "type": "text",
+              "text": "hi"
+            },
+            {
+              "type": "image",
+              "image": "data:image/png;base64,aGk=",
+              "detail": "auto"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": "Checking",
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "id": "call1",
+              "function": "f",
+              "arguments": {
+                "x": "v"
+              },
+              "type": "function"
+            }
+          ]
+        },
+        {
+          "content": "done",
+          "role": "tool",
+          "tool_call_id": "call1",
+          "function": "f"
+        }
+      ],
+      "tools": [
+        {
+          "name": "f",
+          "description": "Test function",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "x": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "x"
+            ],
+            "additionalProperties": false
+          }
+        }
+      ],
       "model": "gpt-5.6-sol",
       "config": {
         "max_tokens": 100,
@@ -185,6 +276,78 @@
             }
           }
         ]
+      },
+      "headers": {}
+    },
+    {
+      "provider": "openai",
+      "scenario": "simple",
+      "input": [
+        {
+          "content": "Be brief.",
+          "role": "system"
+        },
+        {
+          "content": "hi",
+          "role": "user"
+        }
+      ],
+      "tools": [],
+      "model": "gpt-5.6-sol",
+      "config": {
+        "response_schema": {
+          "name": "result",
+          "json_schema": {
+            "type": "object",
+            "properties": {
+              "answer": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "answer"
+            ],
+            "additionalProperties": false
+          },
+          "strict": true
+        }
+      },
+      "model_args": {
+        "responses_api": false
+      },
+      "path": "/v1/chat/completions",
+      "body": {
+        "messages": [
+          {
+            "role": "developer",
+            "content": "Be brief."
+          },
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ],
+        "model": "gpt-5.6-sol",
+        "response_format": {
+          "type": "json_schema",
+          "json_schema": {
+            "name": "result",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "answer": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "answer"
+              ]
+            },
+            "description": null,
+            "strict": true
+          }
+        }
       },
       "headers": {}
     }

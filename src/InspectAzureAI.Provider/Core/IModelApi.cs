@@ -12,10 +12,11 @@ public interface IModelApi
 
     /// <summary>Resolved endpoint; null is reserved for local/in-memory implementations.</summary>
     string? BaseUrl => null;
-    string ProviderName => GetType().Name.Replace("ModelApi", "", StringComparison.Ordinal).ToLowerInvariant();
+    string ProviderName => System.Text.RegularExpressions.Regex.Replace(GetType().Name, "(?:ModelApi|Api)$", "").ToLowerInvariant();
     string QualifiedModelName => ModelName;
     bool IsFoundry => false;
     IReadOnlyDictionary<string, object?> ModelArgsForLog => new Dictionary<string, object?>();
+    GenerateConfig DefaultConfig => new();
     int? MaxTokensForConfig(GenerateConfig config) => MaxTokens();
     RetryDecision ShouldRetry(Exception ex) => Util.HttpRetryUtil.RetryDecisionFor(ex);
     bool IsAuthFailure(Exception ex) => false;

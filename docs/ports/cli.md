@@ -51,9 +51,9 @@ unknown task/model/argument, missing files, refused options); 3 sign-in, Azure, 
   name is the snake_case of the method name; `-T` values are bound to the method's parameters by name with type
   conversion, and an unknown or missing argument is a prerequisite error (Python: a `TypeError`). With no task spec every
   discovered task runs (Python: the tasks of the cwd). `list tasks` takes assembly paths, not directories or globs.
-- **Model names.** `mockllm/model` is built in (its `custom_outputs` takes strings); `azureai/` and `anthropic/` prefixes
-  pick the Foundry route, a bare name is a Foundry deployment, any other prefix is an error naming the known providers
-  (Python's `get_model` has a provider registry). `--model a,b` runs the models one after another (Python: concurrently).
+- **Model names.** `mockllm/model` is built in (its `custom_outputs` takes strings); `openai/` and `anthropic/` call the direct services.
+  `openai/azure/`, `anthropic/azure/`, `azureai/` and bare deployments select Foundry. The shared `Models` factory
+  preserves custom registrations. See [direct providers and migration](../direct-providers.md) for endpoint guards. `--model a,b` runs the models one after another (Python: concurrently).
 - **No solver/scorer registry.** `--solver`, `--scorer`, `--metric` and `--epochs-reducer` name the built-in factories
   (`Solvers`, `Scorers`, `Metrics`, `Reducers`) by their Python names with `-S` args bound by parameter; `exact` maps to
   the Eval port's `exact_match`. `score` without `--scorer` re-creates the header's scorers the same way.

@@ -26,12 +26,12 @@ public sealed record EvalRetryOptions
 
     /// <summary>
     /// Port of the <c>get_model(model, config, base_url, **model_args)</c> call: creates the log's model from its
-    /// spec (default: <c>FoundryModels.Create(spec.Model, modelArgs: spec.ModelArgs)</c>). The recorded generate
+    /// spec (default: <c>Models.Create(spec.Model, baseUrl: spec.ModelBaseUrl, modelArgs: spec.ModelArgs)</c>). The recorded generate
     /// config, with the overrides below applied, is layered onto the returned model.
     /// </summary>
     public Func<EvalSpec, Model>? ResolveModel { get; init; }
 
-    /// <summary>Creates the models of the recorded roles by name (default <c>FoundryModels.Create(name)</c>); see <see cref="ModelRolesConfig.FromConfig"/>.</summary>
+    /// <summary>Optionally overrides creation of recorded roles by name; the default shared factory also restores their endpoints and arguments. see <see cref="ModelRolesConfig.FromConfig"/>.</summary>
     public Func<string, Model>? ResolveRoleModel { get; init; }
 
     /// <summary>Port of <c>log_dir</c>; null writes the retried log next to the original (Python defaults to <c>./logs</c>).</summary>
@@ -123,7 +123,7 @@ public static class EvalRetry
             StreamIdleTimeout = options.StreamIdleTimeout ?? spec.ModelGenerateConfig.StreamIdleTimeout,
             MaxConnections = options.MaxConnections ?? spec.ModelGenerateConfig.MaxConnections,
         };
-        var resolveModel = options.ResolveModel ?? (recorded => FoundryModels.Create(recorded.Model, modelArgs: recorded.ModelArgs));
+        var resolveModel = options.ResolveModel ?? (recorded => Models.Create(recorded.Model, baseUrl: recorded.ModelBaseUrl, modelArgs: recorded.ModelArgs));
         var model = resolveModel(spec).WithConfig(config);
         var reporter = options.Reporter;
         return new EvalOptions

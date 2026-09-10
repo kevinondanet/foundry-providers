@@ -66,7 +66,7 @@ public sealed class EvalsetExample : IExample
         var maxTasks = ctx.TaskArg("max_tasks") is null ? (int?)null : ctx.TaskArgInt("max_tasks", 0);
         return Build(
             logDir: ctx.TaskArg("log_dir", DefaultLogDir)!,
-            secondModel: ctx.Fake ? FakeEvalsetModels.Second() : model2 is null ? null : FoundryModels.Create(model2),
+            secondModel: ctx.Fake ? FakeEvalsetModels.Second() : model2 is null ? null : InspectAzureAI.Eval.Model.Models.Create(model2),
             maxTasks: maxTasks,
             retryAttempts: ctx.TaskArgInt("retry_attempts", EvalsetRun.DefaultRetryAttempts),
             output: ctx.Out);
@@ -78,7 +78,7 @@ public sealed class EvalsetExample : IExample
     /// </summary>
     [Task(TaskName)]
     public static EvalTask EvalsetTask(string logDir = DefaultLogDir, string? model2 = null, int? maxTasks = null, int retryAttempts = EvalsetRun.DefaultRetryAttempts) =>
-        Build(logDir, model2 is null ? null : FoundryModels.Create(model2), maxTasks, retryAttempts, Console.Out);
+        Build(logDir, model2 is null ? null : InspectAzureAI.Eval.Model.Models.Create(model2), maxTasks, retryAttempts, Console.Out);
 
     /// <summary>
     /// The wrapper task: one sample whose solver runs the eval set on the active model (the run's) and

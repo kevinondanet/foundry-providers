@@ -192,7 +192,7 @@ public static class EvalLogWriter
             foreach (var property in info.Properties)
             {
                 if (property.Get is not { } get) continue;
-                if (info.Type == typeof(ModelConfig) && property.Name == "args")
+                if ((info.Type == typeof(ModelConfig) && property.Name == "args") || property.Name == "model_args")
                     property.Get = instance => Provider.Util.ModelArgumentSanitizer.ForLog((IReadOnlyDictionary<string, object?>?)get(instance));
                 if (info.Type == typeof(Provider.Core.GenerateConfig) && property.Name == "extra_headers")
                     property.Get = instance => (get(instance) as IReadOnlyDictionary<string, string>)?.Where(p => !Provider.Util.ModelArgumentSanitizer.IsSecret(p.Key)).ToDictionary(p => p.Key, p => p.Value);

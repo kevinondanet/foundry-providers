@@ -16,7 +16,7 @@ public delegate Model ModelFactory(ModelSpec spec);
 /// <summary>
 /// Port of the provider half of <c>get_model()</c> for the CLI: a <c>provider/name</c> model string is routed to a
 /// registered factory (<c>mockllm/model</c> is built in, as in Python; tests register their own), the
-/// <c>azureai/</c> and <c>anthropic/</c> prefixes pick the Foundry route explicitly, and a bare deployment name goes
+/// <c>openai/</c> and <c>anthropic/</c> prefixes pick direct services; <c>/azure/</c> selects Foundry. A bare deployment name goes
 /// to <see cref="FoundryModels"/> (<c>claude*</c> to the Anthropic route). A name with an unknown prefix is a
 /// <see cref="PrerequisiteError"/>. With no name, <c>INSPECT_EVAL_MODEL</c> is read, then the Foundry defaults.
 /// </summary>
@@ -31,6 +31,13 @@ public static class ModelProviders
     {
         ["mockllm"] = spec => new Model(new MockLlmModelApi(spec.Name, spec.ModelArgs), spec.Config),
     };
+
+    static ModelProviders()
+    {
+        foreach (var pair in Factories) RegisterShared(pair.Key, pair.Value);
+    }
+    private static void RegisterShared(string provider, ModelFactory factory) => InspectAzureAI.Eval.Model.Models.Register(provider,
+        (name, config, baseUrl, args) => factory(new ModelSpec(name, provider, name.Split('/', 2)[1], config, baseUrl, args)));
 
     /// <summary>The registered provider prefixes plus the Foundry routes.</summary>
     public static IReadOnlyList<string> Providers
@@ -52,6 +59,7 @@ public static class ModelProviders
         lock (Gate)
         {
             Factories[provider] = factory;
+            RegisterShared(provider, factory);
         }
     }
 
@@ -61,6 +69,7 @@ public static class ModelProviders
         ArgumentNullException.ThrowIfNull(provider);
         lock (Gate)
         {
+            InspectAzureAI.Eval.Model.Models.Unregister(provider);
             return Factories.Remove(provider);
         }
     }
@@ -73,59 +82,6 @@ public static class ModelProviders
             name = Environment.GetEnvironmentVariable(EvalModelVar);
         }
 
-        string? route = null;
-        var deployment = name;
-        if (!string.IsNullOrWhiteSpace(name) && name.Split('/', 2) is [var provider, var rest])
-        {
-            ModelFactory? factory;
-            lock (Gate)
-            {
-                Factories.TryGetValue(provider, out factory);
-            }
-
-            if (factory is not null)
-            {
-                return factory(new ModelSpec(name, provider, rest, config, baseUrl, modelArgs));
-            }
-
-            switch (provider)
-            {
-                case "azureai":
-                case "azure":
-                case "foundry":
-                    route = "models";
-                    deployment = rest;
-                    break;
-                case "anthropic":
-                    route = "anthropic";
-                    deployment = rest;
-                    break;
-                case "openai":
-                    route = "responses";
-                    deployment = rest;
-                    break;
-                default:
-                    throw new PrerequisiteError($"Unknown model provider '{provider}' in '{name}'. Known providers: {string.Join(", ", Providers)}; a bare deployment name (e.g. 'gpt-5.4-mini') uses Azure AI Foundry.");
-            }
-        }
-
-        if (baseUrl is null)
-        {
-            return FoundryModels.Create(deployment, config, route, modelArgs: modelArgs);
-        }
-
-        deployment = string.IsNullOrWhiteSpace(deployment) ? Environment.GetEnvironmentVariable(FoundryModels.ModelVar) : deployment;
-        if (string.IsNullOrWhiteSpace(deployment))
-        {
-            deployment = FoundryModels.DefaultModel;
-        }
-
-        IModelApi api = FoundryModels.RouteFor(deployment, route) switch
-        {
-            "anthropic" => new AnthropicFoundryModelApi(deployment, baseUrl, config, modelArgs: modelArgs),
-            "responses" => new InspectAzureAI.Provider.OpenAI.OpenAIResponsesModelApi(deployment, baseUrl, config, modelArgs: modelArgs),
-            _ => new AzureAIModelApi(deployment, baseUrl, config, modelArgs: modelArgs),
-        };
-        return new Model(api, config);
+        return InspectAzureAI.Eval.Model.Models.Create(name, config, baseUrl, modelArgs: modelArgs);
     }
 }

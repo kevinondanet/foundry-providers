@@ -17,7 +17,7 @@ public class ProviderIdentityCharacterizationTests
         using var messages = new AnthropicFoundryModelApi("claude-sonnet-4-6", "https://baseline/models");
         Assert.Equal("gpt-5.6-sol", responses.ModelName);
         Assert.Equal("claude-sonnet-4-6", messages.ModelName);
-        Assert.Equal("openai/gpt-5.6-sol", new ModelName(new Model.Model(responses)).ToString());
+        Assert.Equal("openai/azure/gpt-5.6-sol", new ModelName(new Model.Model(responses)).ToString());
         Assert.Equal(3, TaskIdentifier.Version);
         CacheEntry Entry(string endpoint) => new(endpoint, new GenerateConfig(), [new ChatMessageUser("hello")], responses.ModelName, CachePolicy.Default, ToolChoice.Auto, []);
         Assert.Equal(Entry(responses.BaseUrl).Key, Entry(responses.BaseUrl).Key);

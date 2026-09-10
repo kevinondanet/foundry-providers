@@ -361,7 +361,6 @@ internal static class EvalCommands
         {
             ResolveTask = log => TaskRegistry.Create(registry.Resolve(log.Eval.TaskRegistryName ?? log.Eval.Task), log.Eval.TaskArgs),
             ResolveModel = spec => ModelProviders.Resolve(spec.Model, spec.ModelGenerateConfig, spec.ModelBaseUrl, spec.ModelArgs),
-            ResolveRoleModel = name => ModelProviders.Resolve(name),
             LogDir = Opt.Specified(result, o.Common.LogDir) || Opt.EnvText("INSPECT_LOG_DIR") is not null ? common.LogDir : null,
             MaxSamples = result.GetValue(o.MaxSamples),
             SandboxCleanup = result.GetValue(o.NoSandboxCleanup) ? false : null,

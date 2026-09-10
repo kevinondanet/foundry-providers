@@ -12,10 +12,15 @@ from inspect_ai.model._providers.anthropic import AnthropicAPI
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = Path(os.environ.get("INSPECT_PROVIDER_FIXTURE_DIR", ROOT / "tests/InspectAzureAI.Tests/Fixtures"))
 OUTPUT.mkdir(parents=True, exist_ok=True)
+SCHEMA = {"name":"result", "json_schema":{"type":"object", "properties":{"answer":{"type":"string"}}, "required":["answer"], "additionalProperties":False}, "strict":True}
 def scenario_inputs(scenario):
     if scenario == "tools_images":
         return [ChatMessageSystem(content="Be brief."), ChatMessageUser(content=[ContentText(text="hi"), ContentImage(image="data:image/png;base64,aGk=")]), ChatMessageAssistant(content="Checking", tool_calls=[ToolCall(id="call1", function="f", arguments={"x":"v"})]), ChatMessageTool(content="done", tool_call_id="call1", function="f")], [ToolInfo(name="f", description="Test function", parameters=ToolParams(properties={"x":ToolParam(type="string")}, required=["x"]))]
     return [ChatMessageSystem(content="Be brief."), ChatMessageUser(content="hi")], []
+
+def recorded_inputs(scenario):
+    messages, tools = scenario_inputs(scenario)
+    return {"input": [message.model_dump(mode="json", exclude_none=True, exclude={"id"}) for message in messages], "tools": [tool.model_dump(mode="json", exclude_none=True) for tool in tools]}
 
 class Captured(Exception):
     pass
@@ -39,7 +44,7 @@ async def anthropic_case(model, config_args, scenario="simple"):
     headers = captured.pop("extra_headers", {})
     headers = {k: v for k, v in headers.items() if k in ("anthropic-version", "anthropic-beta")}
     captured.update(captured.pop("extra_body", {}))
-    return {"provider": "anthropic", "scenario":scenario, "model": model, "config": config_args, "body": captured, "headers": headers}
+    return {"provider": "anthropic", "scenario":scenario, **recorded_inputs(scenario), "model": model, "config": config_args, "body": captured, "headers": headers}
 
 async def main():
     cases = []
@@ -54,6 +59,8 @@ async def main():
     ]:
         cases.append(await anthropic_case(model, config))
     cases.append(await anthropic_case("claude-opus-5", {"reasoning_effort":"high"}, "tools_images"))
+    cases.append(await anthropic_case("claude-sonnet-4-6", {"response_schema":SCHEMA,"reasoning_effort":"high","reasoning_tokens":2048}, "simple"))
+    cases.append(await anthropic_case("claude-opus-4-20250514", {"reasoning_effort":"high"}))
     import inspect_ai
     source = Path(inspect_ai.__file__).resolve().parents[2]
     revision = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
@@ -79,7 +86,7 @@ async def openai_case(model, config_args, model_args, scenario="simple"):
         await api.generate(*scenario_inputs(scenario), "auto", config)
     finally:
         await api.aclose()
-    return {"provider":"openai", "scenario":scenario, "model":model, "config":config_args, "model_args":model_args, **captured}
+    return {"provider":"openai", "scenario":scenario, **recorded_inputs(scenario), "model":model, "config":config_args, "model_args":model_args, **captured}
 
 async def openai_main(chat=False):
     cases = []
@@ -99,6 +106,7 @@ async def openai_main(chat=False):
     ]):
         cases.append(await openai_case(model, config, args))
     cases.append(await openai_case("gpt-5.6-sol", {"max_tokens":100,"parallel_tool_calls":False}, {"responses_api": not chat}, "tools_images"))
+    cases.append(await openai_case("gpt-5.6-sol", {"response_schema":SCHEMA}, {"responses_api": not chat}))
     import inspect_ai
     revision = subprocess.check_output(["git", "-C", str(Path(inspect_ai.__file__).resolve().parents[2]), "rev-parse", "HEAD"], text=True).strip()
     output = {"python_revision":revision, "notes":["Reasoning summaries disabled unless explicit: no live verification probe.", "Responses store=true is sent explicitly by C#, equivalent to the Python SDK default."], "cases":cases}

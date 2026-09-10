@@ -1,17 +1,23 @@
-# InspectAzureAI — Inspect AI on .NET for Azure AI Foundry, `az login` only
+# InspectAzureAI — Inspect AI on .NET for Foundry, OpenAI and Anthropic
+
+Direct OpenAI and Claude generation is supported alongside Azure AI Foundry. **`openai/<model>` and
+`anthropic/<model>` now call the direct vendor services.** Existing Foundry users should use
+`openai/azure/<deployment>`, `anthropic/azure/<deployment>`, or a bare deployment name. When Azure
+endpoint settings are present, direct calls require an explicitly configured direct base URL. See
+[direct-provider setup, migration and validation](docs/direct-providers.md).
 
 A .NET 10 port of [Inspect AI](https://inspect.aisi.org.uk) built around
 [Azure AI Foundry](https://ai.azure.com/): the `azureai` model provider (the adapter for Foundry
 model-inference endpoints) and its companion providers for Claude deployments on the Anthropic Messages
 route and for gpt-5.6, gpt-5.4-pro and o-series deployments on the OpenAI Responses route, the eval
 engine that drives them (tasks, solvers, scorers, tools, agents, sandboxes, limits, logs,
-eval sets), two SWE agents, the `inspectai` command line and three console apps. The provider is the
+eval sets), two SWE agents, the `inspectai` command line and three console apps. The Foundry adapter is the
 **lite** cut: it keeps everything needed to drive the deployments that were verified on a live Foundry
 resource (below) with a developer sign-in, and drops the rest:
 
 | Kept | Dropped (available on `main`) |
 |---|---|
-| Entra ID authentication through `DefaultAzureCredential`, which picks up `az login` (and managed identity when hosted) | API keys (`AZURE_API_KEY` / `AZUREAI_API_KEY` / `AZUREAI_ANTHROPIC_API_KEY`), the api-key override hook, the `AZUREAI_CREDENTIAL` selector and `--auth` |
+| Entra ID authentication through `DefaultAzureCredential`, which picks up `az login` (and managed identity when hosted) | API keys (`AZURE_API_KEY` / `AZUREAI_API_KEY` / `AZUREAI_ANTHROPIC_API_KEY`), the Azure api-key override path, the `AZUREAI_CREDENTIAL` selector and `--auth` |
 | **Native tool calling** (`tools` / `tool_choice` on the wire, `tool_calls` parsed back), on all three routes | Llama detection and `<tool_call>` prompt-format tool emulation (`emulate_tools`, `Llama31Handler`) |
 | Streaming with `on_stream` events, images, `ModelCall` capture, retry classification, content-filter stop details | The YAML fallback for non-JSON tool arguments (native function calling always returns JSON) |
 | The Mistral rules, the gpt-5 / o-series `max_completion_tokens` rule (plus the Microsoft family), `-M max_completion_tokens=true` | |
@@ -368,7 +374,7 @@ native tool call and a reasoning call (`--reasoning-effort medium` mapped per fa
 | Cohere-command-a-plus-05-2026 | Cohere | ok | ok | ok | text | |
 | grok-4.6 | xAI | ok | ok | ok | hidden · 238 tok | ~20–28 s for the three checks |
 | claude-sonnet-4-6 | Anthropic | ok | ok | ok | text | the model-inference route answers `Requested API is currently not supported` for Anthropic deployments; `test-all` sends them through the Anthropic Messages route (`/anthropic/v1/messages`, same bearer token) via the companion provider. `image` on this route also described a test picture correctly |
-| gpt-5.4-pro | OpenAI | — | — | — | — | not a chat-completions deployment (`models` shows chat = no): HTTP 400 `The requested operation is unsupported.`, returned as the terminal error; served on the Responses route, which is now its default (`--route responses`, `openai/gpt-5.4-pro`); `hello_world` succeeded there on 2026-09-09 with no `--route` |
+| gpt-5.4-pro | OpenAI | — | — | — | — | not a chat-completions deployment (`models` shows chat = no): HTTP 400 `The requested operation is unsupported.`, returned as the terminal error; served on the Responses route, which is now its default (`--route responses`, `openai/azure/gpt-5.4-pro`); `hello_world` succeeded there on 2026-09-09 with no `--route` |
 | Cohere-parse-v5 | Cohere | — | — | — | — | document-parsing model (`models` shows chat = no): HTTP 404 `Requested API is currently not supported` |
 | FLUX.2-pro | Black Forest Labs | — | — | — | — | image-generation model: HTTP 404 `Service request failed.` on `/chat/completions`. The ARM capability metadata still marks it chat-capable, so a bare `test-all` includes it and exits 1; use `--only` to pick the chat deployments |
 
@@ -450,7 +456,7 @@ false` in ARM) answers only there. `OpenAI/OpenAIResponsesModelApi.cs` (with `Re
 `ResponsesTools`, `ResponsesOutput` and `ResponsesStreamAccumulator`) is the third `IModelApi`: a hand-rolled
 `HttpClient` over an injectable `HttpMessageHandler` (no OpenAI NuGet package) posting to
 `https://<resource>.services.ai.azure.com/openai/v1/responses` with the same bearer token and audience as the
-other routes. Selection: `--route responses` (examples runner and Sample), the `openai/<deployment>` prefix in
+other routes. Selection: `--route responses` (examples runner and Sample), the `openai/azure/<deployment>` prefix in
 `inspectai`, or automatically for names containing `gpt-5.6`, `-pro` or `codex` or starting with `o<digit>`
 (`FoundryModels.RouteFor`); `--route models` or `azureai/<deployment>` forces chat completions, and
 gpt-5.4-mini stays there. Requests carry `input` items (system → `developer`; `input_text` / `input_image` /

@@ -136,8 +136,8 @@ public sealed class AnthropicModelApi : DirectModelApi
         foreach (var pair in Options.Headers.Concat(config.ExtraHeaders ?? new Dictionary<string, string>()))
             if (pair.Key.Equals("anthropic-beta", StringComparison.OrdinalIgnoreCase) || pair.Key.Equals("anthropic_beta", StringComparison.OrdinalIgnoreCase)) Add(pair.Value);
         if (config.Effort is not null) Add("effort-2025-11-24");
-        if (config.ResponseSchema is not null) Add("structured-outputs-2025-11-13");
         if (Thinking(config) && (config.MaxTokens ?? MaxTokensForConfig(config)) > 8192) Add("output-128k-2025-02-19");
+        if (config.ResponseSchema is not null) Add("structured-outputs-2025-11-13");
         if (Thinking(config) && (Claude4 || Claude5 || Latest)) Add("interleaved-thinking-2025-05-14");
         return string.Join(',', betas.Distinct(StringComparer.Ordinal));
     }

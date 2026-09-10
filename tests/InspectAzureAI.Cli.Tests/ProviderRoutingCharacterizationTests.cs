@@ -23,16 +23,14 @@ public class ProviderRoutingCharacterizationTests
         try
         {
             foreach (var pair in variables) Environment.SetEnvironmentVariable(pair.Key, pair.Value);
-            existing_prefixes_resolve_to_foundry("openai/gpt-5.6-sol", "gpt-5.6-sol", "responses");
-            existing_prefixes_resolve_to_foundry("anthropic/claude-sonnet-4-6", "claude-sonnet-4-6", "anthropic");
+            existing_prefixes_resolve_to_foundry("openai/azure/gpt-5.6-sol", "gpt-5.6-sol", "responses");
+            existing_prefixes_resolve_to_foundry("anthropic/azure/claude-sonnet-4-6", "claude-sonnet-4-6", "anthropic");
         }
         finally { foreach (var pair in saved) Environment.SetEnvironmentVariable(pair.Key, pair.Value); }
     }
 
     [Theory]
-    [InlineData("openai/gpt-5.6-sol", "gpt-5.6-sol", "responses")]
     [InlineData("openai/azure/gpt-5.6-sol", "gpt-5.6-sol", "responses")]
-    [InlineData("anthropic/claude-sonnet-4-6", "claude-sonnet-4-6", "anthropic")]
     [InlineData("anthropic/azure/claude-sonnet-4-6", "claude-sonnet-4-6", "anthropic")]
     [InlineData("gpt-5.6-sol", "gpt-5.6-sol", "responses")]
     [InlineData("gpt-5.4-mini", "gpt-5.4-mini", "models")]

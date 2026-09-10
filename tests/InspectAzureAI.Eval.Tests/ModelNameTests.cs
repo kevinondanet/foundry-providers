@@ -58,7 +58,7 @@ public class ModelNameTests
         using var responses = new InspectAzureAI.Provider.OpenAI.OpenAIResponsesModelApi(
             "gpt-5.6-sol", "https://example.com/models", settings: new InspectAzureAI.Provider.AzureAIClientSettings { TokenCredential = new FakeTokenCredential("t") });
         Assert.Equal("openai", ModelName.ProviderName(responses));
-        Assert.Equal("openai/gpt-5.6-sol", new ModelName(new Model(responses)).ToString());
+        Assert.Equal("openai/azure/gpt-5.6-sol", new ModelName(new Model(responses)).ToString());
     }
 
     [Theory]

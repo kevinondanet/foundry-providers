@@ -253,7 +253,8 @@ namespace InspectAzureAI.Sample
               --help                    this text
 
             options:
-              --model <name>            model name (default: $INSPECT_AZUREAI_MODEL or gpt-5.4-mini)
+              --model <name>            Inspect model specification (default: $INSPECT_AZUREAI_MODEL or gpt-5.4-mini)
+                                        openai/<model> or anthropic/<model> for direct; add /azure/ for Foundry
               --streaming auto|true|false   the `streaming` model arg (default auto)
               --fake                    answer from a canned in-memory transport (no network, no sign-in)
               --temperature <n>         sampling temperature (default: not sent; gpt-5 deployments accept only 1)
@@ -265,15 +266,17 @@ namespace InspectAzureAI.Sample
               --reasoning-summary <s>   Inspect's reasoning_summary (none|concise|detailed|auto): reasoning.summary on the
                                         Responses route (opt-in; other routes ignore it)
               --model-arg key=value     repeatable; the Python -M model args: max_completion_tokens=true (MAI-Thinking-1),
-                                        streaming, model_format=<vendor>, anthropic_beta=<list>, or any pass-through body
-                                        field; JSON values are parsed, e.g. thinking={"type":"enabled"}
+                                        streaming, model_format=<vendor>, anthropic_beta=<list>. Direct providers require
+                                        extra_body for additional wire fields; JSON values are parsed.
               --route models|anthropic|responses
-                                        chat/stream/tools/image: the model-inference route (default), the Anthropic
+                                        Foundry chat/stream/tools/image: the model-inference route, the Anthropic
                                         Messages route (/anthropic/v1/messages) for Claude deployments or the OpenAI
                                         Responses route (/openai/v1/responses) for gpt-5.6* / o-series / -pro / codex
                                         deployments
 
             environment:
+              OPENAI_API_KEY / ANTHROPIC_API_KEY                    direct service credentials
+              OPENAI_BASE_URL / ANTHROPIC_BASE_URL                  direct endpoints; required when Azure settings exist
               AZURE_ENDPOINT_URL / AZUREAI_ENDPOINT_URL / AZUREAI_BASE_URL   endpoint (in that order)
               INSPECT_EVAL_MODEL_BASE_URL                           last-resort endpoint fallback
               AZUREAI_AUDIENCE                                      Entra ID token scope (default https://cognitiveservices.azure.com/.default)
@@ -342,6 +345,7 @@ namespace InspectAzureAI.Sample
         /// <summary>Creates the provider for the selected route: model-inference (default), the Anthropic Messages route or the OpenAI Responses route.</summary>
         public static IModelApi CreateModelApi(string? route, string? model, string? streaming, bool fake)
         {
+            if (!fake) return InspectAzureAI.Eval.Model.Models.CreateApi(model, route: route, streaming: streaming, modelArgs: ExtraModelArgs);
             if (route is null || route.Equals("models", StringComparison.OrdinalIgnoreCase))
             {
                 return CreateApi(model, streaming, fake);

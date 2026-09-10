@@ -8,7 +8,7 @@ public static class ModelArgumentSanitizer
     public static bool IsSecret(string key)
     {
         var normalized = key.Replace('-', '_').ToLowerInvariant();
-        return normalized is "api_key" or "auth_token" or "access_token" or "authorization" or "proxy_authorization" or "x_api_key" or "cookie" or "set_cookie"
+        return normalized is "api_key" or "auth_token" or "access_token" or "api_token" or "token" or "client_secret" or "password" or "azure_ad_token" or "azure_ad_token_provider" or "authorization" or "proxy_authorization" or "x_api_key" or "cookie" or "set_cookie"
             || normalized.StartsWith("aws_", StringComparison.Ordinal);
     }
     public static IReadOnlyDictionary<string, object?> ForLog(IReadOnlyDictionary<string, object?>? args)
@@ -17,6 +17,7 @@ public static class ModelArgumentSanitizer
         foreach (var (key, value) in args ?? new Dictionary<string, object?>())
         {
             if (IsSecret(key) || value is HttpClient or HttpMessageHandler or Delegate) continue;
+            if (value is null or string or bool or int or long or double or float or decimal) { result[key] = value; continue; }
             var node = value is JsonNode json ? json.DeepClone() : JsonSerializer.SerializeToNode(value);
             result[key] = Clean(node);
         }

@@ -27,11 +27,11 @@ public sealed partial class Model
     {
         ArgumentNullException.ThrowIfNull(api);
         Api = api;
-        Config = config ?? new GenerateConfig();
+        Config = api.DefaultConfig.Merge(config);
         Retry = retry ?? new ModelRetryOptions();
     }
 
-    public string Name => Api.ModelName;
+    public string Name => ModelIdentity.ForLog(Api);
 
     public IModelApi Api { get; }
 
@@ -189,7 +189,7 @@ public sealed partial class Model
         var cacheMode = cache is null ? (CacheMode?)null : CacheMode.Write;
         var cacheEntry = cache is null
             ? null
-            : new CacheEntry(ModelApiHooks.BaseUrl(Api), resolvedConfig, messages, Name, cache, resolvedChoice, resolvedTools, context?.SampleState?.Epoch);
+            : new CacheEntry(ModelApiHooks.BaseUrl(Api), resolvedConfig, messages, ModelIdentity.ForCache(Api), cache, resolvedChoice, resolvedTools, context?.SampleState?.Epoch, Api.IsFoundry ? null : Api.ModelArgsForLog);
 
         var started = DateTimeOffset.UtcNow;
         var retries = 0;
