@@ -20,8 +20,8 @@ using Eval = InspectAzureAI.Eval.Runner.Eval;
 /// <see cref="FakeCopilotCli"/> playing the CLI against the real sandbox agent bridge under the copilot harness and
 /// <see cref="FakeHveModel"/> (a <c>ScriptedModelApi</c>) producing the tool calls that make every check pass. Needs
 /// <c>python3</c>, <c>bash</c> and <c>git</c> on this host, as the checks and the commit-message setup script run for real in
-/// the sample's mirror directory. Assertions marked "needs SCORER's generic evidence rules" depend on the evidence rules of
-/// SPEC E.2 and are red until that work is merged.
+/// the sample's mirror directory. Assertions marked "generic evidence rules" rely on <see cref="HveScorers"/> reading
+/// Inspect's own tool events, which is how the generic harness earns artefact evidence with no Copilot CLI JSONL to read.
 /// </summary>
 public sealed class HveOfflineEndToEndTests : IDisposable
 {
@@ -194,7 +194,7 @@ public sealed class HveOfflineEndToEndTests : IDisposable
         var evidence = rpi.Scores![HveScorers.ArtefactUsedName];
         Assert.Equal(1.0, evidence.Metadata!["agent/rpi-agent"]);
 
-        // needs SCORER's generic evidence rules (SPEC E.2); red in FAKE's isolated worktree
+        // generic evidence rules: these two components are recognised from Inspect's tool events
         Assert.Equal(1.0, evidence.Metadata["skill/rpi-research"]);
         Assert.Equal(1.0, evidence.Metadata["instructions/python-script"]);
         Assert.All(samples, sample => Assert.Equal(1.0, sample.Scores![HveScorers.ArtefactUsedName].AsFloat()));
@@ -287,7 +287,7 @@ public sealed class HveOfflineEndToEndTests : IDisposable
 
         if (harness == "generic" && framework == "hve")
         {
-            // needs SCORER's generic evidence rules (SPEC E.2); red in FAKE's isolated worktree
+            // generic evidence rules: the mean comes from HveScorers reading Inspect's tool events
             var mean = output.Split('\n').Single(line => line.StartsWith("hve_artefact_used", StringComparison.Ordinal) && line.Contains(" mean ", StringComparison.Ordinal));
             Assert.EndsWith("1.000", mean.TrimEnd());
         }
