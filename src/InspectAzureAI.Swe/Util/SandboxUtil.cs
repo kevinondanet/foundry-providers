@@ -9,7 +9,8 @@ public static class SandboxUtil
     /// <summary>Where agent binaries are installed inside the sandbox (<c>SANDBOX_INSTALL_DIR</c>).</summary>
     public const string SandboxInstallDir = "/var/tmp/.5c95f967ca830048";
 
-    private const string MuslCheck =
+    /// <summary>The libc probe <see cref="DetectPlatformAsync"/> runs through <c>bash -c</c> (internal so test sandboxes can answer it exactly).</summary>
+    internal const string MuslCheck =
         "if [ -f /lib/libc.musl-x86_64.so.1 ] || "
         + "[ -f /lib/libc.musl-aarch64.so.1 ] || "
         + "ldd /bin/ls 2>&1 | grep -q musl; then "
@@ -69,6 +70,32 @@ public static class SandboxUtil
         }
 
         return homeDir;
+    }
+
+    /// <summary>
+    /// Port of <c>_util/path.py</c> <c>join_path</c> with <c>posixpath.join</c> semantics: a <paramref name="path"/>
+    /// starting with <c>/</c> replaces the base; an empty base, or one ending in <c>/</c>, is concatenated directly;
+    /// otherwise the two are joined with <c>/</c>. Backslashes are then replaced by <c>/</c>.
+    /// </summary>
+    public static string JoinPath(string basePath, string path)
+    {
+        ArgumentNullException.ThrowIfNull(basePath);
+        ArgumentNullException.ThrowIfNull(path);
+        string joined;
+        if (path.StartsWith('/'))
+        {
+            joined = path;
+        }
+        else if (basePath.Length == 0 || basePath.EndsWith('/'))
+        {
+            joined = basePath + path;
+        }
+        else
+        {
+            joined = basePath + "/" + path;
+        }
+
+        return joined.Replace('\\', '/');
     }
 
     /// <summary>Port of <c>sandbox_exec</c>: runs <c>bash -c cmd</c>, failing with Python's message on a non-zero exit, and returns trimmed stdout.</summary>
