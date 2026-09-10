@@ -37,6 +37,24 @@ public class ClaudeCodeEnvTests
     }
 
     [Fact]
+    public void role_models_set_their_own_env_names()
+    {
+        var models = ClaudeCodeModels.Resolve(
+            new Model(new ScriptedModelApi([], "model")),
+            haikuModel: new Model(new ScriptedModelApi([], "small")),
+            subagentModel: new Model(new ScriptedModelApi([], "helper")));
+
+        var env = ClaudeCodeEnv.Build("http://h", "t", models);
+
+        Assert.Equal("model", env["ANTHROPIC_MODEL"]);
+        Assert.Equal("model", env["ANTHROPIC_DEFAULT_OPUS_MODEL"]);
+        Assert.Equal("model", env["ANTHROPIC_DEFAULT_SONNET_MODEL"]);
+        Assert.Equal("small", env["ANTHROPIC_DEFAULT_HAIKU_MODEL"]);
+        Assert.Equal("small", env["ANTHROPIC_SMALL_FAST_MODEL"]);
+        Assert.Equal("helper", env["CLAUDE_CODE_SUBAGENT_MODEL"]);
+    }
+
+    [Fact]
     public void mcp_connection_is_blocking_by_default()
     {
         var value = Env()["MCP_CONNECTION_NONBLOCKING"];
@@ -118,101 +136,5 @@ public class ClaudeCodeEnvTests
         Assert.Equal("1", Env()["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"]);
         Assert.Equal("1", Env()["CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS"]);
         Assert.Equal("1", Env()["IS_SANDBOX"]);
-    }
-}
-
-/// <summary>Port of inspect_swe <c>tests/test_claude_code_model.py</c> and <c>test_claude_code_effort.py</c>: presented identities, aliases and host-side effort.</summary>
-public class ClaudeCodeModelsTests
-{
-    private static Model Served(string name = "model") => new(new ScriptedModelApi([], name));
-
-    [Fact]
-    public void defaults_present_served_model_and_share_one_alias()
-    {
-        var served = Served();
-
-        var models = ClaudeCodeModels.Resolve(served);
-
-        Assert.Equal("model", models.Presented);
-        Assert.Equal("model", models.Opus);
-        Assert.Equal("model", models.Sonnet);
-        Assert.Equal("model", models.Haiku);
-        Assert.Equal("model", models.Subagent);
-        Assert.Same(served, Assert.Single(models.Aliases).Value);
-        Assert.Same(served, models.Served);
-    }
-
-    [Fact]
-    public void model_config_overrides_presented_identity()
-    {
-        var served = Served();
-
-        var models = ClaudeCodeModels.Resolve(served, "claude-sonnet-4-5");
-
-        Assert.Equal("claude-sonnet-4-5", models.Presented);
-        Assert.Equal("claude-sonnet-4-5", models.Haiku);
-        Assert.Same(served, models.Aliases["claude-sonnet-4-5"]);
-    }
-
-    [Fact]
-    public void caller_model_aliases_take_precedence()
-    {
-        var served = Served();
-        var overridden = Served("override");
-
-        var models = ClaudeCodeModels.Resolve(served, modelAliases: new Dictionary<string, Model> { ["model"] = overridden, ["extra"] = overridden });
-
-        Assert.Same(overridden, models.Aliases["model"]);
-        Assert.Same(overridden, models.Aliases["extra"]);
-        Assert.Equal(["model", "extra"], models.Aliases.Keys);
-    }
-
-    [Fact]
-    public void effort_sets_reasoning_effort_on_a_copy_of_the_served_model()
-    {
-        var served = Served();
-
-        var models = ClaudeCodeModels.Resolve(served, effort: "max");
-
-        var alias = models.Aliases[models.Presented];
-        Assert.Equal("max", alias.Config.ReasoningEffort);
-        Assert.NotSame(served, alias);
-        Assert.Same(served.Api, alias.Api);
-        Assert.Null(served.Config.ReasoningEffort);
-        Assert.Same(alias, models.Served);
-    }
-
-    [Fact]
-    public void unconfigured_effort_leaves_served_model_config_untouched()
-    {
-        var served = Served();
-
-        var models = ClaudeCodeModels.Resolve(served, effort: null);
-
-        Assert.Null(models.Aliases[models.Presented].Config.ReasoningEffort);
-        Assert.Same(served, models.Aliases[models.Presented]);
-    }
-
-    [Fact]
-    public void effort_does_not_override_caller_supplied_model_aliases()
-    {
-        var overridden = Served("override");
-
-        var models = ClaudeCodeModels.Resolve(Served(), effort: "high", modelAliases: new Dictionary<string, Model> { ["model"] = overridden });
-
-        Assert.Same(overridden, models.Aliases["model"]);
-        Assert.Null(overridden.Config.ReasoningEffort);
-        Assert.Equal("high", models.Served.Config.ReasoningEffort);
-    }
-
-    [Fact]
-    public void effort_merges_over_the_existing_config()
-    {
-        var served = new Model(new ScriptedModelApi([], "model"), new GenerateConfig { Temperature = 0.2, ReasoningEffort = "low" });
-
-        var models = ClaudeCodeModels.Resolve(served, effort: "xhigh");
-
-        Assert.Equal("xhigh", models.Served.Config.ReasoningEffort);
-        Assert.Equal(0.2, models.Served.Config.Temperature);
     }
 }

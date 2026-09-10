@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using InspectAzureAI.Eval.Agents;
 using InspectAzureAI.Eval.Agents.Bridge;
 using InspectAzureAI.Eval.Context;
@@ -9,6 +10,8 @@ using InspectAzureAI.Eval.Sandbox;
 using InspectAzureAI.Eval.Scorers;
 using InspectAzureAI.Eval.Solvers;
 using InspectAzureAI.Eval.Testing;
+using InspectAzureAI.Eval.Tools.Mcp;
+using InspectAzureAI.Eval.Tools.Skills;
 using InspectAzureAI.Provider.Core;
 using InspectAzureAI.Provider.Util;
 using InspectAzureAI.Swe.ClaudeCode;
@@ -29,15 +32,21 @@ public class ClaudeCodeAgentTests
 
     private const string Jsonl = "{\"type\":\"system\",\"subtype\":\"init\"}\n{\"type\":\"assistant\",\"message\":{\"content\":[]}}\n{\"type\":\"result\",\"subtype\":\"success\"}";
 
+    private static readonly McpServerConfigHttp SecretsConfig = new("http", "secrets", "http://127.0.0.1:4321/mcp/secrets", new Dictionary<string, string> { ["Authorization"] = "Bearer tok-123" });
+
     private sealed class FakeBridge(AgentBridge bridge) : IClaudeCodeBridge
     {
         private readonly CancellationTokenSource _limit = new();
+
+        public AgentBridge Inner { get; } = bridge;
 
         public string BaseUrl => "http://127.0.0.1:4321";
 
         public string AuthToken => "tok-123";
 
-        public AgentState State => bridge.State;
+        public AgentState State => Inner.State;
+
+        public IReadOnlyList<McpServerConfigHttp> McpServerConfigs { get; init; } = [];
 
         public LimitExceededException? LimitError { get; private set; }
 
@@ -74,7 +83,7 @@ public class ClaudeCodeAgentTests
                     return OnLaunch(Launches.Count - 1);
                 }
 
-                if (cmd is ["chmod", "+x", _])
+                if (cmd is ["chmod", "+x", _] or ["chmod", "600", _] or ["chown", _, _])
                 {
                     return FakeSandboxEnvironment.Ok();
                 }
@@ -111,14 +120,21 @@ public class ClaudeCodeAgentTests
 
         public IModelEventSink? Sink { get; private set; }
 
+        /// <summary>What the fake bridge reports as its bridged tools servers.</summary>
+        public IReadOnlyList<McpServerConfigHttp> BridgedConfigs { get; init; } = [];
+
+        /// <summary>The bridged tools the agent handed the bridge factory.</summary>
+        public IReadOnlyList<BridgedToolsSpec>? BridgedToolsArg { get; private set; }
+
         public ClaudeCodeAgent Agent(ClaudeCodeOptions? options = null) => new(options ?? new ClaudeCodeOptions())
         {
-            BridgeFactory = (bridge, sandbox, port, _) =>
+            BridgeFactory = (bridge, sandbox, port, bridgedTools, _) =>
             {
                 Assert.Same(Sandbox, sandbox);
                 Assert.Equal(0, port);
                 Sink = ModelEventSinks.Current;
-                Bridge = new FakeBridge(bridge);
+                BridgedToolsArg = bridgedTools;
+                Bridge = new FakeBridge(bridge) { McpServerConfigs = BridgedConfigs };
                 return Task.FromResult<IClaudeCodeBridge>(Bridge);
             },
         };
@@ -453,5 +469,174 @@ public class ClaudeCodeAgentTests
         await Assert.ThrowsAsync<InvalidOperationException>(() => h.Agent().ExecuteAsync(State(new ChatMessageUser("go"))));
 
         Assert.Empty(h.Launches);
+    }
+
+    private static ModelEvent AgentEvent(string id) => new()
+    {
+        Model = "m",
+        Input = [new ChatMessageUser("go")],
+        ToolChoice = ToolChoice.Auto,
+        Config = new GenerateConfig(),
+        Output = new ModelOutput
+        {
+            Model = "m",
+            Choices = [new ChatCompletionChoice(new ChatMessageAssistant("", toolCalls: [new ToolCall(id, "Agent", new JsonObject { ["prompt"] = "A sufficiently long sub-agent prompt." })]), StopReason.ToolCalls)],
+        },
+    };
+
+    [Fact]
+    public async Task skills_are_installed_under_the_agent_cwd_before_the_settings_seed()
+    {
+        using var h = new Harness();
+        var skill = new Skill("my-skill", "Does things.", "Do the thing.") { References = new Dictionary<string, SkillFile> { ["notes.md"] = SkillFile.FromText("n") } };
+
+        await h.Agent(new ClaudeCodeOptions { User = "agent", Skills = [skill] }).ExecuteAsync(State(new ChatMessageUser("go")));
+
+        Assert.Contains("Do the thing.", Encoding.UTF8.GetString(h.Sandbox.Files["/workspace/.claude/skills/my-skill/SKILL.md"]));
+        Assert.True(h.Sandbox.Files.ContainsKey("/workspace/.claude/skills/my-skill/references/notes.md"));
+        var calls = h.Sandbox.Calls.ToList();
+        var chown = calls.FindIndex(c => c.Cmd is ["chown", "agent", "/workspace/.claude/skills/my-skill/SKILL.md"]);
+        var settings = calls.FindIndex(c => c.Cmd[2].StartsWith("mkdir -p \"$HOME/.claude\"", StringComparison.Ordinal));
+        Assert.True(chown >= 0 && chown < settings, $"chown {chown}, settings {settings}");
+        Assert.Equal("root", calls[chown].User);
+    }
+
+    [Fact]
+    public void unreadable_or_duplicate_skills_fail_when_the_agent_is_constructed()
+    {
+        var missing = Path.Combine(Path.GetTempPath(), "no-such-skill-" + Guid.NewGuid().ToString("N"));
+        var skill = new Skill("dup", "d", "i");
+
+        Assert.Throws<SkillParsingError>(() => new ClaudeCodeAgent(new ClaudeCodeOptions { Skills = [missing] }));
+        Assert.Throws<ArgumentException>(() => new ClaudeCodeAgent(new ClaudeCodeOptions { Skills = [skill, skill] }));
+    }
+
+    [Fact]
+    public async Task mcp_servers_are_written_to_a_private_config_file_and_allowlisted()
+    {
+        using var h = new Harness { BridgedConfigs = [SecretsConfig] };
+        var stdio = new McpServerConfigStdio("fs", "npx") { Args = ["server-fs"] };
+        IReadOnlyList<BridgedToolsSpec> specs = [new BridgedToolsSpec("secrets", [])];
+        var agent = h.Agent(new ClaudeCodeOptions { McpServers = [stdio], BridgedTools = specs, User = "agent", DisallowedTools = ["Bash"] });
+
+        await agent.ExecuteAsync(State(new ChatMessageUser("go")));
+
+        Assert.Same(specs, h.BridgedToolsArg);
+        var path = ClaudeCodeMcp.ConfigPath(agent.SessionId);
+        Assert.Equal(ClaudeCodeMcp.ConfigJson([stdio], [SecretsConfig]), Encoding.UTF8.GetString(h.Sandbox.Files[path]));
+        var chmod = h.Sandbox.Calls.Single(c => c.Cmd.SequenceEqual(["chmod", "600", path]));
+        var chown = h.Sandbox.Calls.Single(c => c.Cmd.SequenceEqual(["chown", "agent", path]));
+        Assert.Equal("root", chmod.User);
+        Assert.Equal("root", chown.User);
+        var launch = Assert.Single(h.Launches);
+        Assert.Equal(["--mcp-config", path, "--allowed-tools", "mcp__fs__*,mcp__secrets__*", "--disallowed-tools", "Bash", "--", "go"], launch.Skip(14));
+
+        // the bridge token lives in the 0600 file, never in the argv
+        Assert.DoesNotContain(launch, arg => arg.Contains("tok-123", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task allowlist_mcp_tools_false_keeps_only_bridged_rules_and_no_servers_means_no_config()
+    {
+        using var h = new Harness { BridgedConfigs = [SecretsConfig] };
+
+        await h.Agent(new ClaudeCodeOptions { McpServers = [new McpServerConfigStdio("fs", "npx")], AllowlistMcpTools = false }).ExecuteAsync(State(new ChatMessageUser("go")));
+
+        Assert.Equal(["--allowed-tools", "mcp__secrets__*"], h.Launches[0].SkipWhile(a => a != "--allowed-tools").Take(2));
+        Assert.DoesNotContain(h.Sandbox.Calls, c => c.Cmd[0] == "chown");
+
+        using var none = new Harness();
+        await none.Agent().ExecuteAsync(State(new ChatMessageUser("go")));
+        Assert.DoesNotContain("--mcp-config", none.Launches[0]);
+        Assert.DoesNotContain("--allowed-tools", none.Launches[0]);
+        Assert.DoesNotContain(none.Sandbox.Files.Keys, k => k.StartsWith(ClaudeCodeMcp.ConfigDirectory, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task disallowing_web_search_withholds_the_bridge_grant()
+    {
+        using var h = new Harness();
+
+        await h.Agent(new ClaudeCodeOptions { DisallowedTools = ["WebSearch(domain:example.com)"] }).ExecuteAsync(State(new ChatMessageUser("go")));
+        Assert.False(h.Bridge!.Inner.WebSearch);
+
+        await h.Agent(new ClaudeCodeOptions { DisallowedTools = ["WebSearchTool", "Bash"] }).ExecuteAsync(State(new ChatMessageUser("go")));
+        Assert.True(h.Bridge!.Inner.WebSearch);
+
+        await h.Agent().ExecuteAsync(State(new ChatMessageUser("go")));
+        Assert.True(h.Bridge!.Inner.WebSearch);
+    }
+
+    [Fact]
+    public async Task filter_consumer_and_role_models_reach_the_bridge_and_the_env()
+    {
+        using var h = new Harness();
+        GenerateFilter filter = (_, _, _, _, _, _) => Task.FromResult<GenerateFilterResult?>(null);
+        var opus = new Model(new ScriptedModelApi([], "big-model"));
+
+        await h.Agent(new ClaudeCodeOptions { Filter = filter, OpusModel = opus }).ExecuteAsync(State(new ChatMessageUser("go")));
+
+        Assert.Same(filter, h.Bridge!.Inner.Filter);
+        Assert.Same(opus, h.Bridge.Inner.ModelAliases["big-model"]);
+        Assert.IsType<ClaudeCodeLiveConsumer>(h.Sink);
+        Assert.Same(h.Sink, h.Bridge.Inner.ModelEventSink);
+        Assert.Equal("big-model", h.LaunchCall(0).Env!["ANTHROPIC_DEFAULT_OPUS_MODEL"]);
+        Assert.Equal("scripted", h.LaunchCall(0).Env!["ANTHROPIC_DEFAULT_SONNET_MODEL"]);
+    }
+
+    [Fact]
+    public async Task an_incorrect_message_function_builds_the_retry_prompt()
+    {
+        var verdicts = new Queue<string>(["I", "C"]);
+        using var h = new Harness(scorer: _ => Task.FromResult<IReadOnlyList<Score>>([new Score(verdicts.Dequeue())]));
+        AgentState? seen = null;
+        var attempts = new AgentAttempts(3, "static message")
+        {
+            IncorrectMessageFn = (state, scores, _) =>
+            {
+                seen = state;
+                return Task.FromResult($"Scored {scores.Count}; try again.");
+            },
+        };
+        var state = State(new ChatMessageUser("go"));
+
+        await h.Agent(new ClaudeCodeOptions { Attempts = attempts }).ExecuteAsync(state);
+
+        Assert.Equal(2, h.Launches.Count);
+        Assert.Equal("Scored 1; try again.", h.Launches[1][^1]);
+        Assert.Same(state, seen);
+    }
+
+    [Fact]
+    public async Task sub_agent_spans_stay_balanced_across_retries_and_a_failure()
+    {
+        using var h = new Harness();
+        h.OnLaunch = i =>
+        {
+            h.Sink!.OnModelEvent(AgentEvent($"toolu_{i}"));
+            return i == 0 ? FakeSandboxEnvironment.Fail(1, "") : FakeSandboxEnvironment.Fail(2, "boom");
+        };
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => h.Agent().ExecuteAsync(State(new ChatMessageUser("go"))));
+
+        Assert.Equal(2, h.Launches.Count);
+        Assert.Equal(["agent-toolu_0", "agent-toolu_1"], h.Context.Transcript.Events.OfType<SpanBeginEvent>().Select(e => e.Id));
+        Assert.Equal(["agent-toolu_0", "agent-toolu_1"], h.Context.Transcript.Events.OfType<SpanEndEvent>().Select(e => e.Id));
+    }
+
+    [Fact]
+    public async Task a_compact_boundary_line_records_one_compaction_event()
+    {
+        using var h = new Harness
+        {
+            OnLaunch = _ => FakeSandboxEnvironment.Ok("{\"type\":\"system\",\"subtype\":\"compact_boundary\",\"compact_metadata\":{\"trigger\":\"auto\",\"pre_tokens\":4321}}\n{\"type\":\"result\"}\n"),
+        };
+
+        await h.Agent().ExecuteAsync(State(new ChatMessageUser("go")));
+
+        var compaction = Assert.Single(h.Context.Transcript.Events.OfType<CompactionEvent>());
+        Assert.Equal(4321, compaction.TokensBefore);
+        Assert.Equal("claude_code", compaction.Source);
+        Assert.Equal(2, h.Context.Transcript.Events.OfType<InfoEvent>().Count());
     }
 }

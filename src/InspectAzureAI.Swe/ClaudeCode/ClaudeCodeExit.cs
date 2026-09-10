@@ -3,7 +3,7 @@ using InspectAzureAI.Provider.Core;
 
 namespace InspectAzureAI.Swe.ClaudeCode;
 
-/// <summary>How an attempt's exit code is handled (port of <c>claude_code.py:574-603</c>).</summary>
+/// <summary>How an attempt's exit code is handled (port of <c>claude_code.py:481-508</c>).</summary>
 public enum ClaudeCodeExitKind
 {
     /// <summary>Exit code 0.</summary>
@@ -19,7 +19,7 @@ public enum ClaudeCodeExitKind
     Failure,
 }
 
-/// <summary>Port of the exit-code rules of inspect_swe <c>_claude_code/claude_code.py</c> (<c>_is_claude_code_refusal_exit</c> and the retry rule at <c>:583-597</c>).</summary>
+/// <summary>Port of the exit-code rules of inspect_swe 0.2.70 <c>_claude_code/claude_code.py</c> (<c>_is_claude_code_refusal_exit</c> at <c>:684-695</c> and the retry rule at <c>:496-503</c>).</summary>
 public static class ClaudeCodeExit
 {
     /// <summary>Port of <c>_is_claude_code_refusal_exit</c>: exit 1, no stderr, and the last bridged generation stopped with <c>content_filter</c> (Inspect's mapping of an Anthropic refusal).</summary>
@@ -55,14 +55,15 @@ public static class ClaudeCodeExit
         return ClaudeCodeExitKind.Failure;
     }
 
-    /// <summary>The hard-failure message of <c>claude_code.py:599</c>.</summary>
+    /// <summary>The hard-failure message of <c>claude_code.py:506-508</c>.</summary>
     public static string ErrorMessage(int exitCode, string stderr) => $"Error executing claude code agent {exitCode}: {stderr}";
 }
 
 /// <summary>
-/// The <c>last_stop_reason</c> part of inspect_swe <c>_claude_code/_events/live_consumer.py</c>: installed as the
-/// bridge's model event sink, it remembers the stop reason of the latest completed generation so a refusal exit
-/// can be told from a crash. Reset before every attempt, as <c>LiveConsumer.reset()</c> is.
+/// The <c>last_stop_reason</c> part of inspect_swe <c>_claude_code/_events/live_consumer.py</c>: installed as a
+/// model event sink, it remembers the stop reason of the latest completed generation so a refusal exit can be told
+/// from a crash. Reset before every attempt, as <c>LiveConsumer.reset()</c> is. The agent now uses
+/// <see cref="ClaudeCodeLiveConsumer"/>, which does this and the span work; this type stays for other callers.
 /// </summary>
 public sealed class ClaudeCodeStopReasonTracker : IModelEventSink
 {
