@@ -73,6 +73,19 @@ public sealed class FallbackModelApi : IModelApi
     /// <summary>The primary's name: what callers asked for, and what <see cref="ModelFallback.Model"/> records.</summary>
     public string ModelName => Primary.ModelName;
 
+    public string? BaseUrl => Current.BaseUrl;
+    public string ProviderName => Primary.ProviderName;
+    public string QualifiedModelName => Primary.QualifiedModelName;
+    public bool IsFoundry => Primary.IsFoundry;
+    public IReadOnlyDictionary<string, object?> ModelArgsForLog => Primary.ModelArgsForLog;
+    public int? MaxTokensForConfig(GenerateConfig config) => Current.MaxTokensForConfig(config);
+    public RetryDecision ShouldRetry(Exception ex) => Current.ShouldRetry(ex);
+    public bool IsAuthFailure(Exception ex) => Current.IsAuthFailure(ex);
+    public bool CollapseUserMessages() => Current.CollapseUserMessages();
+    public bool SupportsRemoteMcp() => Current.SupportsRemoteMcp();
+    public string ConnectionKey() => Current.ConnectionKey();
+    public bool ApplyRedactedReasoningTokensToInput() => Current.ApplyRedactedReasoningTokensToInput();
+
     public int? MaxTokens() => Current.MaxTokens();
 
     /// <inheritdoc />

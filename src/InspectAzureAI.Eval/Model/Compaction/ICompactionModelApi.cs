@@ -154,7 +154,7 @@ public static class ModelCompactionExtensions
     public static bool ApplyRedactedReasoningTokensToInput(this Model model)
     {
         ArgumentNullException.ThrowIfNull(model);
-        return model.Api is InspectAzureAI.Provider.OpenAI.OpenAIResponsesModelApi
+        return model.Api.ApplyRedactedReasoningTokensToInput()
             || (model.Api is ICompactionModelApi api && api.ApplyRedactedReasoningTokensToInput);
     }
 

@@ -105,6 +105,12 @@ public sealed class AzureAIModelApi : IModelApi
     }
 
     /// <summary>Full model name including any org prefix (as it appears in logs).</summary>
+    string? IModelApi.BaseUrl => EndpointUrl;
+    public string ProviderName => "azureai";
+    public string QualifiedModelName => "azureai/" + ModelName;
+    public bool IsFoundry => true;
+    string IModelApi.ConnectionKey() => $"{EndpointUrl}:{ModelName}";
+
     public string ModelName { get; }
 
     /// <summary>The explicit base URL argument (may be null).</summary>

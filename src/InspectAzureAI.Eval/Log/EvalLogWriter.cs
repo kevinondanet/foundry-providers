@@ -186,6 +186,21 @@ public static class EvalLogWriter
                 new CallRefConverter(),
             },
         };
+        var resolver = new System.Text.Json.Serialization.Metadata.DefaultJsonTypeInfoResolver();
+        resolver.Modifiers.Add(info =>
+        {
+            foreach (var property in info.Properties)
+            {
+                if (property.Get is not { } get) continue;
+                if (info.Type == typeof(ModelConfig) && property.Name == "args")
+                    property.Get = instance => Provider.Util.ModelArgumentSanitizer.ForLog((IReadOnlyDictionary<string, object?>?)get(instance));
+                if (info.Type == typeof(Provider.Core.GenerateConfig) && property.Name == "extra_headers")
+                    property.Get = instance => (get(instance) as IReadOnlyDictionary<string, string>)?.Where(p => !Provider.Util.ModelArgumentSanitizer.IsSecret(p.Key)).ToDictionary(p => p.Key, p => p.Value);
+                if (info.Type == typeof(Provider.Core.GenerateConfig) && property.Name == "extra_body")
+                    property.Get = instance => Provider.Util.ModelArgumentSanitizer.Clean((get(instance) as JsonNode)?.DeepClone());
+            }
+        });
+        options.TypeInfoResolver = resolver;
         options.MakeReadOnly(populateMissingResolver: true);
         return options;
     }

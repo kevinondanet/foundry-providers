@@ -10,6 +10,19 @@ public interface IModelApi
     /// <summary>Model or deployment name as given.</summary>
     string ModelName { get; }
 
+    /// <summary>Resolved endpoint; null is reserved for local/in-memory implementations.</summary>
+    string? BaseUrl => null;
+    string ProviderName => GetType().Name.Replace("ModelApi", "", StringComparison.Ordinal).ToLowerInvariant();
+    string QualifiedModelName => ModelName;
+    bool IsFoundry => false;
+    IReadOnlyDictionary<string, object?> ModelArgsForLog => new Dictionary<string, object?>();
+    int? MaxTokensForConfig(GenerateConfig config) => MaxTokens();
+    RetryDecision ShouldRetry(Exception ex) => Util.HttpRetryUtil.RetryDecisionFor(ex);
+    bool IsAuthFailure(Exception ex) => false;
+    bool CollapseUserMessages() => false;
+    bool SupportsRemoteMcp() => false;
+    bool ApplyRedactedReasoningTokensToInput() => false;
+
     /// <summary>Default <c>max_tokens</c> for the model family (null: let the service decide).</summary>
     int? MaxTokens();
 

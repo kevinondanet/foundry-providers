@@ -79,6 +79,10 @@ public sealed class ScriptedModelApi : IModelApi
     {
     }
 
+    RetryDecision IModelApi.ShouldRetry(Exception ex) => ShouldRetry?.Invoke(ex) ?? HttpRetryUtil.RetryDecisionFor(ex);
+    bool IModelApi.CollapseUserMessages() => CollapseUserMessages;
+    bool IModelApi.SupportsRemoteMcp() => SupportsRemoteMcp;
+    public bool IsAuthFailure(Exception ex) => HttpRetryUtil.StatusCodeOf(ex) == 401;
     public string ModelName { get; }
 
     public bool ThrowWhenExhausted { get; init; }
