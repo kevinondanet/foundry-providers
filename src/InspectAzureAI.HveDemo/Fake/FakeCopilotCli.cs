@@ -25,7 +25,9 @@ namespace InspectAzureAI.HveDemo.Fake;
 /// CLI's <c>&lt;agent_instructions&gt;</c> block and the tools advertised are cut down to what the agent's front matter
 /// maps to (the live run showed the review sub-agents with <c>view</c>, <c>create</c>, <c>skill</c> only), the workspace
 /// instruction files are tabled in the system prompt, and the <c>skill</c> tool injects a <c>skill-context</c> user
-/// message. Every bridge request is appended to <see cref="RequestLog"/> in the sample's fake sandbox so tests can read it back.
+/// message. Launched without <c>--plugin-dir</c>/<c>--agent</c> (the <c>--framework none</c> cells) it announces no skills,
+/// embeds no agent and offers every tool, as the real CLI does. Every bridge request is appended to <see cref="RequestLog"/>
+/// in the sample's fake sandbox so tests can read it back.
 /// </summary>
 public sealed partial class FakeCopilotCli(Func<ScriptedSandboxEnvironment?> environment)
 {
@@ -768,8 +770,9 @@ public sealed partial class FakeCopilotCli(Func<ScriptedSandboxEnvironment?> env
                 RedirectStandardInput = true,
                 UseShellExecute = false,
             };
+            // The model's command names sandbox paths (/workspace/..., the plugin under /opt); the mirror plays them.
             startInfo.ArgumentList.Add("-c");
-            startInfo.ArgumentList.Add(command);
+            startInfo.ArgumentList.Add(sandbox.MapCommandText(command));
             using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("bash did not start");
             process.StandardInput.Close();
             var stdout = process.StandardOutput.ReadToEndAsync();

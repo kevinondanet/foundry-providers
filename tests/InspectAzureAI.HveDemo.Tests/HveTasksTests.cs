@@ -20,7 +20,7 @@ public sealed class HveTasksTests
     public void build_filters_the_dataset_and_sets_the_budgets(string? kind, string name, int samples)
     {
         var sandbox = new SandboxSpec("fake");
-        var task = HveTasks.Build(kind, HveSolvers.CopilotName, sandbox, new HveSolverOptions());
+        var task = HveTasks.Build(kind, HveVariant.Default, sandbox, new HveSolverOptions());
 
         Assert.Equal(name, task.Name);
         Assert.Equal("1", task.Version);
@@ -31,13 +31,16 @@ public sealed class HveTasksTests
         Assert.Equal(FailOnError.Never, task.FailOnError);
         Assert.Equal(4, task.Scorers.Count);
         Assert.Equal(kind is null or "suite" ? "suite" : kind, task.Metadata!["kind"]);
+        Assert.Equal("copilot", task.Metadata["harness"]);
+        Assert.Equal("hve", task.Metadata["framework"]);
+        Assert.Equal("copilot+hve", task.Metadata["solver"]);
     }
 
     [Fact]
     public void the_suite_groups_each_scorers_own_headline_metric_by_kind_and_the_kind_tasks_do_not()
     {
-        var suite = HveTasks.Build(null, HveSolvers.CopilotName, new SandboxSpec("fake"), new HveSolverOptions());
-        var review = HveTasks.Build("review", HveSolvers.CopilotName, new SandboxSpec("fake"), new HveSolverOptions());
+        var suite = HveTasks.Build(null, HveVariant.Default, new SandboxSpec("fake"), new HveSolverOptions());
+        var review = HveTasks.Build("review", HveVariant.Default, new SandboxSpec("fake"), new HveSolverOptions());
 
         // no task-level override: that would relabel hve_artefact_used's mean as accuracy
         Assert.Null(suite.Metrics);
@@ -71,13 +74,14 @@ public sealed class HveTasksTests
         Assert.Equal(HveTasks.SuiteName, HveTasks.NameFor(null));
         Assert.Equal(HveTasks.ImplementName, HveTasks.NameFor("Implement"));
         Assert.Throws<ArgumentException>(() => HveTasks.NameFor("benchmark"));
-        Assert.Throws<ArgumentException>(() => HveTasks.Build(null, "swarm", new SandboxSpec("fake"), new HveSolverOptions()));
+        Assert.Throws<ArgumentException>(() => HveVariant.Parse("swarm", "hve"));
+        Assert.Throws<ArgumentException>(() => HveVariant.Parse("copilot", "all"));
     }
 
     [Fact]
     public void copilot_options_carry_the_plugin_the_agent_and_the_hygiene_flags()
     {
-        var options = HveSolvers.CopilotOptions(new HveSolverOptions { CopilotVersion = "1.0.83", PluginDir = "/srv/plugin", Provider = CopilotCliProvider.Anthropic, Debug = true }, "hve-core:rpi-agent");
+        var options = HveSolvers.CopilotOptions(new HveSolverOptions { CopilotVersion = "1.0.83", PluginDir = "/srv/plugin", Provider = CopilotCliProvider.Anthropic, Debug = true }, "hve-core:rpi-agent", HveFramework.Hve);
 
         Assert.Equal("1.0.83", options.Version);
         Assert.Equal(["/srv/plugin"], options.PluginDirs);
@@ -91,16 +95,31 @@ public sealed class HveTasksTests
         options.Validate();
 
         Assert.Null(HveSolvers.CopilotOptions(new HveSolverOptions(), null).CustomAgent);
+
+        // Under none the CLI gets neither --plugin-dir nor --agent, whatever the sample's metadata says.
+        var none = HveSolvers.CopilotOptions(new HveSolverOptions { PluginDir = "/srv/plugin" }, "hve-core:rpi-agent", HveFramework.None);
+        Assert.Empty(none.PluginDirs);
+        Assert.Null(none.CustomAgent);
+        none.Validate();
     }
 
     [Fact]
-    public void the_system_prompt_names_the_plugin_pieces_and_asks_for_the_summary()
+    public void the_briefings_name_the_plugin_pieces_and_ask_for_the_summary()
     {
-        Assert.Contains("hve-core:rpi-agent", HveSolvers.SystemPrompt);
-        Assert.Contains("python-foundational", HveSolvers.SystemPrompt);
-        Assert.Contains("git-commit-message.prompt", HveSolvers.SystemPrompt);
-        Assert.Contains("names every file you created or changed by its path", HveSolvers.SystemPrompt);
-        Assert.DoesNotContain("{", HveSolvers.SystemPrompt);
+        Assert.Contains("hve-core:rpi-agent", HveSolvers.CopilotHveBriefing);
+        Assert.Contains("python-foundational", HveSolvers.CopilotHveBriefing);
+        Assert.Contains("git-commit-message.prompt", HveSolvers.CopilotHveBriefing);
+        Assert.Contains("names every file you created or changed by its path", HveSolvers.CopilotHveBriefing);
+        Assert.Contains(HveBriefing.FrameworkMarker, HveSolvers.CopilotHveBriefing);
+        Assert.DoesNotContain("{", HveSolvers.CopilotHveBriefing);
+
+        // The plain briefings ask for the same summary, go through the template formatter too, and never mention the plugin.
+        foreach (var plain in new[] { HveSolvers.CopilotPlainBriefing, HveSolvers.GenericPlainBriefing })
+        {
+            Assert.Contains("names every file you created or changed by its path", plain);
+            Assert.DoesNotContain("{", plain);
+            Assert.DoesNotContain(HveBriefing.FrameworkMarker, plain);
+        }
     }
 
     [Fact]
@@ -110,7 +129,9 @@ public sealed class HveTasksTests
         Assert.True(fake.Fake);
         Assert.Equal("fake", fake.Sandbox);
         Assert.Equal("review", fake.Task);
-        Assert.Equal("basic", fake.Solver);
+        Assert.Equal("generic", fake.Harness);
+        Assert.Equal("none", fake.Framework);
+        Assert.Equal("basic", fake.SolverAlias);
         Assert.Equal(1, fake.Limit);
 
         var docker = Program.Options.Parse(["--fake", "--sandbox", "docker", "--copilot-version", "1.0.83", "--max-samples", "2"]);
@@ -122,6 +143,8 @@ public sealed class HveTasksTests
 
         Assert.Throws<ArgumentException>(() => Program.Options.Parse(["--task", "benchmark"]));
         Assert.Throws<ArgumentException>(() => Program.Options.Parse(["--solver", "swarm"]));
+        Assert.Throws<ArgumentException>(() => Program.Options.Parse(["--harness", "swarm"]));
+        Assert.Throws<ArgumentException>(() => Program.Options.Parse(["--framework", "all"]));
         Assert.Throws<ArgumentException>(() => Program.Options.Parse(["--sandbox", "vm"]));
         Assert.Throws<ArgumentException>(() => Program.Options.Parse(["--model", "gpt-4o", "--sandbox", "fake"]));
         Assert.Throws<ArgumentException>(() => Program.Options.Parse(["--limit", "0"]));

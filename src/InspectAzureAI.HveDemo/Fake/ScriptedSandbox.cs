@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.RegularExpressions;
 using InspectAzureAI.Eval.Sandbox;
 using InspectAzureAI.Eval.Sandbox.Local;
 using InspectAzureAI.Eval.Testing;
@@ -48,10 +49,13 @@ public sealed class ScriptedSandboxProvider(FakeSandboxScript script) : ISandbox
 /// new is the <see cref="MirrorDirectory"/>: a host temp directory that mirrors the sandbox file system, so that the
 /// sample's workspace files, the setup script, the checks and the fake CLI's tool calls all operate on one real
 /// directory tree with <c>python3</c>, <c>bash</c> and <c>git</c> from this host. Sandbox paths map onto it with
-/// <see cref="HostPath"/> (<c>/workspace</c> is the mirror root; any other absolute path lands under <c>.root/</c>).
-/// <see cref="Files"/> keeps the seeded and written bytes for assertions, as the original did.
+/// <see cref="HostPath"/> (<c>/workspace</c> is the mirror root; any other absolute path lands under <c>.root/</c>):
+/// whole argv elements through <see cref="MapArgument"/>, and the tokens inside a <c>bash -c</c> command string
+/// through <see cref="MapCommandText"/>, so that <c>cat '/opt/hve-core/.../SKILL.md'</c> from the generic agent (or the
+/// fake CLI's <c>bash</c> tool) reads the provisioned plugin copy. <see cref="Files"/> keeps the seeded and written bytes
+/// for assertions, as the original did.
 /// </summary>
-public sealed class ScriptedSandboxEnvironment : ISandboxEnvironment, IDisposable
+public sealed partial class ScriptedSandboxEnvironment : ISandboxEnvironment, IDisposable
 {
     /// <summary>The sandbox working directory the fake presents (the Dockerfile's <c>WORKDIR</c>).</summary>
     public const string WorkingDirectory = HveData.SandboxWorkingDirectory;
@@ -141,6 +145,46 @@ public sealed class ScriptedSandboxEnvironment : ISandboxEnvironment, IDisposabl
             : argument;
     }
 
+    /// <summary>
+    /// A command string rewritten for a local run: every absolute path token rooted at <c>/workspace</c> is mapped to
+    /// the mirror, and a token rooted at <c>/opt</c> or <c>/tmp</c> is mapped only when the mirror already holds it (a
+    /// file or directory under <c>.root/</c>, or a path written through this environment), so prose and heredoc bodies
+    /// that merely mention such a path stay verbatim. A token ends at whitespace, a quote, a backtick or a shell
+    /// operator, so <c>"/opt/hve-core"/.github/...</c> maps the quoted root and leaves the rest of the path intact.
+    /// </summary>
+    public string MapCommandText(string command)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+        return SandboxPathToken().Replace(command, match =>
+        {
+            var token = match.Groups[1].Value;
+            if (token == WorkingDirectory || token.StartsWith(WorkingDirectory + "/", StringComparison.Ordinal))
+            {
+                return HostPath(token);
+            }
+
+            bool known;
+            lock (_sync)
+            {
+                known = Files.ContainsKey(token);
+            }
+
+            var host = HostPath(token);
+            return known || File.Exists(host) || Directory.Exists(host) ? host : token;
+        });
+    }
+
+    /// <summary>
+    /// The first <c>/workspace</c>, <c>/opt</c> or <c>/tmp</c> path token in <paramref name="text"/> (what
+    /// <see cref="MapCommandText"/> considers rewriting), or null. For the scripted model's reference guard, not part of
+    /// the sandbox's public surface.
+    /// </summary>
+    internal static string? SandboxPathTokenIn(string text)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        return SandboxPathToken().Match(text) is { Success: true } match ? match.Groups[1].Value : null;
+    }
+
     public async Task<ExecResult> ExecAsync(
         IReadOnlyList<string> cmd,
         string? input = null,
@@ -166,7 +210,8 @@ public sealed class ScriptedSandboxEnvironment : ISandboxEnvironment, IDisposabl
             return result!;
         }
 
-        var mapped = cmd.Select(MapArgument).ToList();
+        // The element after -c is a shell command string: its path tokens are mapped, not the element as a whole.
+        var mapped = cmd.Select((argument, i) => i > 0 && cmd[i - 1] == "-c" ? MapCommandText(argument) : MapArgument(argument)).ToList();
         var hostCwd = HostPath(cwd ?? WorkingDirectory);
         Directory.CreateDirectory(hostCwd);
         return await _local.ExecAsync(mapped, input, hostCwd, env, user: null, timeout, cancellationToken).ConfigureAwait(false);
@@ -246,4 +291,10 @@ public sealed class ScriptedSandboxEnvironment : ISandboxEnvironment, IDisposabl
         Directory.CreateDirectory(Path.GetDirectoryName(host)!);
         File.WriteAllBytes(host, bytes);
     }
+
+    // A sandbox root (/workspace, /opt, /tmp) not glued to a preceding word, dot, slash or dash (so ./opt/x and
+    // http://host/opt/x are not paths) and not continuing into a longer name (/optional), then the rest of the path up to
+    // whitespace, a quote, a backtick or a shell operator.
+    [GeneratedRegex(@"(?<![\w./-])(/(?:workspace|opt|tmp)(?![\w-])(?:/[^\s'""`;|&<>()]*)?)")]
+    private static partial Regex SandboxPathToken();
 }
