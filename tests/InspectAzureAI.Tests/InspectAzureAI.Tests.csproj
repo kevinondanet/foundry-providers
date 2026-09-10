@@ -19,5 +19,6 @@
     <ProjectReference Include="..\..\src\InspectAzureAI.Provider\InspectAzureAI.Provider.csproj" />
   </ItemGroup>
 
-  <ItemGroup><None Update="Fixtures/*.json" CopyToOutputDirectory="PreserveNewest" /></ItemGroup>
+  <ItemGroup><None Include="../../scripts/generate-provider-goldens.py" Link="Fixtures/generate-provider-goldens.py" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="Fixtures/*.json" CopyToOutputDirectory="PreserveNewest" /></ItemGroup>
 </Project>

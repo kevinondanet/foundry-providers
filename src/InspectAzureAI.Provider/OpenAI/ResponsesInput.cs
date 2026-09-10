@@ -120,18 +120,22 @@ public static class ResponsesInput
     /// (Python does the same: replaying an <c>image_generation_call</c> needs <c>store: true</c>), then the
     /// <c>function_call</c> items. Empty text is dropped when the turn has tool calls.
     /// </summary>
-    public static List<JsonObject> AssistantItems(ChatMessageAssistant assistant)
+    public static List<JsonObject> AssistantItems(ChatMessageAssistant assistant, IReadOnlyList<string?>? phases = null)
     {
         ArgumentNullException.ThrowIfNull(assistant);
         var items = new List<JsonObject>();
         var pending = new JsonArray();
         var hasToolCalls = assistant.ToolCalls is { Count: > 0 };
+        var textIndex = 0;
+        string? pendingPhase = null;
 
         void Flush()
         {
             if (pending.Count > 0)
             {
-                items.Add(new JsonObject { ["type"] = "message", ["role"] = "assistant", ["status"] = "completed", ["content"] = pending });
+                var message = new JsonObject { ["type"] = "message", ["role"] = "assistant", ["status"] = "completed", ["content"] = pending };
+                if (pendingPhase is not null) message["phase"] = pendingPhase;
+                items.Add(message);
                 pending = new JsonArray();
             }
         }
@@ -149,6 +153,10 @@ public static class ResponsesInput
 
                     break;
                 case ContentText text:
+                    var phase = phases is not null && textIndex < phases.Count ? phases[textIndex] : null;
+                    textIndex++;
+                    if (phase != pendingPhase) Flush();
+                    pendingPhase = phase;
                     if (text.Text.Length == 0 && hasToolCalls)
                     {
                         break;

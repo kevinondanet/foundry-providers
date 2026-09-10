@@ -27,6 +27,13 @@ internal static class PythonReference
 
     public static bool Available => Interpreter is not null;
 
+    /// <summary>Regenerates provider wire requests against Python using in-memory HTTP transports only.</summary>
+    public static void GenerateProviderFixtures(string destination)
+    {
+        var script = Path.Combine(AppContext.BaseDirectory, "Fixtures", "generate-provider-goldens.py");
+        Run($"import os, runpy\nos.environ['INSPECT_PROVIDER_FIXTURE_DIR'] = {System.Text.Json.JsonSerializer.Serialize(destination)}\nrunpy.run_path({System.Text.Json.JsonSerializer.Serialize(script)}, run_name='__main__')");
+    }
+
     /// <summary>Runs <paramref name="script"/> and returns its trimmed stdout; a non-zero exit is an <see cref="InvalidOperationException"/> carrying stderr.</summary>
     public static string Run(string script)
     {

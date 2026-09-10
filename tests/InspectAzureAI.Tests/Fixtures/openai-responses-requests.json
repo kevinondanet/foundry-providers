@@ -1,0 +1,435 @@
+{
+  "python_revision": "76f1aa761aa7fa7785ca7ea878f00f3ef3704efb",
+  "notes": [
+    "Reasoning summaries disabled unless explicit: no live verification probe.",
+    "Responses store=true is sent explicitly by C#, equivalent to the Python SDK default."
+  ],
+  "cases": [
+    {
+      "provider": "openai",
+      "scenario": "simple",
+      "model": "gpt-5.6-sol",
+      "config": {},
+      "model_args": {},
+      "path": "/v1/responses",
+      "body": {
+        "include": [
+          "reasoning.encrypted_content"
+        ],
+        "input": [
+          {
+            "type": "message",
+            "role": "developer",
+            "content": [
+              {
+                "type": "input_text",
+                "text": "Be brief."
+              }
+            ]
+          },
+          {
+            "type": "message",
+            "role": "user",
+            "content": [
+              {
+                "type": "input_text",
+                "text": "hi"
+              }
+            ]
+          }
+        ],
+        "model": "gpt-5.6-sol",
+        "store": false
+      },
+      "headers": {}
+    },
+    {
+      "provider": "openai",
+      "scenario": "simple",
+      "model": "gpt-5.4-mini",
+      "config": {
+        "reasoning_effort": "max",
+        "temperature": 0.2
+      },
+      "model_args": {},
+      "path": "/v1/responses",
+      "body": {
+        "include": [
+          "reasoning.encrypted_content"
+        ],
+        "input": [
+          {
+            "type": "message",
+            "role": "developer",
+            "content": [
+              {
+                "type": "input_text",
+                "text": "Be brief."
+              }
+            ]
+          },
+          {
+            "type": "message",
+            "role": "user",
+            "content": [
+              {
+                "type": "input_text",
+                "text": "hi"
+              }
+            ]
+          }
+        ],
+        "model": "gpt-5.4-mini",
+        "reasoning": {
+          "effort": "xhigh"
+        },
+        "store": false
+      },
+      "headers": {}
+    },
+    {
+      "provider": "openai",
+      "scenario": "simple",
+      "model": "gpt-5.6-sol",
+      "config": {
+        "reasoning_effort": "max",
+        "reasoning_summary": "detailed"
+      },
+      "model_args": {},
+      "path": "/v1/responses",
+      "body": {
+        "include": [
+          "reasoning.encrypted_content"
+        ],
+        "input": [
+          {
+            "type": "message",
+            "role": "developer",
+            "content": [
+              {
+                "type": "input_text",
+                "text": "Be brief."
+              }
+            ]
+          },
+          {
+            "type": "message",
+            "role": "user",
+            "content": [
+              {
+                "type": "input_text",
+                "text": "hi"
+              }
+            ]
+          }
+        ],
+        "model": "gpt-5.6-sol",
+        "reasoning": {
+          "effort": "max",
+          "summary": "detailed"
+        },
+        "store": false
+      },
+      "headers": {}
+    },
+    {
+      "provider": "openai",
+      "scenario": "simple",
+      "model": "gpt-4",
+      "config": {
+        "temperature": 0.3
+      },
+      "model_args": {
+        "responses_api": true
+      },
+      "path": "/v1/responses",
+      "body": {
+        "include": [],
+        "input": [
+          {
+            "type": "message",
+            "role": "developer",
+            "content": [
+              {
+                "type": "input_text",
+                "text": "Be brief."
+              }
+            ]
+          },
+          {
+            "type": "message",
+            "role": "user",
+            "content": [
+              {
+                "type": "input_text",
+                "text": "hi"
+              }
+            ]
+          }
+        ],
+        "model": "gpt-4",
+        "store": false,
+        "temperature": 0.3
+      },
+      "headers": {}
+    },
+    {
+      "provider": "openai",
+      "scenario": "simple",
+      "model": "gpt-5.6-sol",
+      "config": {
+        "num_choices": 1
+      },
+      "model_args": {
+        "responses_api": true
+      },
+      "path": "/v1/responses",
+      "body": {
+        "include": [
+          "reasoning.encrypted_content"
+        ],
+        "input": [
+          {
+            "type": "message",
+            "role": "developer",
+            "content": [
+              {
+                "type": "input_text",
+                "text": "Be brief."
+              }
+            ]
+          },
+          {
+            "type": "message",
+            "role": "user",
+            "content": [
+              {
+                "type": "input_text",
+                "text": "hi"
+              }
+            ]
+          }
+        ],
+        "model": "gpt-5.6-sol",
+        "store": false
+      },
+      "headers": {}
+    },
+    {
+      "provider": "openai",
+      "scenario": "simple",
+      "model": "gpt-5.4-pro",
+      "config": {},
+      "model_args": {},
+      "path": "/v1/responses",
+      "body": {
+        "background": true,
+        "include": [
+          "reasoning.encrypted_content"
+        ],
+        "input": [
+          {
+            "type": "message",
+            "role": "developer",
+            "content": [
+              {
+                "type": "input_text",
+                "text": "Be brief."
+              }
+            ]
+          },
+          {
+            "type": "message",
+            "role": "user",
+            "content": [
+              {
+                "type": "input_text",
+                "text": "hi"
+              }
+            ]
+          }
+        ],
+        "model": "gpt-5.4-pro",
+        "store": false
+      },
+      "headers": {}
+    },
+    {
+      "provider": "openai",
+      "scenario": "simple",
+      "model": "o3-deep-research",
+      "config": {},
+      "model_args": {},
+      "path": "/v1/responses",
+      "body": {
+        "background": true,
+        "include": [
+          "reasoning.encrypted_content"
+        ],
+        "input": [
+          {
+            "type": "message",
+            "role": "developer",
+            "content": [
+              {
+                "type": "input_text",
+                "text": "Be brief."
+              }
+            ]
+          },
+          {
+            "type": "message",
+            "role": "user",
+            "content": [
+              {
+                "type": "input_text",
+                "text": "hi"
+              }
+            ]
+          }
+        ],
+        "model": "o3-deep-research",
+        "store": false
+      },
+      "headers": {}
+    },
+    {
+      "provider": "openai",
+      "scenario": "simple",
+      "model": "gpt-5.6-sol",
+      "config": {},
+      "model_args": {
+        "responses_store": true,
+        "organization": "org-fixture",
+        "project": "proj-fixture",
+        "safety_identifier": "safe-fixture"
+      },
+      "path": "/v1/responses",
+      "body": {
+        "include": [],
+        "input": [
+          {
+            "type": "message",
+            "role": "developer",
+            "content": [
+              {
+                "type": "input_text",
+                "text": "Be brief."
+              }
+            ]
+          },
+          {
+            "type": "message",
+            "role": "user",
+            "content": [
+              {
+                "type": "input_text",
+                "text": "hi"
+              }
+            ]
+          }
+        ],
+        "model": "gpt-5.6-sol",
+        "safety_identifier": "safe-fixture"
+      },
+      "headers": {
+        "openai-organization": "org-fixture",
+        "openai-project": "proj-fixture"
+      }
+    },
+    {
+      "provider": "openai",
+      "scenario": "tools_images",
+      "model": "gpt-5.6-sol",
+      "config": {
+        "max_tokens": 100,
+        "parallel_tool_calls": false
+      },
+      "model_args": {
+        "responses_api": true
+      },
+      "path": "/v1/responses",
+      "body": {
+        "include": [
+          "reasoning.encrypted_content"
+        ],
+        "input": [
+          {
+            "type": "message",
+            "role": "developer",
+            "content": [
+              {
+                "type": "input_text",
+                "text": "Be brief."
+              }
+            ]
+          },
+          {
+            "type": "message",
+            "role": "user",
+            "content": [
+              {
+                "type": "input_text",
+                "text": "hi"
+              },
+              {
+                "type": "input_image",
+                "detail": "auto",
+                "image_url": "data:image/png;base64,aGk="
+              }
+            ]
+          },
+          {
+            "type": "message",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "output_text",
+                "text": "Checking",
+                "annotations": [],
+                "logprobs": []
+              }
+            ],
+            "status": "completed"
+          },
+          {
+            "type": "function_call",
+            "call_id": "call1",
+            "name": "f",
+            "arguments": "{\"x\": \"v\"}"
+          },
+          {
+            "type": "function_call_output",
+            "call_id": "call1",
+            "output": "done"
+          }
+        ],
+        "max_output_tokens": 100,
+        "model": "gpt-5.6-sol",
+        "parallel_tool_calls": false,
+        "store": false,
+        "tools": [
+          {
+            "type": "function",
+            "name": "f",
+            "description": "Test function",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "x": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "x"
+              ],
+              "additionalProperties": false
+            },
+            "strict": false
+          }
+        ]
+      },
+      "headers": {}
+    }
+  ]
+}
