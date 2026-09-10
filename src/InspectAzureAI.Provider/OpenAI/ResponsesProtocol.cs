@@ -32,7 +32,7 @@ internal sealed class ResponsesProtocol(string DeploymentName, IReadOnlyDictiona
         var request = new JsonObject
         {
             ["model"] = DeploymentName,
-            ["input"] = ResponsesInput.InputItems(input),
+            ["input"] = ResponsesInput.InputItems(input, ResponsesTools.Namespaces(tools)),
         };
 
         if (tools.Count > 0)

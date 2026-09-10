@@ -24,8 +24,25 @@ public sealed class OpenAIModelApi : DirectModelApi
     }
     private string Family => ModelName.ToLowerInvariant();
     private Match Version => Regex.Match(Family, @"^gpt-(\d+)(?:\.(\d+))?");
-    private bool Latest => !new[] { "embedding", "whisper", "dall-e", "tts", "moderation", "image-1", "sora", "gpt", "codex", "deep-research" }.Any(Family.Contains) && !OSeries;
-    internal bool OSeries => Regex.IsMatch(Family, @"^o\d+") || (!Family.Contains("gpt") && Regex.IsMatch(Family, @"o\d+"));
+    private static readonly string[] NonLatestFamilies = ["embedding", "whisper", "dall-e", "tts", "moderation", "image-1", "sora", "gpt", "codex", "deep-research"];
+    private bool Latest => LatestFamily(Family);
+    internal bool OSeries => OSeriesFamily(Family);
+
+    /// <summary>
+    /// Whether this model is treated as OpenAI's newest model family: its name matches none of the known families
+    /// (gpt, codex, the o-series, embeddings, audio, image and video models). Such a model gets the gpt-5+ treatment.
+    /// </summary>
+    public bool IsLatest => Latest;
+
+    /// <summary>The <see cref="IsLatest"/> predicate over a model name (for APIs that are not an <see cref="OpenAIModelApi"/>, such as <see cref="OpenAIResponsesModelApi"/>).</summary>
+    public static bool IsLatestModelName(string modelName)
+    {
+        ArgumentNullException.ThrowIfNull(modelName);
+        return LatestFamily(modelName.ToLowerInvariant());
+    }
+
+    private static bool LatestFamily(string family) => !NonLatestFamilies.Any(family.Contains) && !OSeriesFamily(family);
+    private static bool OSeriesFamily(string family) => Regex.IsMatch(family, @"^o\d+") || (!family.Contains("gpt") && Regex.IsMatch(family, @"o\d+"));
     internal bool Gpt5Plus => Version.Success && int.Parse(Version.Groups[1].Value) >= 5 || Latest;
     internal bool ReasoningOptions => OSeries || (Gpt5Plus && !Family.Contains("-chat")) || Family.Contains("codex");
     internal bool ReasoningEnabled(GenerateConfig config) => OSeries ||
@@ -85,13 +102,14 @@ public sealed class OpenAIModelApi : DirectModelApi
         }
         if (Background(config) || Options.Boolean("background") is not null) request["background"] = Background(config);
         // Phase is attached to each text run, so separate messages retain different API-returned phases.
-        request["input"] = DirectInput(input, Options.Boolean("responses_phase") == true);
+        request["input"] = DirectInput(input, Options.Boolean("responses_phase") == true, ResponsesTools.Namespaces(tools));
         CommonFields(request);
         foreach (var pair in extras) request[pair.Key] = pair.Value?.DeepClone();
         if (Options.Boolean("responses_store") is { } explicitStore) request["store"] = explicitStore;
         return request;
     }
-    internal static JsonArray DirectInput(IReadOnlyList<ChatMessage> input, bool synthesizePhase)
+    /// <summary>The Responses <c>input</c> items, with text phases and the <c>namespace</c> of replayed namespaced function calls.</summary>
+    internal static JsonArray DirectInput(IReadOnlyList<ChatMessage> input, bool synthesizePhase, IReadOnlyDictionary<string, string>? namespaces = null)
     {
         var items = new JsonArray();
         foreach (var message in input)
@@ -103,7 +121,7 @@ public sealed class OpenAIModelApi : DirectModelApi
                 phases = original.ContentList.OfType<ContentText>().Select((_, i) => phases is not null && i < phases.Count && phases[i] is not null
                     ? phases[i] : original.ToolCalls is { Count: > 0 } ? "commentary" : "final_answer").ToList();
             IEnumerable<JsonNode?> converted = message is ChatMessageAssistant assistant
-                ? ResponsesInput.AssistantItems(assistant, phases) : ResponsesInput.InputItems([message]);
+                ? ResponsesInput.AssistantItems(assistant, phases, namespaces) : ResponsesInput.InputItems([message], namespaces);
             foreach (var item in converted)
             {
                 var clone = item!.DeepClone();

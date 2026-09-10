@@ -1,6 +1,4 @@
-using System.Net;
 using System.Text.Json.Nodes;
-using System.Text.RegularExpressions;
 using InspectAzureAI.Provider.Core;
 using InspectAzureAI.Provider.Tools;
 using InspectAzureAI.Provider.Util;
@@ -266,23 +264,8 @@ public static partial class CompletionsBridgeApi
         return content;
     }
 
-    /// <summary>Port of <c>reasoning_to_think_tag</c>.</summary>
-    public static string ReasoningToThinkTag(ContentReasoning reasoning)
-    {
-        ArgumentNullException.ThrowIfNull(reasoning);
-        var attribs = "";
-        if (reasoning.Signature is not null)
-        {
-            attribs = $"{attribs} signature=\"{WebUtility.HtmlEncode(reasoning.Signature)}\"";
-        }
-
-        if (reasoning.Redacted)
-        {
-            attribs = $"{attribs} redacted=\"true\"";
-        }
-
-        return $"<think{attribs}>\n{reasoning.Reasoning}\n</think>";
-    }
+    /// <summary>Port of <c>reasoning_to_think_tag</c> (delegates to <see cref="ThinkTags.ToThinkTag"/>, which writes the summary too).</summary>
+    public static string ReasoningToThinkTag(ContentReasoning reasoning) => ThinkTags.ToThinkTag(reasoning);
 
     /// <summary>The response half of <c>inspect_completions_api_request</c>: a <c>chat.completion</c> object (choices via <c>openai_chat_choices</c>).</summary>
     public static JsonObject ResponseFromOutput(ModelOutput output, string model)
@@ -419,26 +402,23 @@ public static partial class CompletionsBridgeApi
         return chunks;
     }
 
-    /// <summary>Port of the proxy's <c>_openai_error_body</c>.</summary>
-    public static JsonObject ErrorBody(int status, string message) => new()
+    /// <summary>Port of the proxy's <c>_openai_error_body</c>, with <c>param</c> and <c>code</c> null.</summary>
+    public static JsonObject ErrorBody(int status, string message) => ErrorBody(status, message, null, null);
+
+    /// <summary>
+    /// Port of the proxy's <c>_openai_error_body</c> carrying <c>param</c> and <c>code</c>, as its missing-parameter errors do
+    /// (<c>proxy.py:660-671</c>). The <c>type</c> is <c>invalid_request_error</c> for a 4xx status and <c>api_error</c> otherwise.
+    /// </summary>
+    public static JsonObject ErrorBody(int status, string message, string? param, string? code) => new()
     {
         ["error"] = new JsonObject
         {
             ["message"] = message,
             ["type"] = status is >= 400 and < 500 ? "invalid_request_error" : "api_error",
-            ["param"] = null,
-            ["code"] = null,
+            ["param"] = param,
+            ["code"] = code,
         },
     };
-
-    [GeneratedRegex("<think([^>]*)>(.*?)</think>", RegexOptions.Singleline)]
-    private static partial Regex ThinkTagRegex();
-
-    [GeneratedRegex("signature=\"([^\"]*)\"")]
-    private static partial Regex SignatureAttrRegex();
-
-    [GeneratedRegex("redacted=\"([^\"]*)\"")]
-    private static partial Regex RedactedAttrRegex();
 
     /// <summary>Port of <c>openai_assistant_message_reducer</c>: <c>assistant[tool_calls] → tool → assistant[content]</c> is folded back into the first assistant message.</summary>
     private static void AssistantMessageReducer(List<JsonObject> messages, JsonObject message)
@@ -543,24 +523,11 @@ public static partial class CompletionsBridgeApi
         return MessageContent.FromItems(items);
     }
 
-    /// <summary>Port of <c>parse_content_with_reasoning</c> (signature and redacted attributes; no nested summaries).</summary>
+    /// <summary>Port of <c>parse_content_with_reasoning</c> (delegates to <see cref="ThinkTags.Parse"/>: nesting, summaries and the <c>rs_</c> whitespace strip).</summary>
     private static (string Remaining, ContentReasoning? Reasoning) ParseContentWithReasoning(string content)
     {
-        var match = ThinkTagRegex().Match(content);
-        if (!match.Success)
-        {
-            return (content, null);
-        }
-
-        var attrs = match.Groups[1].Value;
-        var signatureMatch = SignatureAttrRegex().Match(attrs);
-        var redactedMatch = RedactedAttrRegex().Match(attrs);
-        var reasoning = new ContentReasoning(
-            match.Groups[2].Value.Trim(),
-            signatureMatch.Success ? WebUtility.HtmlDecode(signatureMatch.Groups[1].Value) : null,
-            redactedMatch.Success && redactedMatch.Groups[1].Value == "true");
-        var remaining = content[..match.Index] + content[(match.Index + match.Length)..];
-        return (remaining.Trim(), reasoning);
+        var (remaining, reasoning) = ThinkTags.Parse(content);
+        return (remaining, reasoning.Count > 0 ? reasoning[0] : null);
     }
 
     private static string StripThinkTag(string content) => ParseContentWithReasoning(content).Remaining;
