@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
+using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -440,14 +441,14 @@ public sealed class SandboxAgentBridge : IAsyncDisposable
         catch (LimitExceededException ex)
         {
             await SignalLimitAsync(ex).ConfigureAwait(false);
-            await AnswerErrorAsync(context, dialect, 500, ex.Message).ConfigureAwait(false);
+            await AnswerErrorAsync(context, dialect, SignalledStatus(dialect), ex.Message).ConfigureAwait(false);
         }
         catch (Approval.TerminateSampleException ex)
         {
             // an approver ended the sample from inside a bridged generation: keep the reason for the agent to
             // rethrow, signal it, and still answer so the scaffold gets an error rather than a hung request
             await SignalTerminateAsync(ex).ConfigureAwait(false);
-            await AnswerErrorAsync(context, dialect, 500, ex.Message).ConfigureAwait(false);
+            await AnswerErrorAsync(context, dialect, SignalledStatus(dialect), ex.Message).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (_shutdown.IsCancellationRequested)
         {
@@ -459,7 +460,8 @@ public sealed class SandboxAgentBridge : IAsyncDisposable
         {
             RecordError(ex);
             var status = ex is ModelGenerateException or BridgeRequestException ? 400 : 500;
-            await AnswerErrorAsync(context, dialect, status, ex.Message).ConfigureAwait(false);
+            var requestError = ex as BridgeRequestException;
+            await AnswerErrorAsync(context, dialect, status, ex.Message, requestError?.Param, requestError?.Code).ConfigureAwait(false);
         }
         finally
         {
@@ -475,14 +477,44 @@ public sealed class SandboxAgentBridge : IAsyncDisposable
     }
 
     /// <summary>
-    /// The <c>POST /v1/responses</c> route (the OpenAI Responses API dialect). This build does not serve it yet and
-    /// answers 404 in the OpenAI error shape; the route, authentication and dialect-shaped errors are in place.
+    /// The <c>POST /v1/responses</c> route (the OpenAI Responses API dialect, port of the proxy's
+    /// <c>/v1/responses</c> handler over <c>responses_impl.py</c>): the request is parsed (a
+    /// <see cref="BridgeRequestException"/> is a 400 carrying <c>param</c> and <c>code</c>), adapted to the model it
+    /// resolves to, generated through the bridge (which registers bridged-tool grants), and answered as a Responses
+    /// object whose <c>model</c> is the served API's model name: JSON, or when streaming the synthesized named events
+    /// ending with <c>response.completed</c> (no <c>[DONE]</c>). A failure after the stream started is answered with a
+    /// best-effort <c>response.failed</c> event (see <see cref="AnswerErrorAsync"/>). <c>parallel_tool_calls</c> is
+    /// forwarded as the request sent it, never overridden.
     /// </summary>
-    private Task HandleResponsesAsync(HttpListenerContext context, JsonObject json, CancellationToken cancellationToken)
+    private async Task HandleResponsesAsync(HttpListenerContext context, JsonObject json, CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(json);
-        return WriteJsonAsync(context, 404, ErrorBody(Dialect.Responses, 404, "The Responses route is not available in this build."), cancellationToken);
+        var request = ResponsesBridgeApi.ParseRequest(json);
+        var resolved = _bridge.ResolveModel(request.Model);
+        var parsed = ResponsesBridgeApi.ForServedModel(request, resolved);
+        var output = await _bridge.GenerateAsync(parsed.Model, parsed.Messages, parsed.Tools, parsed.ToolChoice, parsed.Config, cancellationToken).ConfigureAwait(false);
+        var body = ResponsesBridgeApi.ResponseFromOutput(output, resolved.Api.ModelName, parsed);
+        if (!parsed.Stream)
+        {
+            await WriteJsonAsync(context, 200, body, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        var events = ResponsesBridgeApi.StreamEvents(body);
+        var progress = ResponsesStreams.GetValue(context.Response, _ => new ResponsesStreamProgress(BridgeJson.GetString(body, "id") ?? ""));
+        var writer = StartStream(context.Response);
+        foreach (var sseEvent in events)
+        {
+            await writer.WriteAsync(sseEvent, cancellationToken).ConfigureAwait(false);
+            progress.SequenceNumber = sseEvent.Data["sequence_number"]?.GetValue<int>() ?? progress.SequenceNumber + 1;
+        }
     }
+
+    /// <summary>
+    /// The status a sample limit or an approver's termination is answered with: 500, except on the Responses dialect,
+    /// where it is 400 (deviation D-R10) because Codex retries a 5xx up to four times. The agent rethrows the recorded
+    /// signal either way.
+    /// </summary>
+    private static int SignalledStatus(Dialect dialect) => dialect == Dialect.Responses ? 400 : 500;
 
     /// <summary>
     /// The bridged-tools MCP endpoint (port of the proxy's <c>/mcp/*</c> routes, after authentication): a non-POST
@@ -570,22 +602,30 @@ public sealed class SandboxAgentBridge : IAsyncDisposable
     }
 
     /// <summary>
-    /// Answers a failed request: a JSON error body in the dialect's shape when nothing was sent yet; once a stream
-    /// started, an Anthropic <c>error</c> event (the OpenAI dialects get nothing more).
+    /// Answers a failed request: a JSON error body in the dialect's shape when nothing was sent yet (the OpenAI
+    /// dialects carry <paramref name="param"/> and <paramref name="code"/>); once a stream started, an Anthropic
+    /// <c>error</c> event, or on the Responses dialect a <c>response.failed</c> event for the streamed response id with
+    /// the next sequence number (chat completions streams get nothing more).
     /// </summary>
-    private static async Task AnswerErrorAsync(HttpListenerContext context, Dialect dialect, int status, string message)
+    private static async Task AnswerErrorAsync(HttpListenerContext context, Dialect dialect, int status, string message, string? param = null, string? code = null)
     {
         var response = context.Response;
         try
         {
             if (!response.SendChunked)
             {
-                await WriteJsonAsync(context, status, ErrorBody(dialect, status, message), CancellationToken.None).ConfigureAwait(false);
+                await WriteJsonAsync(context, status, ErrorBody(dialect, status, message, param, code), CancellationToken.None).ConfigureAwait(false);
             }
             else if (dialect == Dialect.Anthropic)
             {
                 var writer = new SseWriter(response.OutputStream);
                 await writer.WriteAsync(new SseEvent("error", AnthropicBridgeApi.ErrorBody(status, message)), CancellationToken.None).ConfigureAwait(false);
+            }
+            else if (dialect == Dialect.Responses)
+            {
+                var progress = ResponsesStreams.TryGetValue(response, out var started) ? started : new ResponsesStreamProgress("");
+                var writer = new SseWriter(response.OutputStream);
+                await writer.WriteAsync(ResponsesBridgeApi.FailedEvent(progress.ResponseId, progress.SequenceNumber + 1, status, message), CancellationToken.None).ConfigureAwait(false);
             }
         }
         catch (Exception)
@@ -692,9 +732,9 @@ public sealed class SandboxAgentBridge : IAsyncDisposable
         return path.StartsWith("/v1/chat", StringComparison.Ordinal) ? Dialect.ChatCompletions : Dialect.Anthropic;
     }
 
-    private static JsonObject ErrorBody(Dialect dialect, int status, string message) => dialect switch
+    private static JsonObject ErrorBody(Dialect dialect, int status, string message, string? param = null, string? code = null) => dialect switch
     {
-        Dialect.ChatCompletions or Dialect.Responses => CompletionsBridgeApi.ErrorBody(status, message),
+        Dialect.ChatCompletions or Dialect.Responses => CompletionsBridgeApi.ErrorBody(status, message, param, code),
         Dialect.Mcp => BridgedToolsMcpApi.JsonRpcError(null, -32600, message),
         _ => AnthropicBridgeApi.ErrorBody(status, message),
     };
@@ -710,6 +750,16 @@ public sealed class SandboxAgentBridge : IAsyncDisposable
 
             _errors.Add(ex);
         }
+    }
+
+    /// <summary>What a streamed Responses reply has sent so far, so a later failure can name the response and continue its sequence.</summary>
+    private static readonly ConditionalWeakTable<HttpListenerResponse, ResponsesStreamProgress> ResponsesStreams = new();
+
+    private sealed class ResponsesStreamProgress(string responseId)
+    {
+        public string ResponseId { get; } = responseId;
+
+        public int SequenceNumber { get; set; }
     }
 
     private enum Route
