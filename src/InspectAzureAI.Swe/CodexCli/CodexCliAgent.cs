@@ -141,134 +141,143 @@ public sealed class CodexCliAgent
 
         using var sinkScope = ModelEventSinks.Install(consumer);
         var sandboxBridge = await BridgeFactory(bridge, sandbox, Options.Port, Options.BridgedTools, cancellationToken).ConfigureAwait(false);
-        await using (sandboxBridge.ConfigureAwait(false))
+        try
         {
-            var codexBinary = await Binary.EnsureInstalledAsync(sandbox, Options.Version, Options.User, cancellationToken).ConfigureAwait(false);
-            var codexVersion = await CodexCliBinary.InstalledVersionAsync(sandbox, codexBinary, Options.User, cancellationToken).ConfigureAwait(false);
-
-            // the floor applies in centaur mode too, so behaviour is consistent across modes
-            if (Options.AutoReview is not null)
+            await using (sandboxBridge.ConfigureAwait(false))
             {
-                CodexCliConfig.CheckAutoReviewVersion(codexVersion);
-            }
+                var codexBinary = await Binary.EnsureInstalledAsync(sandbox, Options.Version, Options.User, cancellationToken).ConfigureAwait(false);
+                var codexVersion = await CodexCliBinary.InstalledVersionAsync(sandbox, codexBinary, Options.User, cancellationToken).ConfigureAwait(false);
 
-            var systemTexts = sandboxBridge.State.Messages.OfType<ChatMessageSystem>().Select(message => message.Text).ToList();
-            if (Options.SystemPrompt is not null)
-            {
-                systemTexts.Add(Options.SystemPrompt);
-            }
-
-            var agentCwd = await SandboxUtil.ResolveAgentCwdAsync(sandbox, Options.User, Options.Cwd, cancellationToken).ConfigureAwait(false);
-
-            var catalog = await Binary.CatalogAsync(codexVersion, cancellationToken).ConfigureAwait(false);
-            var resolution = CodexCliModelAlignment.Resolve(served.Api, catalog, Options.ModelConfig);
-            ProviderLogger.Info($"Codex model alignment: real model '{served.Name}' (as '{served.Api.ModelName}') → --model '{resolution.Slug}' ({resolution.Reason})");
-
-            var homeDirSet = Options.HomeDir is not null;
-            var codexHome = homeDirSet
-                ? await SandboxUtil.ExecAsync(sandbox, $"eval echo \"{Options.HomeDir}\"", Options.User, agentCwd, cancellationToken).ConfigureAwait(false)
-                : SandboxUtil.JoinPath(agentCwd, ".codex");
-            var mkdir = await sandbox.ExecAsync(["mkdir", "-p", codexHome], user: Options.User, cancellationToken: cancellationToken).ConfigureAwait(false);
-            if (!mkdir.Success)
-            {
-                throw new InvalidOperationException($"Error executing sandbox command mkdir -p {codexHome}: {mkdir.Stderr}");
-            }
-
-            if (systemTexts.Count > 0)
-            {
-                await sandbox.WriteFileAsync(CodexCliCommand.AgentsMdPath(agentCwd, codexHome, homeDirSet), string.Join("\n\n", systemTexts), cancellationToken).ConfigureAwait(false);
-            }
-
-            if (_skills is not null)
-            {
-                await SkillInstaller.InstallSkillsAsync(_skills.Select(SkillSource.FromSkill), sandbox, Options.User, SandboxUtil.JoinPath(codexHome, "skills"), cancellationToken).ConfigureAwait(false);
-            }
-
-            var (prompt, hasAssistantResponse) = AgentPrompt.BuildUserPrompt(sandboxBridge.State.Messages);
-            var cmd = CodexCliCommand.Base(
-                codexBinary,
-                resolution.Slug,
-                centaur: Options.Centaur is not null,
-                autoReview: Options.AutoReview is not null,
-                Options.ConfigOverrides,
-                CodexCliConfig.CliOverrides(_webSearch, Options.Goals, Options.AutoReview));
-            var toml = CodexCliConfig.BuildToml(_webSearch, Options.Goals, Options.AutoReview, Options.McpServers ?? [], sandboxBridge.McpServerConfigs, sandboxBridge.BaseUrl);
-            await sandbox.WriteFileAsync(CodexCliCommand.ConfigTomlPath(agentCwd, codexHome, homeDirSet), toml, cancellationToken).ConfigureAwait(false);
-            var agentEnv = CodexCliEnv.Build(codexHome, sandboxBridge.BaseUrl, sandboxBridge.AuthToken, Options.Env);
-
-            if (Options.Centaur is { } centaur)
-            {
-                await RunCentaurAsync(centaur, cmd, agentEnv, sandboxBridge, cancellationToken).ConfigureAwait(false);
-                return sandboxBridge.State;
-            }
-
-            var debug = Options.Debug ? new CodexCliDebug() : null;
-            if (debug is not null)
-            {
-                context.Store.Set(CodexCliDebug.StoreKey, debug);
-            }
-
-            var debugOutput = new List<string>();
-            var agentPrompt = prompt;
-            var attemptCount = 0;
-            while (true)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                var agentCmd = CodexCliCommand.WithPrompt(cmd, agentPrompt, resume: hasAssistantResponse || attemptCount > 0);
-                ExecResult result;
-                try
+                // the floor applies in centaur mode too, so behaviour is consistent across modes
+                if (Options.AutoReview is not null)
                 {
-                    result = await LaunchAsync(sandbox, sandboxBridge, agentCmd, agentCwd, agentEnv, cancellationToken).ConfigureAwait(false);
+                    CodexCliConfig.CheckAutoReviewVersion(codexVersion);
                 }
-                finally
+
+                var systemTexts = sandboxBridge.State.Messages.OfType<ChatMessageSystem>().Select(message => message.Text).ToList();
+                if (Options.SystemPrompt is not null)
                 {
-                    // close sub-agent spans this launch left open, so the span tree stays balanced across resumes and errors
-                    consumer.Reset();
+                    systemTexts.Add(Options.SystemPrompt);
+                }
+
+                var agentCwd = await SandboxUtil.ResolveAgentCwdAsync(sandbox, Options.User, Options.Cwd, cancellationToken).ConfigureAwait(false);
+
+                var catalog = await Binary.CatalogAsync(codexVersion, cancellationToken).ConfigureAwait(false);
+                var resolution = CodexCliModelAlignment.Resolve(served.Api, catalog, Options.ModelConfig);
+                ProviderLogger.Info($"Codex model alignment: real model '{served.Name}' (as '{served.Api.ModelName}') → --model '{resolution.Slug}' ({resolution.Reason})");
+
+                var homeDirSet = Options.HomeDir is not null;
+                var codexHome = homeDirSet
+                    ? await SandboxUtil.ExecAsync(sandbox, $"eval echo \"{Options.HomeDir}\"", Options.User, agentCwd, cancellationToken).ConfigureAwait(false)
+                    : SandboxUtil.JoinPath(agentCwd, ".codex");
+                var mkdir = await sandbox.ExecAsync(["mkdir", "-p", codexHome], user: Options.User, cancellationToken: cancellationToken).ConfigureAwait(false);
+                if (!mkdir.Success)
+                {
+                    throw new InvalidOperationException($"Error executing sandbox command mkdir -p {codexHome}: {mkdir.Stderr}");
+                }
+
+                if (systemTexts.Count > 0)
+                {
+                    await sandbox.WriteFileAsync(CodexCliCommand.AgentsMdPath(agentCwd, codexHome, homeDirSet), string.Join("\n\n", systemTexts), cancellationToken).ConfigureAwait(false);
+                }
+
+                if (_skills is not null)
+                {
+                    await SkillInstaller.InstallSkillsAsync(_skills.Select(SkillSource.FromSkill), sandbox, Options.User, SandboxUtil.JoinPath(codexHome, "skills"), cancellationToken).ConfigureAwait(false);
+                }
+
+                var (prompt, hasAssistantResponse) = AgentPrompt.BuildUserPrompt(sandboxBridge.State.Messages);
+                var cmd = CodexCliCommand.Base(
+                    codexBinary,
+                    resolution.Slug,
+                    centaur: Options.Centaur is not null,
+                    autoReview: Options.AutoReview is not null,
+                    Options.ConfigOverrides,
+                    CodexCliConfig.CliOverrides(_webSearch, Options.Goals, Options.AutoReview));
+                var toml = CodexCliConfig.BuildToml(_webSearch, Options.Goals, Options.AutoReview, Options.McpServers ?? [], sandboxBridge.McpServerConfigs, sandboxBridge.BaseUrl);
+                await sandbox.WriteFileAsync(CodexCliCommand.ConfigTomlPath(agentCwd, codexHome, homeDirSet), toml, cancellationToken).ConfigureAwait(false);
+                var agentEnv = CodexCliEnv.Build(codexHome, sandboxBridge.BaseUrl, sandboxBridge.AuthToken, Options.Env);
+
+                if (Options.Centaur is { } centaur)
+                {
+                    await RunCentaurAsync(centaur, cmd, agentEnv, sandboxBridge, cancellationToken).ConfigureAwait(false);
+                    return sandboxBridge.State;
+                }
+
+                var debug = Options.Debug ? new CodexCliDebug() : null;
+                if (debug is not null)
+                {
+                    context.Store.Set(CodexCliDebug.StoreKey, debug);
+                }
+
+                var debugOutput = new List<string>();
+                var agentPrompt = prompt;
+                var attemptCount = 0;
+                while (true)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var agentCmd = CodexCliCommand.WithPrompt(cmd, agentPrompt, resume: hasAssistantResponse || attemptCount > 0);
+                    ExecResult result;
+                    try
+                    {
+                        result = await LaunchAsync(sandbox, sandboxBridge, agentCmd, agentCwd, agentEnv, cancellationToken).ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        // close sub-agent spans this launch left open, so the span tree stays balanced across resumes and errors
+                        consumer.Reset();
+                    }
+
+                    if (debug is not null)
+                    {
+                        debugOutput.Add(result.Stdout);
+                        debugOutput.Add(result.Stderr);
+                        debug.AddLaunch(result.Stdout, result.Stderr);
+                    }
+
+                    ThrowSignalled(sandboxBridge);
+                    if (!result.Success)
+                    {
+                        throw new InvalidOperationException(CodexCliExit.ErrorMessage(result.ReturnCode, result.Stdout, result.Stderr));
+                    }
+
+                    attemptCount++;
+                    if (attemptCount >= Options.Attempts.Attempts)
+                    {
+                        break;
+                    }
+
+                    var answerScores = await ScoreAsync(context, sandboxBridge.State, cancellationToken).ConfigureAwait(false);
+                    if (answerScores.Count == 0)
+                    {
+                        throw new InvalidOperationException("The task scorer returned no scores for the attempt.");
+                    }
+
+                    var toFloat = Options.Attempts.ScoreValue ?? ValueToFloat.Default;
+                    if (toFloat(answerScores[0].Value) == 1.0)
+                    {
+                        break;
+                    }
+
+                    agentPrompt = Options.Attempts.IncorrectMessageFn is { } incorrectMessage
+                        ? await incorrectMessage(sandboxBridge.State, answerScores, cancellationToken).ConfigureAwait(false)
+                        : Options.Attempts.IncorrectMessage;
                 }
 
                 if (debug is not null)
                 {
-                    debugOutput.Add(result.Stdout);
-                    debugOutput.Add(result.Stderr);
-                    debug.AddLaunch(result.Stdout, result.Stderr);
+                    debugOutput.Insert(0, "Codex CLI Debug Output:");
+                    ProviderLogger.Info(string.Join("\n", debugOutput));
                 }
 
-                ThrowSignalled(sandboxBridge);
-                if (!result.Success)
-                {
-                    throw new InvalidOperationException(CodexCliExit.ErrorMessage(result.ReturnCode, result.Stdout, result.Stderr));
-                }
-
-                attemptCount++;
-                if (attemptCount >= Options.Attempts.Attempts)
-                {
-                    break;
-                }
-
-                var answerScores = await ScoreAsync(context, sandboxBridge.State, cancellationToken).ConfigureAwait(false);
-                if (answerScores.Count == 0)
-                {
-                    throw new InvalidOperationException("The task scorer returned no scores for the attempt.");
-                }
-
-                var toFloat = Options.Attempts.ScoreValue ?? ValueToFloat.Default;
-                if (toFloat(answerScores[0].Value) == 1.0)
-                {
-                    break;
-                }
-
-                agentPrompt = Options.Attempts.IncorrectMessageFn is { } incorrectMessage
-                    ? await incorrectMessage(sandboxBridge.State, answerScores, cancellationToken).ConfigureAwait(false)
-                    : Options.Attempts.IncorrectMessage;
+                return sandboxBridge.State;
             }
-
-            if (debug is not null)
-            {
-                debugOutput.Insert(0, "Codex CLI Debug Output:");
-                ProviderLogger.Info(string.Join("\n", debugOutput));
-            }
-
-            return sandboxBridge.State;
+        }
+        finally
+        {
+            // A generation still in flight when the run ended can complete while the bridge drains its handlers during
+            // disposal, and open a sub-agent span after the last reset: close it once no handler can run any more.
+            consumer.Reset();
         }
     }
 

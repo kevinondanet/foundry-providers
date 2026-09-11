@@ -89,9 +89,13 @@ public sealed class CodexCliAgentTests : IDisposable
             _terminate.Cancel();
         }
 
+        /// <summary>Runs while the bridge is disposed, as a generation still in flight when the launch ended would complete.</summary>
+        public Action? OnDispose { get; init; }
+
         public ValueTask DisposeAsync()
         {
             Disposed = true;
+            OnDispose?.Invoke();
             return ValueTask.CompletedTask;
         }
     }
@@ -145,6 +149,9 @@ public sealed class CodexCliAgentTests : IDisposable
 
         public IModelEventSink? Sink { get; private set; }
 
+        /// <summary>Runs while the fake bridge is disposed.</summary>
+        public Action? OnBridgeDispose { get; set; }
+
         public CodexCliAgent Agent(CodexCliOptions options, Func<CentaurOptions, string, string, AgentState, CancellationToken, Task>? centaurRunner = null) => new(options)
         {
             BridgeFactory = (bridge, sandbox, port, bridgedTools, _) =>
@@ -153,7 +160,7 @@ public sealed class CodexCliAgentTests : IDisposable
                 Assert.Equal(options.Port, port);
                 Sink = ModelEventSinks.Current;
                 BridgedTools = bridgedTools;
-                Bridge = new FakeCodexBridge(bridge) { McpServerConfigs = BridgeMcpServerConfigs };
+                Bridge = new FakeCodexBridge(bridge) { McpServerConfigs = BridgeMcpServerConfigs, OnDispose = () => OnBridgeDispose?.Invoke() };
                 return Task.FromResult<ICodexCliBridge>(Bridge);
             },
             CentaurRunner = centaurRunner,
@@ -305,6 +312,34 @@ public sealed class CodexCliAgentTests : IDisposable
         var thrown = await Assert.ThrowsAsync<LimitExceededException>(() => h.Agent(Offline()).ExecuteAsync(State(new ChatMessageUser("go"))));
 
         Assert.Same(limit, thrown);
+    }
+
+    [Fact]
+    public async Task a_sub_agent_span_opened_while_the_bridge_drains_after_a_limit_is_still_closed()
+    {
+        using var h = new Harness();
+        var limit = new LimitExceededException("token", "10", 12);
+        h.OnLaunch = (_, _) =>
+        {
+            h.Bridge!.HitLimit(limit);
+            return Task.FromResult(CliSandbox.Fail(1, "crashed"));
+        };
+
+        // a generation still in flight when the limit ended the launch completes while the bridge drains its handlers,
+        // after the launch's reset
+        h.OnBridgeDispose = () =>
+        {
+            var recorded = h.Sink!.OnRecording(SpawnEvent("call_late"));
+            h.Context.Transcript.Add(recorded);
+            h.Sink.OnModelEvent(recorded);
+        };
+
+        Assert.Same(limit, await Assert.ThrowsAsync<LimitExceededException>(() => h.Agent(Offline()).ExecuteAsync(State(new ChatMessageUser("go")))));
+
+        var spans = h.Context.Transcript.Events.Where(e => e is SpanBeginEvent or SpanEndEvent).ToList();
+        Assert.Equal(2, spans.Count);
+        Assert.Equal("agent-call_late", Assert.IsType<SpanBeginEvent>(spans[0]).Id);
+        Assert.Equal("agent-call_late", Assert.IsType<SpanEndEvent>(spans[1]).Id);
     }
 
     [Fact]
