@@ -53,6 +53,8 @@ public class ClaudeCodeCentaurTests
     {
         private readonly IDisposable _scope;
 
+        private readonly string _cacheDir = Path.Combine(Path.GetTempPath(), "inspect-swe-tests", Guid.NewGuid().ToString("N"));
+
         public Harness()
         {
             Sandbox.WhichPaths["claude"] = ClaudePath;
@@ -74,7 +76,10 @@ public class ClaudeCodeCentaurTests
 
         public Func<RunnerCall, CancellationToken, Task>? OnRun { get; set; }
 
-        public ClaudeCodeAgent Agent(ClaudeCodeOptions options) => new(options)
+        /// <summary>Serves nothing: binary resolution must never reach the network, which <c>Dispose</c> asserts.</summary>
+        public StrictHttpHandler Http { get; } = new();
+
+        public ClaudeCodeAgent Agent(ClaudeCodeOptions options) => new(options with { HttpHandler = options.HttpHandler ?? Http, CacheDir = options.CacheDir ?? _cacheDir })
         {
             BridgeFactory = (bridge, _, _, _, _) =>
             {
@@ -92,7 +97,16 @@ public class ClaudeCodeCentaurTests
             },
         };
 
-        public void Dispose() => _scope.Dispose();
+        public void Dispose()
+        {
+            _scope.Dispose();
+            if (Directory.Exists(_cacheDir))
+            {
+                Directory.Delete(_cacheDir, recursive: true);
+            }
+
+            Assert.Empty(Http.Requests);
+        }
     }
 
     [Fact]
@@ -151,9 +165,10 @@ public class ClaudeCodeCentaurTests
         Assert.NotNull(h.Sandbox.TextOf(path));
         var calls = h.Sandbox.Calls.ToList();
         var skillChown = calls.FindIndex(c => c.Cmd is ["chown", "agent", "/workspace/.claude/skills/my-skill/SKILL.md"]);
-        var mcpChmod = calls.FindIndex(c => c.Cmd.SequenceEqual(["chmod", "600", path]));
+        var mcpWrite = calls.FindIndex(c => c.Cmd.SequenceEqual(["bash", "-c", ClaudeCodeMcp.WriteConfigScript, "bash", path]));
         var settings = calls.FindIndex(c => CliSandbox.ShellScript(c)?.StartsWith("mkdir -p \"$HOME/.claude\"", StringComparison.Ordinal) == true);
-        Assert.True(skillChown >= 0 && mcpChmod > skillChown && settings > mcpChmod, $"order: skills {skillChown}, mcp {mcpChmod}, settings {settings}");
+        Assert.True(skillChown >= 0 && mcpWrite > skillChown && settings > mcpWrite, $"order: skills {skillChown}, mcp {mcpWrite}, settings {settings}");
+        Assert.Equal("agent", calls[mcpWrite].User);
         // shlex quotes the glob, and the alias body then escapes those quotes as '\''
         Assert.EndsWith($"--mcp-config {path} --allowed-tools '\\''mcp__secrets__*'\\'''", Assert.Single(h.Runs).Bashrc);
     }

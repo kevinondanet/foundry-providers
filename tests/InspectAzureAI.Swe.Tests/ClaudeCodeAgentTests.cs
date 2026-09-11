@@ -61,9 +61,13 @@ public class ClaudeCodeAgentTests
             _limit.Cancel();
         }
 
+        /// <summary>Runs while the bridge is disposed, as a generation still in flight when the launch ended would complete.</summary>
+        public Action? OnDispose { get; init; }
+
         public ValueTask DisposeAsync()
         {
             Disposed = true;
+            OnDispose?.Invoke();
             return ValueTask.CompletedTask;
         }
     }
@@ -72,6 +76,8 @@ public class ClaudeCodeAgentTests
     private sealed class Harness : IDisposable
     {
         private readonly IDisposable _scope;
+
+        private readonly string _cacheDir = Path.Combine(Path.GetTempPath(), "inspect-swe-tests", Guid.NewGuid().ToString("N"));
 
         public Harness(Func<TaskState, Task<IReadOnlyList<Score>>>? scorer = null, bool withSandbox = true, bool claudeInstalled = true)
         {
@@ -83,7 +89,7 @@ public class ClaudeCodeAgentTests
                     return OnLaunch(Launches.Count - 1);
                 }
 
-                if (cmd is ["chmod", "+x", _] or ["chmod", "600", _] or ["chown", _, _])
+                if (cmd is ["chmod", "+x", _] or ["chown", _, _] or ["bash", "-c", ClaudeCodeMcp.PrepareDirectoryScript or ClaudeCodeMcp.WriteConfigScript, "bash", _])
                 {
                     return FakeSandboxEnvironment.Ok();
                 }
@@ -126,22 +132,38 @@ public class ClaudeCodeAgentTests
         /// <summary>The bridged tools the agent handed the bridge factory.</summary>
         public IReadOnlyList<BridgedToolsSpec>? BridgedToolsArg { get; private set; }
 
-        public ClaudeCodeAgent Agent(ClaudeCodeOptions? options = null) => new(options ?? new ClaudeCodeOptions())
-        {
-            BridgeFactory = (bridge, sandbox, port, bridgedTools, _) =>
+        /// <summary>Runs while the fake bridge is disposed.</summary>
+        public Action? OnBridgeDispose { get; set; }
+
+        /// <summary>Serves nothing: binary resolution must never reach the network, which <c>Dispose</c> asserts.</summary>
+        public StrictHttpHandler Http { get; } = new();
+
+        public ClaudeCodeAgent Agent(ClaudeCodeOptions? options = null) =>
+            new((options ?? new ClaudeCodeOptions()) with { HttpHandler = options?.HttpHandler ?? Http, CacheDir = options?.CacheDir ?? _cacheDir })
             {
-                Assert.Same(Sandbox, sandbox);
-                Assert.Equal(0, port);
-                Sink = ModelEventSinks.Current;
-                BridgedToolsArg = bridgedTools;
-                Bridge = new FakeBridge(bridge) { McpServerConfigs = BridgedConfigs };
-                return Task.FromResult<IClaudeCodeBridge>(Bridge);
-            },
-        };
+                BridgeFactory = (bridge, sandbox, port, bridgedTools, _) =>
+                {
+                    Assert.Same(Sandbox, sandbox);
+                    Assert.Equal(0, port);
+                    Sink = ModelEventSinks.Current;
+                    BridgedToolsArg = bridgedTools;
+                    Bridge = new FakeBridge(bridge) { McpServerConfigs = BridgedConfigs, OnDispose = () => OnBridgeDispose?.Invoke() };
+                    return Task.FromResult<IClaudeCodeBridge>(Bridge);
+                },
+            };
 
         public FakeExecCall LaunchCall(int index) => Sandbox.Calls.Where(c => c.Cmd.Count > 2 && c.Cmd[2] == ClaudeCodeCommand.LaunchScript).ElementAt(index);
 
-        public void Dispose() => _scope.Dispose();
+        public void Dispose()
+        {
+            _scope.Dispose();
+            if (Directory.Exists(_cacheDir))
+            {
+                Directory.Delete(_cacheDir, recursive: true);
+            }
+
+            Assert.Empty(Http.Requests);
+        }
     }
 
     private static AgentState State(params ChatMessage[] messages) => new(messages);
@@ -523,11 +545,18 @@ public class ClaudeCodeAgentTests
 
         Assert.Same(specs, h.BridgedToolsArg);
         var path = ClaudeCodeMcp.ConfigPath(agent.SessionId);
-        Assert.Equal(ClaudeCodeMcp.ConfigJson([stdio], [SecretsConfig]), Encoding.UTF8.GetString(h.Sandbox.Files[path]));
-        var chmod = h.Sandbox.Calls.Single(c => c.Cmd.SequenceEqual(["chmod", "600", path]));
-        var chown = h.Sandbox.Calls.Single(c => c.Cmd.SequenceEqual(["chown", "agent", path]));
-        Assert.Equal("root", chmod.User);
-        Assert.Equal("root", chown.User);
+        var calls = h.Sandbox.Calls.ToList();
+        var prepare = calls.FindIndex(c => c.Cmd.SequenceEqual(["bash", "-c", ClaudeCodeMcp.PrepareDirectoryScript, "bash", ClaudeCodeMcp.ConfigDirectory]));
+        var write = calls.FindIndex(c => c.Cmd.SequenceEqual(["bash", "-c", ClaudeCodeMcp.WriteConfigScript, "bash", path]));
+        Assert.True(prepare >= 0 && write > prepare, $"prepare {prepare}, write {write}");
+        Assert.Equal("root", calls[prepare].User);
+
+        // the file is created private by the agent's own user: never first written with default permissions, and no root
+        // command names a path that another sandbox user could swap for a symlink
+        Assert.Equal("agent", calls[write].User);
+        Assert.Equal(ClaudeCodeMcp.ConfigJson([stdio], [SecretsConfig]), calls[write].Input);
+        Assert.False(h.Sandbox.Files.ContainsKey(path));
+        Assert.DoesNotContain(calls, c => c.User == "root" && c.Cmd.Contains(path));
         var launch = Assert.Single(h.Launches);
         Assert.Equal(["--mcp-config", path, "--allowed-tools", "mcp__fs__*,mcp__secrets__*", "--disallowed-tools", "Bash", "--", "go"], launch.Skip(14));
 
@@ -622,6 +651,29 @@ public class ClaudeCodeAgentTests
         Assert.Equal(2, h.Launches.Count);
         Assert.Equal(["agent-toolu_0", "agent-toolu_1"], h.Context.Transcript.Events.OfType<SpanBeginEvent>().Select(e => e.Id));
         Assert.Equal(["agent-toolu_0", "agent-toolu_1"], h.Context.Transcript.Events.OfType<SpanEndEvent>().Select(e => e.Id));
+    }
+
+    [Fact]
+    public async Task a_sub_agent_span_opened_while_the_bridge_drains_after_a_limit_is_still_closed()
+    {
+        var limit = new LimitExceededException("token", "10", 12);
+        using var h = new Harness();
+        h.OnLaunch = _ =>
+        {
+            h.Bridge!.HitLimit(limit);
+            return FakeSandboxEnvironment.Fail(1, "API Error: 400");
+        };
+
+        // the main turn, still generating when a side request crossed the limit, completes while the bridge drains its
+        // handlers, after the loop's final reset
+        h.OnBridgeDispose = () => h.Sink!.OnModelEvent(AgentEvent("toolu_late"));
+
+        Assert.Same(limit, await Assert.ThrowsAsync<LimitExceededException>(() => h.Agent().ExecuteAsync(State(new ChatMessageUser("go")))));
+
+        var spans = h.Context.Transcript.Events.Where(e => e is SpanBeginEvent or SpanEndEvent).ToList();
+        Assert.Equal(2, spans.Count);
+        Assert.Equal("agent-toolu_late", Assert.IsType<SpanBeginEvent>(spans[0]).Id);
+        Assert.Equal("agent-toolu_late", Assert.IsType<SpanEndEvent>(spans[1]).Id);
     }
 
     [Fact]

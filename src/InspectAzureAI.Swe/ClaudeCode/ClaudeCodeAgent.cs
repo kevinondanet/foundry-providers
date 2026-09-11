@@ -149,154 +149,167 @@ public sealed class ClaudeCodeAgent
         // bridge's request handlers inherit it whichever way the bridge delivers model events.
         using var sinkScope = ModelEventSinks.Install(consumer);
         var sandboxBridge = await BridgeFactory(bridge, sandbox, Options.Port, Options.BridgedTools, cancellationToken).ConfigureAwait(false);
-        await using (sandboxBridge.ConfigureAwait(false))
+        try
         {
-            var claudeBinary = await Binary.EnsureInstalledAsync(sandbox, Options.Version, Options.User, cancellationToken).ConfigureAwait(false);
-            var (prompt, hasAssistantResponse) = AgentPrompt.BuildUserPrompt(sandboxBridge.State.Messages);
-            var agentCwd = await SandboxUtil.ResolveAgentCwdAsync(sandbox, Options.User, Options.Cwd, cancellationToken).ConfigureAwait(false);
-            if (_skills is not null)
+            await using (sandboxBridge.ConfigureAwait(false))
             {
-                await SkillInstaller.InstallSkillsAsync(_skills.Select(SkillSource.FromSkill), sandbox, Options.User, SandboxUtil.JoinPath(agentCwd, ".claude/skills"), cancellationToken).ConfigureAwait(false);
-            }
+                var claudeBinary = await Binary.EnsureInstalledAsync(sandbox, Options.Version, Options.User, cancellationToken).ConfigureAwait(false);
+                var (prompt, hasAssistantResponse) = AgentPrompt.BuildUserPrompt(sandboxBridge.State.Messages);
+                var agentCwd = await SandboxUtil.ResolveAgentCwdAsync(sandbox, Options.User, Options.Cwd, cancellationToken).ConfigureAwait(false);
+                if (_skills is not null)
+                {
+                    await SkillInstaller.InstallSkillsAsync(_skills.Select(SkillSource.FromSkill), sandbox, Options.User, SandboxUtil.JoinPath(agentCwd, ".claude/skills"), cancellationToken).ConfigureAwait(false);
+                }
 
-            var (mcpArgs, allowedTools) = await WriteMcpConfigAsync(sandbox, sandboxBridge, cancellationToken).ConfigureAwait(false);
-            var flags = ClaudeCodeCommand.BaseFlags(models.Presented, Options.PermissionMode, Options.Debug, Options.DisallowedTools, mcpArgs, allowedTools, centaur: Options.Centaur is not null);
-            var agentEnv = ClaudeCodeEnv.Build(sandboxBridge.BaseUrl, sandboxBridge.AuthToken, models, Options.Env);
-            var apiKey = agentEnv.TryGetValue("ANTHROPIC_AUTH_TOKEN", out var token) ? token : ClaudeCodeEnv.DefaultApiKey;
-            await sandbox.ExecAsync(SandboxUtil.BashCommand(ClaudeCodeCommand.SettingsCommand(apiKey)), user: Options.User, cwd: agentCwd, cancellationToken: cancellationToken).ConfigureAwait(false);
+                var (mcpArgs, allowedTools) = await WriteMcpConfigAsync(sandbox, sandboxBridge, cancellationToken).ConfigureAwait(false);
+                var flags = ClaudeCodeCommand.BaseFlags(models.Presented, Options.PermissionMode, Options.Debug, Options.DisallowedTools, mcpArgs, allowedTools, centaur: Options.Centaur is not null);
+                var agentEnv = ClaudeCodeEnv.Build(sandboxBridge.BaseUrl, sandboxBridge.AuthToken, models, Options.Env);
+                var apiKey = agentEnv.TryGetValue("ANTHROPIC_AUTH_TOKEN", out var token) ? token : ClaudeCodeEnv.DefaultApiKey;
+                await sandbox.ExecAsync(SandboxUtil.BashCommand(ClaudeCodeCommand.SettingsCommand(apiKey)), user: Options.User, cwd: agentCwd, cancellationToken: cancellationToken).ConfigureAwait(false);
 
-            if (Options.Centaur is { } centaur)
-            {
-                await RunCentaurAsync(centaur, sandboxBridge, [claudeBinary, .. flags], agentEnv, cancellationToken).ConfigureAwait(false);
+                if (Options.Centaur is { } centaur)
+                {
+                    await RunCentaurAsync(centaur, sandboxBridge, [claudeBinary, .. flags], agentEnv, cancellationToken).ConfigureAwait(false);
+                    return sandboxBridge.State;
+                }
+
+                var debug = Options.Debug ? new ClaudeCodeDebug() : null;
+                if (debug is not null)
+                {
+                    context.Store.Set(ClaudeCodeDebug.StoreKey, debug);
+                }
+
+                var debugOutput = new List<string>();
+                var agentPrompt = prompt;
+                var attemptCount = 0;
+                var uncaughtErrorCount = 0;
+                try
+                {
+                    while (true)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        var isResume = hasAssistantResponse || attemptCount > 0 || uncaughtErrorCount > 0;
+                        var systemTexts = ClaudeCodeCommand.SystemTexts(sandboxBridge.State.Messages, Options.SystemPrompt);
+                        var systemArgs = ClaudeCodeCommand.SystemPromptArgs(systemTexts, Options.ReplaceSystemPrompt, isResume);
+                        var agentCmd = ClaudeCodeCommand.Build(claudeBinary, SessionId, isResume, flags, systemArgs, agentPrompt);
+
+                        // Fresh consumer state per attempt; this also closes spans the previous attempt left open.
+                        consumer.Reset();
+                        var result = await LaunchAsync(sandbox, sandboxBridge, agentCmd, agentCwd, agentEnv, cancellationToken).ConfigureAwait(false);
+
+                        var stderrData = "";
+                        var exitCode = 0;
+                        var firstStdoutEvent = true;
+                        foreach (var streamEvent in ClaudeCodeStream.Parse(result))
+                        {
+                            switch (streamEvent)
+                            {
+                                case ClaudeCodeStreamEvent.Jsonl jsonl:
+                                    context.Transcript.Info("claude_code", jsonl.Raw);
+                                    debug?.AddStdout(jsonl.Line);
+                                    consumer.ProcessJsonlLine(jsonl.Raw);
+                                    firstStdoutEvent = false;
+                                    break;
+                                case ClaudeCodeStreamEvent.ParseError parseError:
+                                    if (firstStdoutEvent)
+                                    {
+                                        context.Transcript.Info("claude_code", TruncatedOutputWarning());
+                                    }
+
+                                    if (debug is not null)
+                                    {
+                                        debugOutput.Add($"JSONL parse error: {parseError.Line}");
+                                    }
+
+                                    firstStdoutEvent = false;
+                                    break;
+                                case ClaudeCodeStreamEvent.Stderr stderr:
+                                    stderrData += stderr.Data;
+                                    debug?.AddStderr(stderr.Data);
+                                    break;
+                                case ClaudeCodeStreamEvent.Exit exit:
+                                    exitCode = exit.Code;
+                                    break;
+                            }
+                        }
+
+                        if (debug is not null)
+                        {
+                            debugOutput.Add(stderrData);
+                        }
+
+                        // The CLI exits however it likes once its generation was refused; the limit is the outcome.
+                        // Likewise when an approver terminated the sample from inside a bridged generation.
+                        ThrowIfSignalled(sandboxBridge);
+
+                        var kind = ClaudeCodeExit.Classify(exitCode, stderrData, consumer.LastStopReason, Options.RetryUncaughtErrors, uncaughtErrorCount);
+                        if (kind == ClaudeCodeExitKind.RetryUncaughtError)
+                        {
+                            uncaughtErrorCount++;
+                            continue;
+                        }
+
+                        if (kind == ClaudeCodeExitKind.Failure)
+                        {
+                            throw new InvalidOperationException(ClaudeCodeExit.ErrorMessage(exitCode, stderrData));
+                        }
+
+                        uncaughtErrorCount = 0;
+                        attemptCount++;
+                        if (attemptCount >= Options.Attempts.Attempts)
+                        {
+                            break;
+                        }
+
+                        var answerScores = await ScoreAsync(context, sandboxBridge.State, cancellationToken).ConfigureAwait(false);
+                        if (answerScores.Count == 0)
+                        {
+                            throw new InvalidOperationException("The task scorer returned no scores for the attempt.");
+                        }
+
+                        var toFloat = Options.Attempts.ScoreValue ?? ValueToFloat.Default;
+                        if (toFloat(answerScores[0].Value) == 1.0)
+                        {
+                            break;
+                        }
+
+                        agentPrompt = Options.Attempts.IncorrectMessageFn is { } incorrectMessage
+                            ? await incorrectMessage(sandboxBridge.State, answerScores, cancellationToken).ConfigureAwait(false)
+                            : Options.Attempts.IncorrectMessage;
+                    }
+                }
+                finally
+                {
+                    // Close any spans the final attempt left open, on normal exit and on an exception alike, so the agent
+                    // span tree does not leak past the agent (claude_code.py:539-546).
+                    consumer.Reset();
+                }
+
+                if (debug is not null)
+                {
+                    debugOutput.Insert(0, "Claude Code Debug Output:");
+                    ProviderLogger.Info(string.Join("\n", debugOutput));
+                }
+
                 return sandboxBridge.State;
             }
-
-            var debug = Options.Debug ? new ClaudeCodeDebug() : null;
-            if (debug is not null)
-            {
-                context.Store.Set(ClaudeCodeDebug.StoreKey, debug);
-            }
-
-            var debugOutput = new List<string>();
-            var agentPrompt = prompt;
-            var attemptCount = 0;
-            var uncaughtErrorCount = 0;
-            try
-            {
-                while (true)
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    var isResume = hasAssistantResponse || attemptCount > 0 || uncaughtErrorCount > 0;
-                    var systemTexts = ClaudeCodeCommand.SystemTexts(sandboxBridge.State.Messages, Options.SystemPrompt);
-                    var systemArgs = ClaudeCodeCommand.SystemPromptArgs(systemTexts, Options.ReplaceSystemPrompt, isResume);
-                    var agentCmd = ClaudeCodeCommand.Build(claudeBinary, SessionId, isResume, flags, systemArgs, agentPrompt);
-
-                    // Fresh consumer state per attempt; this also closes spans the previous attempt left open.
-                    consumer.Reset();
-                    var result = await LaunchAsync(sandbox, sandboxBridge, agentCmd, agentCwd, agentEnv, cancellationToken).ConfigureAwait(false);
-
-                    var stderrData = "";
-                    var exitCode = 0;
-                    var firstStdoutEvent = true;
-                    foreach (var streamEvent in ClaudeCodeStream.Parse(result))
-                    {
-                        switch (streamEvent)
-                        {
-                            case ClaudeCodeStreamEvent.Jsonl jsonl:
-                                context.Transcript.Info("claude_code", jsonl.Raw);
-                                debug?.AddStdout(jsonl.Line);
-                                consumer.ProcessJsonlLine(jsonl.Raw);
-                                firstStdoutEvent = false;
-                                break;
-                            case ClaudeCodeStreamEvent.ParseError parseError:
-                                if (firstStdoutEvent)
-                                {
-                                    context.Transcript.Info("claude_code", TruncatedOutputWarning());
-                                }
-
-                                if (debug is not null)
-                                {
-                                    debugOutput.Add($"JSONL parse error: {parseError.Line}");
-                                }
-
-                                firstStdoutEvent = false;
-                                break;
-                            case ClaudeCodeStreamEvent.Stderr stderr:
-                                stderrData += stderr.Data;
-                                debug?.AddStderr(stderr.Data);
-                                break;
-                            case ClaudeCodeStreamEvent.Exit exit:
-                                exitCode = exit.Code;
-                                break;
-                        }
-                    }
-
-                    if (debug is not null)
-                    {
-                        debugOutput.Add(stderrData);
-                    }
-
-                    // The CLI exits however it likes once its generation was refused; the limit is the outcome.
-                    // Likewise when an approver terminated the sample from inside a bridged generation.
-                    ThrowIfSignalled(sandboxBridge);
-
-                    var kind = ClaudeCodeExit.Classify(exitCode, stderrData, consumer.LastStopReason, Options.RetryUncaughtErrors, uncaughtErrorCount);
-                    if (kind == ClaudeCodeExitKind.RetryUncaughtError)
-                    {
-                        uncaughtErrorCount++;
-                        continue;
-                    }
-
-                    if (kind == ClaudeCodeExitKind.Failure)
-                    {
-                        throw new InvalidOperationException(ClaudeCodeExit.ErrorMessage(exitCode, stderrData));
-                    }
-
-                    uncaughtErrorCount = 0;
-                    attemptCount++;
-                    if (attemptCount >= Options.Attempts.Attempts)
-                    {
-                        break;
-                    }
-
-                    var answerScores = await ScoreAsync(context, sandboxBridge.State, cancellationToken).ConfigureAwait(false);
-                    if (answerScores.Count == 0)
-                    {
-                        throw new InvalidOperationException("The task scorer returned no scores for the attempt.");
-                    }
-
-                    var toFloat = Options.Attempts.ScoreValue ?? ValueToFloat.Default;
-                    if (toFloat(answerScores[0].Value) == 1.0)
-                    {
-                        break;
-                    }
-
-                    agentPrompt = Options.Attempts.IncorrectMessageFn is { } incorrectMessage
-                        ? await incorrectMessage(sandboxBridge.State, answerScores, cancellationToken).ConfigureAwait(false)
-                        : Options.Attempts.IncorrectMessage;
-                }
-            }
-            finally
-            {
-                // Close any spans the final attempt left open, on normal exit and on an exception alike, so the agent
-                // span tree does not leak past the agent (claude_code.py:539-546).
-                consumer.Reset();
-            }
-
-            if (debug is not null)
-            {
-                debugOutput.Insert(0, "Claude Code Debug Output:");
-                ProviderLogger.Info(string.Join("\n", debugOutput));
-            }
-
-            return sandboxBridge.State;
+        }
+        finally
+        {
+            // A generation still in flight when the run ended can complete while the bridge drains its handlers during
+            // disposal, and open a sub-agent span after the last reset: close it once no handler can run any more.
+            consumer.Reset();
         }
     }
 
     /// <summary>
     /// The MCP part of <c>claude_code.py:318-331</c>. When there are static or bridged servers, the configuration is
-    /// written to a per-session file made 0600 (and owned by <see cref="ClaudeCodeOptions.User"/>), because bridged
-    /// configs carry the bridge token (D-C5). Returns the <c>--mcp-config</c> arguments and the allow rules, or nulls.
+    /// written to a per-session 0600 file, because bridged configs carry the bridge token (D-C5). Root only prepares the
+    /// shared directory (<see cref="ClaudeCodeMcp.PrepareDirectoryScript"/>). The file itself is created private by the
+    /// agent's own user (<see cref="ClaudeCodeOptions.User"/>, or the sandbox default) through
+    /// <see cref="ClaudeCodeMcp.WriteConfigScript"/>, so no other user can ever read it, and no root command names a path
+    /// that another sandbox user could replace with a symlink. Returns the <c>--mcp-config</c> arguments and the allow
+    /// rules, or nulls.
     /// </summary>
     private async Task<(IReadOnlyList<string>? McpArgs, IReadOnlyList<string>? AllowedTools)> WriteMcpConfigAsync(
         ISandboxEnvironment sandbox,
@@ -311,11 +324,15 @@ public sealed class ClaudeCodeAgent
         }
 
         var path = ClaudeCodeMcp.ConfigPath(SessionId);
-        await sandbox.WriteFileAsync(path, ClaudeCodeMcp.ConfigJson(staticServers, bridgedServers), cancellationToken).ConfigureAwait(false);
-        await RootExecAsync(sandbox, ["chmod", "600", path], cancellationToken).ConfigureAwait(false);
-        if (Options.User is { } user)
+        await RootExecAsync(sandbox, ["bash", "-c", ClaudeCodeMcp.PrepareDirectoryScript, "bash", ClaudeCodeMcp.ConfigDirectory], cancellationToken).ConfigureAwait(false);
+        var written = await sandbox.ExecAsync(
+            ["bash", "-c", ClaudeCodeMcp.WriteConfigScript, "bash", path],
+            input: ClaudeCodeMcp.ConfigJson(staticServers, bridgedServers),
+            user: Options.User,
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+        if (!written.Success)
         {
-            await RootExecAsync(sandbox, ["chown", user, path], cancellationToken).ConfigureAwait(false);
+            throw new InvalidOperationException($"Error writing the MCP configuration {path}: {written.Stderr}");
         }
 
         return (ClaudeCodeMcp.ConfigArgs(path), ClaudeCodeMcp.AllowedTools(staticServers, bridgedServers, Options.AllowlistMcpTools));

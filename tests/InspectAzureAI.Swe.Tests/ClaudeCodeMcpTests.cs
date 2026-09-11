@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using InspectAzureAI.Eval.Tools.Mcp;
 using InspectAzureAI.Swe.ClaudeCode;
 
@@ -46,6 +47,91 @@ public class ClaudeCodeMcpTests
     public void config_args_pass_the_path()
     {
         Assert.Equal(["--mcp-config", "/tmp/.inspect-claude-code/mcp-s.json"], ClaudeCodeMcp.ConfigArgs("/tmp/.inspect-claude-code/mcp-s.json"));
+    }
+
+    [Fact]
+    public async Task the_write_script_creates_the_file_private_and_replaces_a_planted_symlink_without_writing_through_it()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var dir = Directory.CreateTempSubdirectory("inspect-claude-mcp-");
+        try
+        {
+            var victim = Path.Combine(dir.FullName, "victim");
+            await File.WriteAllTextAsync(victim, "untouched");
+            var path = Path.Combine(dir.FullName, "mcp-s.json");
+            File.CreateSymbolicLink(path, victim);
+
+            var (code, stderr) = await BashAsync(ClaudeCodeMcp.WriteConfigScript, path, "{\"mcpServers\":{}}");
+
+            Assert.Equal((0, ""), (code, stderr));
+            Assert.Equal("untouched", await File.ReadAllTextAsync(victim));
+            Assert.Null(new FileInfo(path).LinkTarget);
+            Assert.Equal("{\"mcpServers\":{}}", await File.ReadAllTextAsync(path));
+            Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(path));
+            Assert.Equal(["mcp-s.json", "victim"], dir.EnumerateFileSystemInfos().Select(f => f.Name).Order());
+        }
+        finally
+        {
+            dir.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task the_directory_script_refuses_a_symlink_and_leaves_its_target_alone()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var dir = Directory.CreateTempSubdirectory("inspect-claude-mcp-");
+        try
+        {
+            const UnixFileMode Private = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
+            var target = Directory.CreateDirectory(Path.Combine(dir.FullName, "target"));
+            File.SetUnixFileMode(target.FullName, Private);
+            var link = Path.Combine(dir.FullName, "link");
+            Directory.CreateSymbolicLink(link, target.FullName);
+
+            var (code, stderr) = await BashAsync(ClaudeCodeMcp.PrepareDirectoryScript, link, "");
+
+            Assert.Equal(1, code);
+            Assert.Contains("is not a directory owned by root", stderr, StringComparison.Ordinal);
+            Assert.Equal(Private, File.GetUnixFileMode(target.FullName));
+        }
+        finally
+        {
+            dir.Delete(recursive: true);
+        }
+    }
+
+    /// <summary>Runs <c>bash -c script bash arg</c> on the host with <paramref name="input"/> as stdin.</summary>
+    private static async Task<(int Code, string Stderr)> BashAsync(string script, string arg, string input)
+    {
+        var start = new ProcessStartInfo("bash")
+        {
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+        };
+        foreach (var argument in (string[])["-c", script, "bash", arg])
+        {
+            start.ArgumentList.Add(argument);
+        }
+
+        using var process = Process.Start(start)!;
+        var stdout = process.StandardOutput.ReadToEndAsync();
+        var stderr = process.StandardError.ReadToEndAsync();
+        await process.StandardInput.WriteAsync(input);
+        process.StandardInput.Close();
+        await process.WaitForExitAsync();
+        await stdout;
+        return (process.ExitCode, await stderr);
     }
 
     [Fact]

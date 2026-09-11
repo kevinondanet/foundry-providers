@@ -98,14 +98,16 @@ public class ClaudeCodeBridgedToolsEndToEndTests
 
         AssertCallRanOnce(run, state);
 
-        // the config file: 0600, bridged server URL on this bridge with the launch token as bearer
+        // the config file: created private by the agent's user (no root chmod or chown on it), bridged server URL on this
+        // bridge with the launch token as bearer
         var path = ClaudeCodeMcp.ConfigPath(agent.SessionId);
         var config = JsonNode.Parse(run.Sandbox.TextOf(path)!)!["mcpServers"]!["secrets"]!;
         var token = run.LaunchToken;
         Assert.Equal("http", config["type"]!.GetValue<string>());
         Assert.Matches(@"^http://127\.0\.0\.1:\d+/mcp/secrets$", config["url"]!.GetValue<string>());
         Assert.Equal($"Bearer {token}", config["headers"]!["Authorization"]!.GetValue<string>());
-        Assert.Single(run.Sandbox.Calls, c => c.Cmd.SequenceEqual(["chmod", "600", path]));
+        Assert.Single(run.Sandbox.Calls, c => c.Cmd.SequenceEqual(["bash", "-c", ClaudeCodeMcp.WriteConfigScript, "bash", path]));
+        Assert.DoesNotContain(run.Sandbox.Calls, c => c.User == "root" && c.Cmd.Contains(path));
         var launch = Assert.Single(run.Cli.Launches);
         Assert.Equal(path, FakeClaudeCodeCli.Flag(launch, "--mcp-config"));
         Assert.Equal("mcp__secrets__*", FakeClaudeCodeCli.Flag(launch, "--allowed-tools"));

@@ -17,7 +17,8 @@ namespace InspectAzureAI.Swe.Tests;
 /// matched on the script: <c>which …</c> fails (exit 1, empty stdout) unless <see cref="WhichPaths"/> names the
 /// binary; <c>uname -s</c> gives <c>Linux</c>, <c>uname -m</c> gives <see cref="Machine"/> (<c>aarch64</c>), the musl
 /// probe gives <see cref="Libc"/> (<c>glibc</c>) and <c>pwd</c> gives <see cref="WorkingDirectory"/>
-/// (<c>/workspace</c>). Argv commands are matched on <c>Cmd[0]</c>: <c>mkdir</c>, <c>chmod</c>, <c>chown</c>,
+/// (<c>/workspace</c>); the Claude Code MCP directory script succeeds, and its config write script stores stdin as the
+/// file named by <c>$1</c>. Argv commands are matched on <c>Cmd[0]</c>: <c>mkdir</c>, <c>chmod</c>, <c>chown</c>,
 /// <c>tar</c> and <c>rm</c> succeed; <c>test -x path</c> fails unless the path was <see cref="MarkInstalled"/>;
 /// <c>[binary, "--version"]</c> fails, so an installed version reads as unknown.
 /// </para>
@@ -136,12 +137,19 @@ public sealed class CliSandbox : ISandboxEnvironment
                 return WhichPaths.TryGetValue(script["which ".Length..].Trim(), out var path) ? Ok(path + "\n") : Fail(1);
             }
 
+            if (script == ClaudeCode.ClaudeCodeMcp.WriteConfigScript && cmd.Count == 5)
+            {
+                Files[cmd[4]] = Encoding.UTF8.GetBytes(call.Input ?? "");
+                return Ok();
+            }
+
             return script switch
             {
                 "uname -s" => Ok("Linux\n"),
                 "uname -m" => Ok(Machine + "\n"),
                 SandboxUtil.MuslCheck => Ok(Libc + "\n"),
                 "pwd" => Ok(WorkingDirectory + "\n"),
+                ClaudeCode.ClaudeCodeMcp.PrepareDirectoryScript => Ok(),
                 _ => Unexpected(cmd),
             };
         }
