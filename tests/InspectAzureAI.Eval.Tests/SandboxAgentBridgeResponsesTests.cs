@@ -246,17 +246,50 @@ public class SandboxAgentBridgeResponsesTests
     }
 
     [Fact]
-    public async Task a_provider_exception_is_an_openai_error_body()
+    public async Task a_provider_exception_without_a_status_is_a_400_openai_error_body()
     {
         await using var harness = await StartAsync(new ScriptedModelApi([ScriptedTurn.Throw(new InvalidOperationException("provider exploded"))], "served-model"));
 
         var response = await harness.Client.PostAsync("v1/responses", Body("""{"model": "gpt-5.4", "input": "hi", "stream": true}"""));
 
-        Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
+        // proxy.py answers `error.get("status") or _DEFAULT_ERROR_STATUS` (400): Codex resends any 5xx up to four times
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         Assert.Equal("application/json", response.Content.Headers.ContentType!.MediaType);
         var error = (await JsonOf(response))["error"]!;
-        Assert.Equal(("provider exploded", "api_error"), (error["message"]!.GetValue<string>(), error["type"]!.GetValue<string>()));
+        Assert.Equal(("provider exploded", "invalid_request_error"), (error["message"]!.GetValue<string>(), error["type"]!.GetValue<string>()));
         Assert.IsType<InvalidOperationException>(Assert.Single(harness.Server.Errors));
+    }
+
+    [Theory]
+    [InlineData(404, false)]
+    [InlineData(503, false)]
+    [InlineData(413, true)]
+    public async Task a_provider_http_failure_is_answered_with_the_provider_status(int status, bool terminal)
+    {
+        var failure = new ProviderHttpException(status, new Dictionary<string, string>(), $$$"""{"error": {"message": "upstream said {{{status}}}"}}""");
+        var api = new ScriptedModelApi([terminal ? ScriptedTurn.Error(failure) : ScriptedTurn.Throw(failure)], "served-model") { ShouldRetry = _ => RetryDecision.No() };
+        await using var harness = await StartAsync(api);
+
+        var response = await harness.Client.PostAsync("v1/responses", Body("""{"model": "gpt-5.4", "input": "hi"}"""));
+
+        Assert.Equal((HttpStatusCode)status, response.StatusCode);
+        var error = (await JsonOf(response))["error"]!;
+        Assert.Equal($"upstream said {status}", error["message"]!.GetValue<string>());
+        Assert.Equal(status < 500 ? "invalid_request_error" : "api_error", error["type"]!.GetValue<string>());
+        Assert.Single(api.Requests);
+    }
+
+    [Fact]
+    public void the_responses_error_status_is_the_carried_http_status_or_400()
+    {
+        var headers = new Dictionary<string, string>();
+
+        Assert.Equal(429, SandboxAgentBridge.ResponsesErrorStatus(new HttpRequestException("slow down", null, HttpStatusCode.TooManyRequests)));
+        Assert.Equal(422, SandboxAgentBridge.ResponsesErrorStatus(new InspectAzureAI.Eval.Model.ModelGenerateException("bad", new ProviderHttpException(422, headers, "{}"), null)));
+        Assert.Equal(400, SandboxAgentBridge.ResponsesErrorStatus(new InspectAzureAI.Eval.Model.ModelGenerateException("bad", null, null)));
+        Assert.Equal(400, SandboxAgentBridge.ResponsesErrorStatus(new HttpRequestException("connection refused")));
+        Assert.Equal(400, SandboxAgentBridge.ResponsesErrorStatus(new ProviderHttpException(302, headers, "")));
+        Assert.Equal(400, SandboxAgentBridge.ResponsesErrorStatus(new InvalidOperationException("translation bug")));
     }
 
     [Fact]

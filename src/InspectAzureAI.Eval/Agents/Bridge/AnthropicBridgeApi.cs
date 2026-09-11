@@ -459,7 +459,8 @@ public static class AnthropicBridgeApi
     /// <summary>
     /// Port of the proxy's <c>stream_response</c>: <c>message_start</c> (empty content, input usage), per block
     /// <c>content_block_start</c> / <c>content_block_delta</c> / <c>content_block_stop</c> (a text or thinking
-    /// block streams as one delta; a tool_use input as one <c>input_json_delta</c>), then <c>message_delta</c>
+    /// block streams as one delta; a tool_use or server_tool_use input as one <c>input_json_delta</c>; a
+    /// web_search_tool_result block has no delta), then <c>message_delta</c>
     /// with the stop reason and output usage, and <c>message_stop</c>.
     /// </summary>
     public static IReadOnlyList<SseEvent> StreamEvents(JsonObject message)
@@ -520,10 +521,12 @@ public static class AnthropicBridgeApi
                     events.Add(BlockStart(index, new JsonObject { ["type"] = "redacted_thinking", ["data"] = block["data"]?.DeepClone() ?? "" }));
                     events.Add(BlockStop(index));
                     break;
-                case "tool_use":
+                case "tool_use" or "server_tool_use":
+                    // the input streams as a delta: clients (Claude Code included) rebuild it from the deltas and
+                    // discard the input of content_block_start (proxy.py:1791-1823)
                     events.Add(BlockStart(index, new JsonObject
                     {
-                        ["type"] = "tool_use",
+                        ["type"] = block["type"]!.DeepClone(),
                         ["id"] = block["id"]?.DeepClone(),
                         ["name"] = block["name"]?.DeepClone(),
                         ["input"] = new JsonObject(),
@@ -535,8 +538,8 @@ public static class AnthropicBridgeApi
                     }));
                     events.Add(BlockStop(index));
                     break;
-                case "server_tool_use" or "web_search_tool_result":
-                    // server tool blocks arrive whole: start (carrying the full block) and stop, no deltas
+                case "web_search_tool_result":
+                    // search results arrive whole: start (carrying the full block) and stop, no deltas (proxy.py:1825-1844)
                     events.Add(BlockStart(index, block.DeepClone().AsObject()));
                     events.Add(BlockStop(index));
                     break;

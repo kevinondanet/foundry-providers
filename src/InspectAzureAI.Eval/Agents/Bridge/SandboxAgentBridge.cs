@@ -459,7 +459,9 @@ public sealed class SandboxAgentBridge : IAsyncDisposable
         catch (Exception ex)
         {
             RecordError(ex);
-            var status = ex is ModelGenerateException or BridgeRequestException ? 400 : 500;
+            var status = dialect == Dialect.Responses
+                ? ResponsesErrorStatus(ex)
+                : ex is ModelGenerateException or BridgeRequestException ? 400 : 500;
             var requestError = ex as BridgeRequestException;
             await AnswerErrorAsync(context, dialect, status, ex.Message, requestError?.Param, requestError?.Code).ConfigureAwait(false);
         }
@@ -515,6 +517,21 @@ public sealed class SandboxAgentBridge : IAsyncDisposable
     /// signal either way.
     /// </summary>
     private static int SignalledStatus(Dialect dialect) => dialect == Dialect.Responses ? 400 : 500;
+
+    /// <summary>
+    /// The status any other failure on the Responses dialect is answered with, as the proxy's <c>/v1/responses</c>
+    /// handler does (<c>proxy.py:697-717</c> over <c>status_code_of</c>): the provider's HTTP error status when the
+    /// exception carries one (a <see cref="ModelGenerateException"/> through its inner exception), otherwise 400
+    /// (<c>_DEFAULT_ERROR_STATUS</c>). A deterministic failure is therefore never a 5xx that Codex would resend four
+    /// more times.
+    /// </summary>
+    internal static int ResponsesErrorStatus(Exception ex)
+    {
+        var carrier = ex is ModelGenerateException { InnerException: { } inner } ? inner : ex;
+        var status = HttpRetryUtil.StatusCodeOf(carrier)
+            ?? (carrier is System.Net.Http.HttpRequestException { StatusCode: { } code } ? (int)code : null);
+        return status is >= 400 and < 600 ? status.Value : 400;
+    }
 
     /// <summary>
     /// The bridged-tools MCP endpoint (port of the proxy's <c>/mcp/*</c> routes, after authentication): a non-POST

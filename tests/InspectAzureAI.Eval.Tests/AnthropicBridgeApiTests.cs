@@ -337,7 +337,7 @@ public class AnthropicBridgeApiTests
     }
 
     [Fact]
-    public void server_tool_blocks_stream_as_start_and_stop_without_deltas()
+    public void server_tool_use_streams_its_input_as_a_delta_and_the_search_result_whole()
     {
         var response = AnthropicBridgeApi.ResponseFromOutput(WebSearchOutput("""{"query": "q"}""", "[]"), "claude-sonnet-4-6");
 
@@ -347,17 +347,23 @@ public class AnthropicBridgeApiTests
         [
             "message_start",
             "content_block_start", "content_block_delta", "content_block_stop",
-            "content_block_start", "content_block_stop",
+            "content_block_start", "content_block_delta", "content_block_stop",
             "content_block_start", "content_block_stop",
             "content_block_start", "content_block_delta", "content_block_stop",
             "message_delta",
             "message_stop",
         ], events.Select(e => e.Event!).ToArray());
-        Assert.Equal("""{"type": "server_tool_use", "id": "srvtoolu_1", "name": "web_search", "input": {"query": "q"}}""", InspectAzureAI.Provider.Util.PythonJson.Dumps(events[4].Data["content_block"]));
+
+        // as proxy.py:1781-1823: Claude Code resets the block's input at content_block_start and rebuilds it from deltas
+        Assert.Equal("""{"type": "server_tool_use", "id": "srvtoolu_1", "name": "web_search", "input": {}}""", InspectAzureAI.Provider.Util.PythonJson.Dumps(events[4].Data["content_block"]));
         Assert.Equal(1, events[4].Data["index"]!.GetValue<int>());
-        Assert.Equal("web_search_tool_result", events[6].Data["content_block"]!["type"]!.GetValue<string>());
-        Assert.Equal(2, events[7].Data["index"]!.GetValue<int>());
-        Assert.Equal(3, events[8].Data["index"]!.GetValue<int>());
+        Assert.Equal("input_json_delta", events[5].Data["delta"]!["type"]!.GetValue<string>());
+        Assert.Equal("""{"query": "q"}""", events[5].Data["delta"]!["partial_json"]!.GetValue<string>());
+        Assert.Equal(1, events[5].Data["index"]!.GetValue<int>());
+        Assert.Equal(1, events[6].Data["index"]!.GetValue<int>());
+        Assert.Equal("""{"type": "web_search_tool_result", "tool_use_id": "srvtoolu_1", "content": []}""", InspectAzureAI.Provider.Util.PythonJson.Dumps(events[7].Data["content_block"]));
+        Assert.Equal(2, events[8].Data["index"]!.GetValue<int>());
+        Assert.Equal(3, events[9].Data["index"]!.GetValue<int>());
     }
 
     [Fact]

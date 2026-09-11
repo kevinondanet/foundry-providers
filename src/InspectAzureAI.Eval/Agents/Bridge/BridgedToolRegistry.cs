@@ -1,5 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
+using System.Numerics;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
@@ -349,19 +350,40 @@ public sealed partial class BridgedToolRegistry
         }
     }
 
+    /// <summary>
+    /// Python's <c>int</c>/<c>float</c> equality over two JSON number texts, as <c>_json_equal</c> compares the parsed
+    /// values (<c>sandbox/types.py:224-234</c>): two integer literals exactly, at any size; two floats as doubles; an
+    /// integer and a float exactly, so the float must be integral and equal to the integer. No precision is lost, so
+    /// two different large integers never compare equal.
+    /// </summary>
     private static bool NumberEqual(string left, string right)
     {
-        const NumberStyles style = NumberStyles.Float;
-        if (decimal.TryParse(left, style, CultureInfo.InvariantCulture, out var leftDecimal)
-            && decimal.TryParse(right, style, CultureInfo.InvariantCulture, out var rightDecimal))
+        var leftInteger = IsIntegerLiteral(left);
+        var rightInteger = IsIntegerLiteral(right);
+        if (leftInteger && rightInteger)
         {
-            return leftDecimal == rightDecimal;
+            return BigInteger.TryParse(left, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out var leftValue)
+                && BigInteger.TryParse(right, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out var rightValue)
+                && leftValue == rightValue;
         }
 
-        return double.TryParse(left, style, CultureInfo.InvariantCulture, out var leftDouble)
-            && double.TryParse(right, style, CultureInfo.InvariantCulture, out var rightDouble)
-            && leftDouble.Equals(rightDouble);
+        if (!double.TryParse(leftInteger ? right : left, NumberStyles.Float, CultureInfo.InvariantCulture, out var real))
+        {
+            return false;
+        }
+
+        if (leftInteger || rightInteger)
+        {
+            return double.IsFinite(real)
+                && Math.Floor(real) == real
+                && BigInteger.TryParse(leftInteger ? left : right, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out var integer)
+                && new BigInteger(real) == integer;
+        }
+
+        return double.TryParse(right, NumberStyles.Float, CultureInfo.InvariantCulture, out var other) && real.Equals(other);
     }
+
+    private static bool IsIntegerLiteral(string text) => text.AsSpan().IndexOfAny('.', 'e', 'E') < 0;
 
     private static string? StringOf(JsonValue value) =>
         value.TryGetValue<string>(out var text) ? text : JsonSerializer.Deserialize<string>(value.ToJsonString());

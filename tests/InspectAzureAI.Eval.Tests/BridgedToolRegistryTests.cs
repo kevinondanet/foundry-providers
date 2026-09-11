@@ -110,6 +110,14 @@ public class BridgedToolRegistryTests
     [InlineData("{\"a\": 1}", "{\"a\": 1, \"b\": null}", false)]
     [InlineData("[1, 2]", "[2, 1]", false)]
     [InlineData("\"x\"", "\"X\"", false)]
+    [InlineData("100000000000000000000000000001", "100000000000000000000000000002", false)]
+    [InlineData("100000000000000000000000000001", "100000000000000000000000000001", true)]
+    [InlineData("-100000000000000000000000000001", "100000000000000000000000000001", false)]
+    [InlineData("1e29", "100000000000000000000000000000", false)]
+    [InlineData("1E+29", "1e29", true)]
+    [InlineData("9007199254740993", "9007199254740992.0", false)]
+    [InlineData("-0.0", "0", true)]
+    [InlineData("0.5", "0.50", true)]
     public void json_equal_follows_json_semantics(string left, string right, bool expected)
     {
         Assert.Equal(expected, BridgedToolRegistry.JsonEqual(JsonNode.Parse(left), JsonNode.Parse(right)));
@@ -132,6 +140,19 @@ public class BridgedToolRegistryTests
         Assert.False(registry.ConsumeToolExecutionGrant("secrets", "secret_lookup", Args("""{"key": "other", "n": 1}""")));
         Assert.True(registry.ConsumeToolExecutionGrant("secrets", "secret_lookup", Args("""{"n": 1.0, "key": "db"}""")));
         Assert.False(registry.ConsumeToolExecutionGrant("secrets", "secret_lookup", Args("""{"key": "db", "n": 1}""")));
+    }
+
+    [Fact]
+    public void a_grant_for_a_large_integer_is_not_consumed_by_a_different_one_of_the_same_magnitude()
+    {
+        var registry = Registry(("secrets", ["secret_lookup"]));
+
+        registry.RegisterToolExecutionGrants([Call("secret_lookup", """{"n": 100000000000000000000000000001}""")]);
+
+        // both round to the double 1e29; Python compares the two ints exactly
+        Assert.False(registry.ConsumeToolExecutionGrant("secrets", "secret_lookup", Args("""{"n": 100000000000000000000000000002}""")));
+        Assert.False(registry.ConsumeToolExecutionGrant("secrets", "secret_lookup", Args("""{"n": 1e29}""")));
+        Assert.True(registry.ConsumeToolExecutionGrant("secrets", "secret_lookup", Args("""{"n": 100000000000000000000000000001}""")));
     }
 
     [Fact]
