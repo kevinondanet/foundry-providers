@@ -1,0 +1,6 @@
+{"question": "What is the capital of France?", "answer": "Paris", "topic": "geography"}
+{"question": "What is 7 * 6?", "answer": "42", "topic": "arithmetic"}
+{"question": "What is 12 - 5?", "answer": "7", "topic": "arithmetic"}
+{"question": "Which planet is known as the Red Planet? A) Venus B) Mars C) Jupiter", "answer": "B", "topic": "space"}
+{"question": "Name a primary colour.", "answer": ["red", "blue", "yellow"], "topic": "art"}
+{"question": "Estimate pi to two decimal places.", "answer": "3.14", "topic": "maths"}

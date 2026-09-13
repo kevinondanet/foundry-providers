@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    A teaching app for the eval primitives - Dataset/Sample, Solver, Scorer (+ metrics
+    and reducers), Task - and for running them deterministically with the real
+    Eval.RunAsync against a scripted model (ScriptedModelApi, the port's mockllm).
+    It references the real InspectAzureAI.Eval; nothing here is a stand-in.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>InspectAzureAI.EvalPrimitivesDemo</RootNamespace>
+    <AssemblyName>eval-primitives</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\InspectAzureAI.Eval\InspectAzureAI.Eval.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The dataset is a real file so Datasets.Json has something to load. -->
+    <None Include="data\*.jsonl" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>
