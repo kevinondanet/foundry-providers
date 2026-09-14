@@ -499,8 +499,14 @@ public sealed partial class Model
             WorkingTime = elapsed,
             Cache = cache,
         };
+        // Sinks see the event before it lands (IModelEventSink.OnRecording): the bound sink first, then the ambient
+        // one; either may rewrite it or add events that must precede it. Both then observe the final copy.
+        var eventSink = EventSink;
+        var ambientSink = ModelEventSinks.Current;
+        e = eventSink?.OnRecording(e) ?? e;
+        e = ambientSink?.OnRecording(e) ?? e;
         SampleContext.Current?.Transcript.Add(e);
-        EventSink?.OnModelEvent(e);
-        ModelEventSinks.Current?.OnModelEvent(e);
+        eventSink?.OnModelEvent(e);
+        ambientSink?.OnModelEvent(e);
     }
 }

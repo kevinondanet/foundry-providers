@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    A teaching app for the sandbox contract (docs/container-orchestration.md §2):
+    SandboxSpec, ISandboxProvider, ISandboxEnvironment, SandboxEnvironments.
+    It references the real InspectAzureAI.Eval so the lessons use the real types,
+    and it implements the contract once itself (InMemorySandbox.cs) to show how
+    little a provider has to do.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>InspectAzureAI.SandboxContractDemo</RootNamespace>
+    <AssemblyName>sandbox-contract</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\InspectAzureAI.Eval\InspectAzureAI.Eval.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -473,6 +473,82 @@ public class SandboxAgentBridgeTests
         Assert.Equal(SandboxAgentBridge.MaxRecordedErrors, harness.Server.Errors.Count);
     }
 
+    [Theory]
+    [InlineData("v1/messages", "anthropic")]
+    [InlineData("v1/messages/count_tokens", "anthropic")]
+    [InlineData("v1/chat/completions", "openai")]
+    [InlineData("v1/responses", "openai")]
+    [InlineData("mcp/x", "jsonrpc")]
+    [InlineData("mcp", "jsonrpc")]
+    public async Task an_unauthenticated_request_gets_a_401_in_the_dialect_of_its_path(string path, string shape)
+    {
+        await using var harness = await StartAsync(ScriptedTurn.Text("never"));
+        using var anonymous = new HttpClient { BaseAddress = harness.Client.BaseAddress };
+
+        var response = await anonymous.PostAsync(path, Body("{}"));
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        var body = (await response.Content.ReadFromJsonAsync<JsonObject>())!;
+        switch (shape)
+        {
+            case "anthropic":
+                Assert.Equal("error", body["type"]!.GetValue<string>());
+                Assert.Equal("authentication_error", body["error"]!["type"]!.GetValue<string>());
+                break;
+            case "openai":
+                Assert.Null(body["type"]);
+                Assert.Equal("invalid_request_error", body["error"]!["type"]!.GetValue<string>());
+                Assert.True(body["error"]!.AsObject().ContainsKey("param"));
+                break;
+            default:
+                Assert.Equal("2.0", body["jsonrpc"]!.GetValue<string>());
+                Assert.Equal(-32600, body["error"]!["code"]!.GetValue<int>());
+                break;
+        }
+
+        Assert.Equal("invalid x-api-key / bearer token", body["error"]!["message"]!.GetValue<string>());
+        Assert.Empty(harness.Api.Requests);
+    }
+
+    [Fact]
+    public async Task unknown_routes_are_404_in_the_dialect_of_their_path()
+    {
+        await using var harness = await StartAsync();
+
+        var openai = await harness.Client.PostAsync("v1/chat/other", Body("{}"));
+        var anthropic = await harness.Client.PostAsync("v1/other", Body("{}"));
+        var responsesGet = await harness.Client.GetAsync("v1/responses");
+
+        Assert.Equal(HttpStatusCode.NotFound, openai.StatusCode);
+        var openaiBody = (await openai.Content.ReadFromJsonAsync<JsonObject>())!;
+        Assert.Null(openaiBody["type"]);
+        Assert.Equal("Not found: POST /v1/chat/other", openaiBody["error"]!["message"]!.GetValue<string>());
+        Assert.Equal("not_found_error", (await anthropic.Content.ReadFromJsonAsync<JsonObject>())!["error"]!["type"]!.GetValue<string>());
+        Assert.Equal(HttpStatusCode.NotFound, responsesGet.StatusCode);
+        Assert.Null((await responsesGet.Content.ReadFromJsonAsync<JsonObject>())!["type"]);
+    }
+
+    [Fact]
+    public async Task every_non_2xx_reply_is_logged_with_its_status_method_and_path()
+    {
+        InspectAzureAI.Provider.Util.ProviderLogger.Reset();
+        await using var harness = await StartAsync(ScriptedTurn.Text("ok"));
+        using var anonymous = new HttpClient { BaseAddress = harness.Client.BaseAddress };
+
+        await anonymous.PostAsync("v1/chat/completions", Body("{}"));
+        await harness.Client.GetAsync("v1/models");
+        await harness.Client.PostAsync("v1/messages", Body("{bad json"));
+        await harness.Client.PostAsync("v1/messages", Body(MessagesRequest()));
+
+        var lines = InspectAzureAI.Provider.Util.ProviderLogger.Warnings.Where(w => w.StartsWith("agent bridge answered", StringComparison.Ordinal)).ToArray();
+        Assert.Equal(
+        [
+            "agent bridge answered 401 to POST /v1/chat/completions",
+            "agent bridge answered 404 to GET /v1/models",
+            "agent bridge answered 400 to POST /v1/messages",
+        ], lines);
+    }
+
     private static StreamContent Chunked(string json)
     {
         var content = new StreamContent(new MemoryStream(Encoding.UTF8.GetBytes(json)));

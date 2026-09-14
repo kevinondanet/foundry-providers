@@ -28,8 +28,11 @@ public static class ResponsesInput
 
     public const string AudioVideoUnsupportedError = "OpenAI Responses on Azure does not support audio or video inputs.";
 
-    /// <summary>The <c>input</c> array for a conversation.</summary>
-    public static JsonArray InputItems(IReadOnlyList<ChatMessage> input)
+    /// <summary>
+    /// The <c>input</c> array for a conversation. <paramref name="namespaces"/> maps a tool name to the namespace its
+    /// replayed <c>function_call</c> items carry (<see cref="ResponsesTools.Namespaces"/> of the request's tools).
+    /// </summary>
+    public static JsonArray InputItems(IReadOnlyList<ChatMessage> input, IReadOnlyDictionary<string, string>? namespaces = null)
     {
         ArgumentNullException.ThrowIfNull(input);
         var items = new JsonArray();
@@ -44,7 +47,7 @@ public static class ResponsesInput
                     items.Add(MessageItem("user", ContentParts(user.ContentList)));
                     break;
                 case ChatMessageAssistant assistant:
-                    foreach (var item in AssistantItems(assistant))
+                    foreach (var item in AssistantItems(assistant, namespaces: namespaces))
                     {
                         items.Add(item);
                     }
@@ -118,9 +121,11 @@ public static class ResponsesInput
     /// The items of an assistant turn in content order: reasoning items, <c>message</c> items for each run of
     /// text (refusals as <c>refusal</c> parts), generated images replayed as a user <c>input_image</c> message
     /// (Python does the same: replaying an <c>image_generation_call</c> needs <c>store: true</c>), then the
-    /// <c>function_call</c> items. Empty text is dropped when the turn has tool calls.
+    /// <c>function_call</c> items. Empty text is dropped when the turn has tool calls. A call whose function has an
+    /// entry in <paramref name="namespaces"/> carries that <c>namespace</c> (the C# placement of Python's
+    /// <c>_seed_function_call_namespace</c>).
     /// </summary>
-    public static List<JsonObject> AssistantItems(ChatMessageAssistant assistant, IReadOnlyList<string?>? phases = null)
+    public static List<JsonObject> AssistantItems(ChatMessageAssistant assistant, IReadOnlyList<string?>? phases = null, IReadOnlyDictionary<string, string>? namespaces = null)
     {
         ArgumentNullException.ThrowIfNull(assistant);
         var items = new List<JsonObject>();
@@ -183,7 +188,7 @@ public static class ResponsesInput
         Flush();
         foreach (var call in assistant.ToolCalls ?? [])
         {
-            items.Add(FunctionCallItem(call));
+            items.Add(FunctionCallItem(call, namespaces?.GetValueOrDefault(call.Function)));
         }
 
         return items;
@@ -217,19 +222,28 @@ public static class ResponsesInput
         return item;
     }
 
-    /// <summary>A <c>function_call</c> input item (arguments as Python's <c>json.dumps</c> would print them, capped at 1 MiB).</summary>
-    public static JsonObject FunctionCallItem(ToolCall call)
+    /// <summary>
+    /// A <c>function_call</c> input item (arguments as Python's <c>json.dumps</c> would print them, capped at 1 MiB),
+    /// with <c>namespace</c> when <paramref name="ns"/> is not null.
+    /// </summary>
+    public static JsonObject FunctionCallItem(ToolCall call, string? ns = null)
     {
         ArgumentNullException.ThrowIfNull(call);
         var arguments = PythonJson.Dumps(call.Arguments);
         arguments = ToolCallParsing.TruncateStringToBytes(arguments, MaxFunctionCallArguments)?.Output ?? arguments;
-        return new JsonObject
+        var item = new JsonObject
         {
             ["type"] = "function_call",
             ["call_id"] = call.Id,
             ["name"] = ResponsesTools.Alias(call.Function),
             ["arguments"] = arguments,
         };
+        if (ns is not null)
+        {
+            item["namespace"] = ns;
+        }
+
+        return item;
     }
 
     /// <summary>

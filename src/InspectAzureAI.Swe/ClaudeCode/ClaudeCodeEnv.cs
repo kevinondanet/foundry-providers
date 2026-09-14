@@ -1,13 +1,14 @@
 namespace InspectAzureAI.Swe.ClaudeCode;
 
 /// <summary>
-/// Port of inspect_swe <c>_claude_code/env.py</c>: the environment of the Claude Code subprocess. The bridge
-/// address and token come from the host-side <c>SandboxAgentBridge</c> rather than Python's in-sandbox
-/// <c>localhost</c> proxy and literal dummy token; everything else is verbatim, caller values winning.
+/// Port of the <c>agent_env</c> of inspect_swe 0.2.70 <c>_claude_code/claude_code.py:354-367</c>: the environment of
+/// the Claude Code subprocess. The bridge address and token come from the host-side <c>SandboxAgentBridge</c> rather
+/// than Python's in-sandbox <c>localhost</c> proxy and literal dummy token. The blocking-MCP and auto-memory variables
+/// go beyond 0.2.70 (deviation D-C8). Everything else is verbatim, and caller values win.
 /// </summary>
 public static class ClaudeCodeEnv
 {
-    /// <summary>Fallback api key when a caller removes <c>ANTHROPIC_AUTH_TOKEN</c> (<c>claude_code.py:434</c>).</summary>
+    /// <summary>Fallback api key when a caller removes <c>ANTHROPIC_AUTH_TOKEN</c> (<c>claude_code.py:374</c>).</summary>
     public const string DefaultApiKey = "dummy-key-for-bridge";
 
     /// <summary>
@@ -19,7 +20,7 @@ public static class ClaudeCodeEnv
     /// <summary>Tokens Claude Code treats as an explicit "true" (<c>CLAUDE_CODE_DISABLE_AUTO_MEMORY</c> is a truthy check).</summary>
     internal static readonly IReadOnlySet<string> TruthyValues = new HashSet<string>(["1", "true", "yes", "on"], StringComparer.Ordinal);
 
-    /// <summary>Make MCP connection blocking with budgets that cover a slow sandbox (<c>BLOCKING_MCP_ENV</c>).</summary>
+    /// <summary>Make MCP connection blocking with budgets that cover a slow sandbox (upstream <c>BLOCKING_MCP_ENV</c>, newer than 0.2.70).</summary>
     public static readonly IReadOnlyDictionary<string, string> BlockingMcpEnv = new Dictionary<string, string>(StringComparer.Ordinal)
     {
         ["MCP_CONNECTION_NONBLOCKING"] = "false",

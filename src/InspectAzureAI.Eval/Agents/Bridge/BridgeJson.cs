@@ -7,8 +7,61 @@ namespace InspectAzureAI.Eval.Agents.Bridge;
 /// <summary>
 /// Port of <c>agent/_bridge/_errors.py</c> <c>BridgePolicyError</c>: a bridged request the bridge cannot serve
 /// (malformed or unsupported client input). The sandbox bridge answers it with a 400 in the client's dialect.
+/// The OpenAI dialects also report <see cref="Param"/> and <see cref="Code"/>, as the proxy's missing-parameter
+/// errors do (<c>proxy.py:660-671</c>).
 /// </summary>
-public sealed class BridgeRequestException(string message) : Exception(message);
+public sealed class BridgeRequestException(string message) : Exception(message)
+{
+    /// <summary>The request parameter at fault (the OpenAI error body's <c>param</c>), when known.</summary>
+    public string? Param { get; init; }
+
+    /// <summary>A machine-readable error code (the OpenAI error body's <c>code</c>), such as <c>missing_required_parameter</c>.</summary>
+    public string? Code { get; init; }
+}
+
+/// <summary>
+/// Port of <c>validate_bridge_media</c> (<c>agent/_bridge/util.py:753-797</c>) with remote media disallowed. A
+/// bridged image, document, audio or video must be an inline <c>data:</c> URI. Any other reference could make the
+/// host fetch a URL or read a host file for the sandboxed agent, so it is rejected rather than dereferenced.
+/// </summary>
+public static class BridgeMedia
+{
+    /// <summary>Throws <see cref="BridgeRequestException"/> naming the first media item that is not an inline <c>data:</c> URI.</summary>
+    public static void RequireInline(IReadOnlyList<ChatMessage> messages)
+    {
+        ArgumentNullException.ThrowIfNull(messages);
+        for (var messageIndex = 0; messageIndex < messages.Count; messageIndex++)
+        {
+            var message = messages[messageIndex];
+            if (message.Content.IsString)
+            {
+                continue;
+            }
+
+            var items = message.Content.Items!;
+            for (var contentIndex = 0; contentIndex < items.Count; contentIndex++)
+            {
+                var content = items[contentIndex];
+                var uri = content switch
+                {
+                    ContentImage image => image.Image,
+                    ContentDocument document => document.Document,
+                    ContentAudio audio => audio.Audio,
+                    ContentVideo video => video.Video,
+                    _ => null,
+                };
+                if (uri is null || uri.StartsWith("data:", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                throw new BridgeRequestException(
+                    $"Bridged {content.Type} content at message index {messageIndex}, content index {contentIndex} must be an inline 'data:' URI; "
+                    + "the agent bridge will not dereference a non-inline reference.");
+            }
+        }
+    }
+}
 
 /// <summary>A parsed bridged request: what <c>AgentBridge.GenerateAsync</c> needs plus whether the client asked for a stream.</summary>
 public sealed record BridgeRequest(
@@ -148,7 +201,8 @@ internal static class BridgeJson
         _ => @default,
     };
 
-    private static string Describe(JsonNode? node) => node switch
+    /// <summary>Python's <c>type(value).__name__</c> for a client value, as used in request-field errors.</summary>
+    internal static string Describe(JsonNode? node) => node switch
     {
         null => "null",
         JsonArray => "list",

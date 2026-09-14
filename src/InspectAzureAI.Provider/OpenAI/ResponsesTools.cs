@@ -5,21 +5,100 @@ using InspectAzureAI.Provider.Tools;
 namespace InspectAzureAI.Provider.OpenAI;
 
 /// <summary>
-/// Tool and tool-choice parameters for the Responses API (port of <c>_tool_param_for_tool_info</c>,
+/// Tool and tool-choice parameters for the Responses API. Ports <c>_tool_param_for_tool_info</c>,
+/// <c>openai_responses_tools</c> (verbatim and namespace regrouping, lines 567-622),
 /// <c>openai_responses_tool_choice</c> and the <c>text.format</c> block of
-/// <c>src/inspect_ai/model/_openai_responses.py</c>). Function tools are flat (<c>name</c> and
-/// <c>parameters</c> at the top level, no <c>function</c> wrapper) and never strict (default parameter
-/// values do not work in strict mode). The built-in tools (web search, computer use, remote MCP, code
-/// interpreter) are not ported on this route.
+/// <c>src/inspect_ai/model/_openai_responses.py</c>. Function tools are flat (<c>name</c> and <c>parameters</c> at
+/// the top level, no <c>function</c> wrapper) and never strict, because default parameter values do not work in
+/// strict mode. A tool the agent bridge converted from a scaffold keeps its original <c>function</c> param under
+/// <see cref="VerbatimOption"/> and is resent byte-for-byte. A tool flattened from a <c>namespace</c> carries
+/// <see cref="NamespaceOption"/> and is regrouped into a <c>namespace</c> tool. OpenAI rejects reserved tools that
+/// arrive flat or with a drifted schema. The built-in tools (web search, computer use, remote MCP, code interpreter)
+/// and native <c>custom</c> tools are not ported on this route.
 /// </summary>
 public static class ResponsesTools
 {
     /// <summary>Inspect's builtin <c>python</c> tool name is reserved by the Responses API; it travels as <c>python_exec</c>.</summary>
     public const string PythonAlias = "python_exec";
 
-    /// <summary>The <c>tools</c> array: one flat function tool per <see cref="ToolInfo"/>.</summary>
-    public static JsonArray ToolParams(IReadOnlyList<ToolInfo> tools) =>
-        new(tools.Select(t => (JsonNode?)ToolParam(t)).ToArray());
+    /// <summary>
+    /// <see cref="ToolInfo.Options"/> key holding the scaffold's original Responses tool param (Python
+    /// <c>RESPONSES_VERBATIM</c>). A <c>function</c> param stored there is resent unchanged. A <c>custom</c> param is not,
+    /// because this provider cannot parse <c>custom_tool_call</c> output items; the tool goes out as a function instead.
+    /// </summary>
+    public const string VerbatimOption = "__responses_verbatim__";
+
+    /// <summary>
+    /// <see cref="ToolInfo.Options"/> key holding the <c>[name, description]</c> JSON array of the <c>namespace</c> tool
+    /// a tool was flattened from (Python <c>RESPONSES_NAMESPACE</c>, a tuple that becomes a list after a JSON round-trip).
+    /// </summary>
+    public const string NamespaceOption = "__responses_namespace__";
+
+    /// <summary>
+    /// The <c>tools</c> array, in order: one param per untagged tool, then one <c>namespace</c> tool per distinct
+    /// <c>[name, description]</c> tag in first-seen order, holding its tools' params. A verbatim <c>function</c> param
+    /// is resent unchanged, with no <c>python</c> alias and no schema dump. Every other tool is a flat function tool.
+    /// A list with neither option gives exactly one flat function per tool.
+    /// </summary>
+    public static JsonArray ToolParams(IReadOnlyList<ToolInfo> tools)
+    {
+        ArgumentNullException.ThrowIfNull(tools);
+        var result = new JsonArray();
+        var groups = new List<(string Name, string Description, JsonArray Tools)>();
+        foreach (var tool in tools)
+        {
+            var param = tool.Options?[VerbatimOption] is JsonObject verbatim && IsFunctionParam(verbatim)
+                ? verbatim.DeepClone().AsObject()
+                : ToolParam(tool);
+            if (NamespaceTag(tool) is { } tag)
+            {
+                var index = groups.FindIndex(g => g.Name == tag.Name && g.Description == tag.Description);
+                if (index < 0)
+                {
+                    groups.Add((tag.Name, tag.Description, new JsonArray()));
+                    index = groups.Count - 1;
+                }
+
+                groups[index].Tools.Add(param);
+            }
+            else
+            {
+                result.Add(param);
+            }
+        }
+
+        foreach (var (name, description, groupTools) in groups)
+        {
+            result.Add(new JsonObject
+            {
+                ["type"] = "namespace",
+                ["name"] = name,
+                ["description"] = description,
+                ["tools"] = groupTools,
+            });
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Tool name to namespace name, for every tool tagged with <see cref="NamespaceOption"/> (the last tag wins).
+    /// Replayed <c>function_call</c> items take their <c>namespace</c> from this map.
+    /// </summary>
+    public static IReadOnlyDictionary<string, string> Namespaces(IReadOnlyList<ToolInfo> tools)
+    {
+        ArgumentNullException.ThrowIfNull(tools);
+        var namespaces = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var tool in tools)
+        {
+            if (NamespaceTag(tool) is { } tag)
+            {
+                namespaces[tool.Name] = tag.Name;
+            }
+        }
+
+        return namespaces;
+    }
 
     /// <summary>One function tool, its schema stripped of the extended validation fields (as the chat route does).</summary>
     public static JsonObject ToolParam(ToolInfo tool) => new()
@@ -74,4 +153,15 @@ public static class ResponsesTools
 
         return format;
     }
+
+    private static bool IsFunctionParam(JsonObject param) =>
+        param["type"] is JsonValue type && type.TryGetValue<string>(out var value) && value == "function";
+
+    /// <summary>The <c>[name, description]</c> namespace tag of a tool: a JSON array of exactly two strings, else null.</summary>
+    private static (string Name, string Description)? NamespaceTag(ToolInfo tool) =>
+        tool.Options?[NamespaceOption] is JsonArray { Count: 2 } tag
+        && tag[0] is JsonValue nameValue && nameValue.TryGetValue<string>(out var name)
+        && tag[1] is JsonValue descriptionValue && descriptionValue.TryGetValue<string>(out var description)
+            ? (name, description)
+            : null;
 }

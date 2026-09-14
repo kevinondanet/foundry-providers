@@ -171,4 +171,29 @@ public class CompletionsBridgeApiTests
         Assert.Equal("""{"error": {"message": "bad", "type": "invalid_request_error", "param": null, "code": null}}""", PythonJson.Dumps(CompletionsBridgeApi.ErrorBody(400, "bad")));
         Assert.Equal("api_error", CompletionsBridgeApi.ErrorBody(500, "x")["error"]!["type"]!.GetValue<string>());
     }
+
+    [Fact]
+    public void error_body_overload_writes_param_and_code()
+    {
+        Assert.Equal(
+            """{"error": {"message": "Missing required parameter: 'model'.", "type": "invalid_request_error", "param": "model", "code": "missing_required_parameter"}}""",
+            PythonJson.Dumps(CompletionsBridgeApi.ErrorBody(400, "Missing required parameter: 'model'.", "model", "missing_required_parameter")));
+        Assert.Equal("api_error", CompletionsBridgeApi.ErrorBody(503, "down", null, "server_error")["error"]!["type"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public void think_tags_carry_summaries_on_the_chat_route()
+    {
+        var reasoning = new ContentReasoning("plan", "s1") { Summary = "short" };
+
+        Assert.Equal("<think signature=\"s1\">\n<summary>short</summary>\nplan\n</think>", CompletionsBridgeApi.ReasoningToThinkTag(reasoning));
+        var messages = CompletionsBridgeApi.MessagesFromOpenAI(new JsonArray(new JsonObject
+        {
+            ["role"] = "assistant",
+            ["content"] = CompletionsBridgeApi.ReasoningToThinkTag(reasoning) + "\nDone",
+        }));
+        var assistant = Assert.IsType<ChatMessageAssistant>(Assert.Single(messages));
+        Assert.Equal(reasoning, Assert.IsType<ContentReasoning>(assistant.ContentList[0]));
+        Assert.Equal("Done", assistant.Text);
+    }
 }

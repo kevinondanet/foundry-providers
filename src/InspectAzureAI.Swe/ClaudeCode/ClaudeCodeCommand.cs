@@ -5,21 +5,33 @@ using InspectAzureAI.Provider.Core;
 namespace InspectAzureAI.Swe.ClaudeCode;
 
 /// <summary>
-/// Port of the command-line assembly of inspect_swe <c>_claude_code/claude_code.py</c>: the base flags
-/// (<c>claude_code.py:364-375, 404-409</c>), <c>_system_prompt_args</c> (<c>:651-663</c>), the argv with
-/// <c>--session-id</c>/<c>--resume</c> and the trailing <c>-- prompt</c> (<c>:493-507</c>), the stdin-closing
-/// launch wrapper (<c>:537-547</c>) and the <c>settings.json</c> seed command of <c>_seed_claude_config</c>.
+/// Port of the command-line assembly of inspect_swe 0.2.70 <c>_claude_code/claude_code.py</c>: the base flags
+/// (<c>claude_code.py:301-339</c>), <c>_system_prompt_args</c> (<c>:559-571</c>), the argv with
+/// <c>--session-id</c>/<c>--resume</c> and the trailing <c>-- prompt</c> (<c>:419-433</c>), the stdin-closing
+/// launch wrapper (<c>:445-455</c>) and the <c>settings.json</c> seed command of <c>_seed_claude_config</c>
+/// (<c>:574-597</c>).
 /// </summary>
 public static class ClaudeCodeCommand
 {
-    /// <summary>The unattended-mode flags (centaur mode, which omits them, is not ported).</summary>
+    /// <summary>The unattended-mode flags, omitted in centaur mode (<c>claude_code.py:313-316</c>).</summary>
     public static readonly IReadOnlyList<string> PrintFlags = ["--print", "--output-format", "stream-json", "--verbose"];
 
     /// <summary>Closes stdin before exec'ing Claude Code so the CLI cannot block on a tty read; <c>$0</c> is the second "bash".</summary>
     public const string LaunchScript = "exec 0</dev/null; \"$@\"";
 
-    /// <summary>Port of the flags built at <c>claude_code.py:364-375</c> and <c>:406-409</c>: permission flag, cosmetic model, print flags, debug, disallowed tools.</summary>
-    public static IReadOnlyList<string> BaseFlags(string presentedModel, string? permissionMode = null, bool debug = false, IReadOnlyList<string>? disallowedTools = null)
+    /// <summary>
+    /// Port of the flags built at <c>claude_code.py:301-339</c>, in order: the permission flag, the cosmetic
+    /// <c>--model</c>, the print flags and <c>--debug</c> (not in centaur mode), <paramref name="mcpConfigArgs"/>,
+    /// <c>--allowed-tools</c> and <c>--disallowed-tools</c> (each comma-joined, and only when non-empty).
+    /// </summary>
+    public static IReadOnlyList<string> BaseFlags(
+        string presentedModel,
+        string? permissionMode = null,
+        bool debug = false,
+        IReadOnlyList<string>? disallowedTools = null,
+        IReadOnlyList<string>? mcpConfigArgs = null,
+        IReadOnlyList<string>? allowedTools = null,
+        bool centaur = false)
     {
         ArgumentNullException.ThrowIfNull(presentedModel);
         var cmd = new List<string>();
@@ -33,10 +45,23 @@ public static class ClaudeCodeCommand
         }
 
         cmd.AddRange(["--model", presentedModel]);
-        cmd.AddRange(PrintFlags);
-        if (debug)
+        if (!centaur)
         {
-            cmd.Add("--debug");
+            cmd.AddRange(PrintFlags);
+            if (debug)
+            {
+                cmd.Add("--debug");
+            }
+        }
+
+        if (mcpConfigArgs is not null)
+        {
+            cmd.AddRange(mcpConfigArgs);
+        }
+
+        if (allowedTools is { Count: > 0 })
+        {
+            cmd.AddRange(["--allowed-tools", string.Join(",", allowedTools)]);
         }
 
         if (disallowedTools is { Count: > 0 })
@@ -47,7 +72,7 @@ public static class ClaudeCodeCommand
         return cmd;
     }
 
-    /// <summary>The system texts of <c>claude_code.py:480-486</c>: every system message's text, then the agent's own <c>system_prompt</c>.</summary>
+    /// <summary>The system texts of <c>claude_code.py:406-412</c>: every system message's text, then the agent's own <c>system_prompt</c>.</summary>
     public static IReadOnlyList<string> SystemTexts(IReadOnlyList<ChatMessage> messages, string? systemPrompt)
     {
         ArgumentNullException.ThrowIfNull(messages);
@@ -81,7 +106,7 @@ public static class ClaudeCodeCommand
         return args;
     }
 
-    /// <summary>Port of the argv assembly at <c>claude_code.py:493-507</c>; the prompt is the last positional argument after a bare <c>--</c>, never stdin.</summary>
+    /// <summary>Port of the argv assembly at <c>claude_code.py:419-433</c>; the prompt is the last positional argument after a bare <c>--</c>, never stdin.</summary>
     public static IReadOnlyList<string> Build(string claudeBinary, string sessionId, bool isResume, IReadOnlyList<string> flags, IReadOnlyList<string> systemArgs, string prompt)
     {
         ArgumentNullException.ThrowIfNull(claudeBinary);
@@ -92,7 +117,7 @@ public static class ClaudeCodeCommand
         return [claudeBinary, isResume ? "--resume" : "--session-id", sessionId, .. flags, .. systemArgs, "--", prompt];
     }
 
-    /// <summary>Port of the <c>bash -c 'exec 0&lt;/dev/null; "$@"' bash &lt;argv&gt;</c> wrapper of <c>claude_code.py:538</c>.</summary>
+    /// <summary>Port of the <c>bash -c 'exec 0&lt;/dev/null; "$@"' bash &lt;argv&gt;</c> wrapper of <c>claude_code.py:445-455</c>.</summary>
     public static IReadOnlyList<string> Launch(IReadOnlyList<string> agentCmd)
     {
         ArgumentNullException.ThrowIfNull(agentCmd);

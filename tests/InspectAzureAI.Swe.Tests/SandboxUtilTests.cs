@@ -115,4 +115,18 @@ public class SandboxUtilTests
         Assert.Equal("/w/none", missing.FileName);
         Assert.Equal(SandboxUtil.BashCommand("ls"), new[] { "bash", "-c", "ls" });
     }
+
+    /// <summary>Port of <c>_util/path.py</c> <c>join_path</c>: <c>posixpath.join</c>, then backslashes to slashes.</summary>
+    [Theory]
+    [InlineData("/workspace", ".codex", "/workspace/.codex")]
+    [InlineData("/workspace", ".codex/config.toml", "/workspace/.codex/config.toml")]
+    [InlineData("/workspace/", "AGENTS.md", "/workspace/AGENTS.md")]
+    [InlineData("", "skills", "skills")]
+    [InlineData("/workspace", "/etc/codex", "/etc/codex")]
+    [InlineData("/workspace/.codex", "", "/workspace/.codex/")]
+    [InlineData("C:\\agent", "skills\\x", "C:/agent/skills/x")]
+    public void join_path_follows_posixpath_join(string basePath, string path, string expected)
+    {
+        Assert.Equal(expected, SandboxUtil.JoinPath(basePath, path));
+    }
 }

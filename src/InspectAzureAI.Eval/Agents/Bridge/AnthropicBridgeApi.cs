@@ -131,9 +131,11 @@ public static class AnthropicBridgeApi
     }
 
     /// <summary>
-    /// Port of <c>tools_from_anthropic_tools</c> for client tools (<c>{name, description, input_schema}</c>).
-    /// Server and built-in tools (a <c>type</c> such as <c>web_search_20250305</c> or <c>bash_20250124</c>) are
-    /// dropped: this port has no host tools to substitute for them and never forwards server tools.
+    /// Port of <c>tools_from_anthropic_tools</c> for client tools (<c>{name, description, input_schema}</c>). A web
+    /// search server tool (a <c>type</c> starting with <c>web_search_</c>) becomes the marker
+    /// <see cref="BridgeBuiltinTools.WebSearchTool"/>, which the bridge's web-search grant later serves or withholds.
+    /// Other server and built-in tools (a <c>type</c> such as <c>bash_20250124</c>) are dropped: this port has no host
+    /// tools to substitute for them.
     /// </summary>
     public static IReadOnlyList<ToolInfo> ToolsFromAnthropicTools(JsonNode? tools)
     {
@@ -145,8 +147,18 @@ public static class AnthropicBridgeApi
         var result = new List<ToolInfo>();
         foreach (var node in BridgeJson.RequireArray(tools, "tools"))
         {
-            if (node is not JsonObject tool || !tool.ContainsKey("input_schema"))
+            if (node is not JsonObject tool)
             {
+                continue;
+            }
+
+            if (!tool.ContainsKey("input_schema"))
+            {
+                if (tool["type"] is JsonValue typeValue && typeValue.TryGetValue<string>(out var type) && type.StartsWith("web_search_", StringComparison.Ordinal))
+                {
+                    result.Add(BridgeBuiltinTools.WebSearchTool(tool));
+                }
+
                 continue;
             }
 
@@ -402,6 +414,11 @@ public static class AnthropicBridgeApi
                     case ContentReasoning unsigned:
                         blocks.Add(new JsonObject { ["type"] = "text", ["text"] = ReasoningText(unsigned) });
                         break;
+                    case ContentToolUse { ToolType: "web_search" } webSearch:
+                        // the served model's native search, rendered as the Messages API's server tool blocks
+                        blocks.Add(new JsonObject { ["type"] = "server_tool_use", ["id"] = webSearch.Id, ["name"] = "web_search", ["input"] = ParseJson(webSearch.Arguments) });
+                        blocks.Add(new JsonObject { ["type"] = "web_search_tool_result", ["tool_use_id"] = webSearch.Id, ["content"] = ParseJson(webSearch.Result) });
+                        break;
                 }
             }
         }
@@ -442,7 +459,8 @@ public static class AnthropicBridgeApi
     /// <summary>
     /// Port of the proxy's <c>stream_response</c>: <c>message_start</c> (empty content, input usage), per block
     /// <c>content_block_start</c> / <c>content_block_delta</c> / <c>content_block_stop</c> (a text or thinking
-    /// block streams as one delta; a tool_use input as one <c>input_json_delta</c>), then <c>message_delta</c>
+    /// block streams as one delta; a tool_use or server_tool_use input as one <c>input_json_delta</c>; a
+    /// web_search_tool_result block has no delta), then <c>message_delta</c>
     /// with the stop reason and output usage, and <c>message_stop</c>.
     /// </summary>
     public static IReadOnlyList<SseEvent> StreamEvents(JsonObject message)
@@ -503,10 +521,12 @@ public static class AnthropicBridgeApi
                     events.Add(BlockStart(index, new JsonObject { ["type"] = "redacted_thinking", ["data"] = block["data"]?.DeepClone() ?? "" }));
                     events.Add(BlockStop(index));
                     break;
-                case "tool_use":
+                case "tool_use" or "server_tool_use":
+                    // the input streams as a delta: clients (Claude Code included) rebuild it from the deltas and
+                    // discard the input of content_block_start (proxy.py:1791-1823)
                     events.Add(BlockStart(index, new JsonObject
                     {
-                        ["type"] = "tool_use",
+                        ["type"] = block["type"]!.DeepClone(),
                         ["id"] = block["id"]?.DeepClone(),
                         ["name"] = block["name"]?.DeepClone(),
                         ["input"] = new JsonObject(),
@@ -516,6 +536,11 @@ public static class AnthropicBridgeApi
                         ["type"] = "input_json_delta",
                         ["partial_json"] = PythonJson.Dumps(block["input"] ?? new JsonObject()),
                     }));
+                    events.Add(BlockStop(index));
+                    break;
+                case "web_search_tool_result":
+                    // search results arrive whole: start (carrying the full block) and stop, no deltas (proxy.py:1825-1844)
+                    events.Add(BlockStart(index, block.DeepClone().AsObject()));
                     events.Add(BlockStop(index));
                     break;
                 default:
@@ -626,6 +651,27 @@ public static class AnthropicBridgeApi
         }
 
         return (content, toolCalls);
+    }
+
+    /// <summary>
+    /// A JSON string field of a <see cref="ContentToolUse"/> as JSON: the parsed value, or a string node holding
+    /// <paramref name="json"/> when it is empty or does not parse.
+    /// </summary>
+    internal static JsonNode? ParseJson(string json)
+    {
+        if (string.IsNullOrEmpty(json))
+        {
+            return JsonValue.Create(json ?? "");
+        }
+
+        try
+        {
+            return JsonNode.Parse(json);
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return JsonValue.Create(json);
+        }
     }
 
     private static void FlushPending(List<ChatMessage> messages, List<Content> pending)
