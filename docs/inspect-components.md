@@ -14,6 +14,8 @@ This guide is a plain-language introduction to the four building blocks of an In
 
 ## What an evaluation is
 
+> **In plain words.** The exam analogy the whole guide leans on. An evaluation is a fixed set of questions with an answer key (the dataset), a way of working through them (the solver), a marking rule (the scorer), and the package that bundles those with settings (the task); metrics summarise the marks and the eval log keeps the marked paper. If you remember only this section, you can read any Inspect task file.
+
 Evaluating a language model means giving it a fixed set of questions you already know something about, recording what it produces, and grading those answers the same way every time. The result is a number you can compare across models, prompts, and dates. Inspect splits that job into four parts, and the easiest way to hold them in your head is an exam.
 
 The **dataset** is the question sheet with the answer key attached. Each entry is a sample: the question (the *input*), the expected answer or a grading hint (the *target*), and sometimes extras such as multiple-choice options, sandbox files, or metadata.
@@ -37,7 +39,11 @@ In code terms:
 
 ## Tasks
 
+> **In plain words.** The task is the recipe. This chapter goes from what a task is, through the decorator and every constructor field, to two examples, how to run one and pass arguments, what epochs and the eval log are, common mistakes, and the C# equivalent.
+
 ### What a task is
+
+> **In plain words.** One object that bundles the questions, the answering method, the grading and the run settings, so the same recipe can be run again and again against different models with nothing else changing.
 
 A task is the unit of evaluation in Inspect: one `Task` object that bundles a dataset, a solver, a scorer, and the settings that govern the run, such as epochs, per-attempt limits, sandbox, and model generation options. You define a task with a function decorated with `@task` that returns a `Task`, and you run it with the `eval()` function or the `inspect eval` command. Every run writes an eval log.
 
@@ -45,9 +51,13 @@ The point of bundling is repeatability: you write the recipe once, give it a nam
 
 ### The @task decorator
 
+> **In plain words.** The decorator gives the task a name so the CLI can find it, and turns the function's parameters into knobs you can set from the command line, so one definition yields a family of variants.
+
 `@task` marks a function that returns a `Task`. It registers the function under a name (by default the function name) so that `inspect eval my_file.py` can discover and run it, and it records the function's parameters so they can be set from the command line. Those parameters are called task parameters, and they are how one definition becomes a family of variants. `@task(name="other")` overrides the registered name, and extra keyword attributes on the decorator become task attributes that `inspect list tasks` can filter on.
 
 ### The Task constructor, field by field
+
+> **In plain words.** A reference list. You will usually set only `dataset`, `solver` and `scorer`; the rest are settings: what to run before the solver, which model and generation options, where code runs (the sandbox), how many repeats, what limits apply to each sample, what to do on errors, and how the task is named and versioned.
 
 The `Task` constructor accepts many keyword arguments. Most tasks use only the first three.
 
@@ -68,6 +78,8 @@ The `Task` constructor accepts many keyword arguments. Most tasks use only the f
 - Less common: `approval` (tool-call policies), `early_stopping` (stop early based on scores so far), `viewer` and `headline_metric` (log viewer presentation).
 
 ### A minimal example
+
+> **In plain words.** The smallest complete task: one question, a plain model call, and a scorer that checks the answer ends with the target. Everything else in the chapter is optional decoration around this shape.
 
 Here is the smallest useful task: one question, one plain model call, and a scorer that checks whether the answer ends with the target.
 
@@ -90,6 +102,8 @@ Save this as `capitals.py` and run `inspect eval capitals.py --model openai/gpt-
 
 ### A richer example with parameters
 
+> **In plain words.** The same shape, dressed up: a shipped dataset, a system prompt before the model call, a model as the grader, three repeats, a two-minute cap, and function arguments that become command-line parameters.
+
 This version reads a shipped dataset, adds a system prompt, grades with a model, repeats each question three times, and caps each attempt at two minutes; the function arguments are task parameters with defaults.
 
 ```python
@@ -111,6 +125,8 @@ def security_guide(system="devops.txt", epochs=3):
 ```
 
 ### Running a task and passing task arguments
+
+> **In plain words.** Two ways to run: `eval()` from Python or `inspect eval` from the shell. Task parameters go in with `-T name=value` (parsed like YAML), and settings resolve in layers, so a command-line flag overrides the task definition.
 
 `eval()` takes one or more tasks, a model, and any run-time overrides, and returns a list of `EvalLog` objects, one per task.
 
@@ -138,13 +154,19 @@ Values after `-T` are parsed like YAML, so `epochs=5` arrives as an integer. Set
 
 ### What epochs mean
 
+> **In plain words.** Because a model's answers vary, one attempt per question is a noisy measurement. Epochs repeat the whole dataset N times, and a reducer (mean by default) folds each question's N scores into one before the metrics are computed.
+
 A model's output is partly random, so a single attempt at a question is a noisy measurement. An epoch is one complete pass over the dataset: `epochs=5` runs every sample five times, giving five scores per sample, which a reducer combines before metrics are computed. The default is `"mean"`, so a sample answered correctly three times out of five contributes 0.6. `Epochs(5, "mode")` takes the most common score instead, and `Epochs(5, ["mean", "pass_at_5"])` reports metrics under several reducers at once. Epochs must be at least one.
 
 ### What an eval log holds
 
+> **In plain words.** Every run produces one file with the task description, the plan, the metrics, token usage, and one entry per sample and epoch holding the full conversation, the score and its explanation. It is the record you review, re-grade or compare later.
+
 Each run writes one eval log file, by default under `./logs`, in the compact `.eval` format. The `EvalLog` object has a `status` (`"started"`, `"success"`, `"cancelled"`, or `"error"`), an `eval` section describing the task, model, and arguments, a `plan` listing the solvers, `results` holding the metrics, `stats` with token usage, and `samples`: one entry per sample and epoch with its input, output, target, score, and a full transcript. `inspect view` opens a browser viewer, and `read_eval_log()` loads an eval log back into Python.
 
 ### Common variations and gotchas
+
+> **In plain words.** Things that trip people up: the solver can be swapped from the CLI but the scorer cannot; `task_with()` edits in place; limits are per sample, not per task; `metrics=` replaces rather than adds; and `eval_set()` is the way to run many tasks or models with retries.
 
 - Swap the solver without editing the task using `--solver name` or `eval(solver=...)`. The `setup` step still runs, which is why it exists.
 - The scorer cannot be changed from the CLI; use `task_with(my_task(), scorer=...)` in Python, or expose it as a task parameter.
@@ -155,17 +177,25 @@ Each run writes one eval log file, by default under `./logs`, in the compact `.e
 
 ### How it connects to the other components
 
+> **In plain words.** The task is the frame: it hands samples to the solver, the solver's result to the scorer, and the scores to the reducer and metrics.
+
 The task is the frame that holds the other three. The dataset supplies the samples and the task decides how many epochs of them to run; the solver receives each sample as a `TaskState` and leaves its answer there, bounded by the task's limits and sandbox; the scorer reads that state and the sample's target and produces a `Score`; and the task's reducer and `metrics` turn many scores into the numbers in the eval log.
 
 ### In the .NET port
+
+> **In plain words.** `EvalTask` is the C# `Task` with the same property names; `[Task]` on a static method plays the part of `@task` for the CLI; `Eval.RunAsync` is `eval()` and returns one log. (One detail has moved on since this was written: `EvalTask` now has a `Model` property, which wins over `EvalOptions.Model`.)
 
 The port mirrors `Task` with the `EvalTask` record in `src/InspectAzureAI.Eval/Tasks/EvalTask.cs`, whose properties (`Dataset`, `Setup`, `Solver`, `Scorers`, `Metrics`, `Config`, `Sandbox`, `Epochs`, the six limits, `Version`, `Metadata`, `TaskArgs`, `ModelRoles`, `Approval`) follow the Python names. `Epochs` in `Epochs.cs` carries a `Count` and optional `Reducers`, and the `[Task]` attribute in `TaskAttribute.cs` plays the role of `@task`: it marks a public static method returning an `EvalTask`, whose parameters bind to `-T` arguments in the `inspectai` CLI. `Eval.RunAsync(EvalTask, EvalOptions)` is the port of `eval()` and returns a single `EvalLog` rather than a list. Notable differences: `Name` is required because there is no registry to infer it from, the model lives on `EvalOptions` rather than the task, `TimeLimit` is a `TimeSpan`, and there is no `Cleanup`, `DisplayName`, `Tags`, or `Viewer` property.
 
 ## Datasets
 
+> **In plain words.** The question sheet. This chapter covers what one sample holds, what an input can be, how to load samples from CSV, JSON, Hugging Face or a Python list, how to map your own column names, how to filter and shuffle, and the C# equivalent.
+
 A dataset is the list of samples that a task runs over. Keeping the questions separate from the answering and the marking means the same exam paper can be sat by many students, and whether your data lives in CSV, JSON, Hugging Face or a Python list, Inspect turns it into one uniform sequence of samples. The rest of the dataset API (loaders, field mapping, filtering, shuffling) exists to get your data into that list.
 
 ### The Sample object: one question on the paper
+
+> **In plain words.** A `Sample` is one row of the exam: the question (`input`, the only required field), the expected answer (`target`, one string or several acceptable ones), and optional extras: multiple-choice options, an id, free-form metadata, and for sandboxed tasks the files to copy in and a setup script.
 
 `Sample` (in `inspect_ai.dataset`) has one required field and several optional ones:
 
@@ -180,9 +210,13 @@ A dataset is the list of samples that a task runs over. Keeping the questions se
 
 ### What the input can be
 
+> **In plain words.** Usually a string, which becomes one user message. It can also be a full list of chat messages, so a sample can open with a system prompt, earlier turns or an image.
+
 The simplest input is a string, which Inspect wraps in a `ChatMessageUser`, a single "user" turn. The input can also be a list of `ChatMessage` objects, each with a `role` (`system`, `user`, `assistant` or `tool`) and `content`, which lets you open with a system prompt, prime the conversation with earlier assistant turns, or include images. In JSON data this is a list of `{"role": ..., "content": ...}` objects.
 
 ### Loading a dataset
+
+> **In plain words.** Five ways in: CSV, JSON or JSONL, Hugging Face, the small bundled example sets, or a `MemoryDataset` around samples you built in code. The file loaders share the same optional arguments for mapping, ids, shuffling and limiting.
 
 All loaders live in `inspect_ai.dataset` and return a `Dataset`.
 
@@ -196,6 +230,8 @@ The file loaders share optional arguments: `sample_fields` (the mapping, describ
 
 ### Mapping your own columns
 
+> **In plain words.** If your columns are not called `input` and `target`, either describe the mapping declaratively with `FieldSpec` (one column name per field) or write a `record_to_sample` function that turns one raw row into one or more samples when values need converting or combining.
+
 If your file already has columns named `input`, `target` and so on, the loaders need no extra arguments. Otherwise there are two ways to map them.
 
 `FieldSpec` is a declarative mapping: one attribute per sample field, holding the name of the matching column in your data; you only set the ones that differ from the defaults. Its `metadata` attribute takes a list of column names to gather into the metadata dictionary, or a frozen Pydantic model class for typed, validated metadata.
@@ -203,6 +239,8 @@ If your file already has columns named `input`, `target` and so on, the loaders 
 `record_to_sample` is the programmatic option: a function that receives one raw record (a `dict` of the row as read from the file) and returns a `Sample`, or a list of them. Use it when a value needs converting, columns need combining, or one record should produce several samples. Either option is passed as `sample_fields`; the type alias for the function form is `RecordToSample`.
 
 ### A worked example
+
+> **In plain words.** Three concrete versions: a `FieldSpec` for a CSV with differently named columns; a `record_to_sample` for a JSONL file whose values need trimming and reshaping; and a hand-built `MemoryDataset` inside a task.
 
 Suppose `security.csv` has columns `question`, `answer`, `qid` and `topic`. A `FieldSpec` maps it in a few lines:
 
@@ -260,6 +298,8 @@ def security_guide():
 
 ### Filtering, shuffling and limiting
 
+> **In plain words.** A dataset behaves like a Python list (index, length, slice) and adds `filter`, `shuffle` (with a seed for a repeatable order), `shuffle_choices` (so the right answer is not always C) and `sort`. At run time `--limit`, `--sample-id` and `--sample-shuffle` do the same without editing code.
+
 A `Dataset` is a Python sequence: you can index it, take its `len()`, and slice it (`dataset[0:100]` is the first hundred samples). It also has:
 
 - `filter(predicate)` returns a new dataset holding only the samples your function accepts, for example `dataset.filter(lambda s: s.metadata["category"] == "advanced")`.
@@ -271,9 +311,13 @@ At run time, `inspect eval task.py --limit 50` runs the first fifty samples, `--
 
 ### From sample to solver
 
+> **In plain words.** Each sample is copied into a fresh `TaskState` for every epoch; the sample itself never changes.
+
 When the task runs, each sample becomes the starting point of a `TaskState` (described in the Solvers chapter). The sample itself is never modified, so every epoch starts from the same place.
 
 ### Common variations and gotchas
+
+> **In plain words.** Several acceptable answers go in a list; comma-separated choices in one CSV cell are split; relative file paths resolve next to the dataset file, not the current directory; typed metadata uses a frozen Pydantic model.
 
 - Multiple acceptable answers: give `target` a list of strings. Scorers such as `match()` and `includes()` accept any of them.
 - Choices in CSV: a single cell holding `"A, B, C"` is split on commas (or whitespace if there are none).
@@ -282,19 +326,27 @@ When the task runs, each sample becomes the starting point of a `TaskState` (des
 
 ### How it connects to the other components
 
+> **In plain words.** The sample's input feeds the solver, its target (and choices) feed the scorer, and its id and metadata travel through to the log so any result traces back to its row.
+
 At run time the task turns each sample into a `TaskState` and gives it to the solver, which produces the model's answer; the scorer then compares that answer with the sample's `target` (and `choices`, for multiple choice) to produce a `Score`. The sample's `id` and `metadata` travel through the pipeline into the eval log, so you can trace any result back to its row.
 
 ### In the .NET port
 
+> **In plain words.** The same shapes under `InspectAzureAI.Eval.Dataset`: `Sample`, `Target`, `IDataset`, `MemoryDataset`, `FieldSpec`, a `RecordToSample` delegate and the `Datasets.Json` / `Datasets.Csv` loaders. (The gaps listed here have narrowed since this was written: `Datasets.Hf` and `Datasets.Example` now exist.)
+
 The C# port keeps the same shapes under `InspectAzureAI.Eval.Dataset`. `Sample` is a record holding a `SampleInput` (text or a message list), a `Target`, and the same optional `Choices`, `Id`, `Metadata`, `Sandbox`, `Files` and `Setup` properties. `IDataset` mirrors the Python `Dataset` interface with `Filter`, `Shuffle`, `ShuffleChoices`, `Sort` and `Slice`; `MemoryDataset` is its in-memory implementation; `FieldSpec` is a record with the same default column names; and `RecordToSample` is a delegate returning one or more samples. The static `Datasets.Json` and `Datasets.Csv` methods are the loaders, taking `fields` and `recordToSample` as separate parameters rather than one `sample_fields` union. The notable gaps: only local paths are supported (no S3 or HTTPS), there is no Hugging Face or example loader, and a seeded shuffle orders differently from Python because .NET's `Random` differs.
 
 ## Solvers
+
+> **In plain words.** The student's working method. This chapter explains the `TaskState` a solver reads and writes, the `generate` function that calls the model, the built-in solvers, how to chain them, how to write your own, how agents relate, common mistakes and the C# equivalent.
 
 A solver is the part of an evaluation that produces the model's answer: an async function that receives a `TaskState` (the working state of one sample) plus a `generate` function, changes the state in some way, and returns it. Most solvers either edit the conversation (adding a system prompt, rewriting the question) or call the model (which appends the reply and records it as the output). A task has exactly one top-level solver, but that solver is very often a chain of smaller solvers run in order.
 
 Solvers exist because an evaluation needs to say not only *what* questions to ask but *how* to ask them: with a system prompt or without, thinking step by step or not, with tools and retries or neither. These choices change results a great deal, so Inspect keeps them separate from the data and the grading, and each solver is one small step that you can swap in or out without touching the questions or the marking.
 
 ### TaskState: the sample's working memory
+
+> **In plain words.** One object per sample per epoch carrying everything so far: the conversation (`messages`), the latest model reply (`output`), the original input and target, metadata, a shared `store`, the tools on offer, a `completed` flag that ends a chain early, and the sample's limits.
 
 `TaskState` is the object every solver reads and writes. Inspect creates one per sample per epoch, carrying everything the sample knows so far:
 
@@ -313,9 +365,13 @@ The state also carries limits (`message_limit`, `token_limit`, `cost_limit`). Wh
 
 ### The generate function
 
+> **In plain words.** The second argument every solver receives. It sends the conversation to the model, appends the reply and sets `output`; by default it also runs any tools the model asks for and calls the model again until it stops asking.
+
 The second argument to every solver is `generate`, a helper that sends `state.messages` (and `state.tools`) to the model being evaluated, appends the reply to `messages`, and sets `output`. Its `tool_calls` option controls what happens if the model asks to use a tool: `"loop"` (the default) runs the tools and calls the model again until it stops asking, `"single"` runs one round, and `"none"` leaves the calls to you. It also accepts generation settings such as `max_tokens` or `temperature`. Solvers that only edit prompts never call it.
 
 ### Built-in solvers
+
+> **In plain words.** Ready-made steps of two kinds: ones that edit the conversation (system message, user message, prompt template, chain of thought, use tools) and ones that call the model (generate, multiple choice, self-critique, the basic agent).
 
 All of these live in `inspect_ai.solver`.
 
@@ -330,6 +386,8 @@ All of these live in `inspect_ai.solver`.
 - `basic_agent()`: a complete tool-using agent. It installs a system message and a `submit` tool, then calls the model and runs requested tools until the model calls `submit`. With `max_attempts` above one it scores each submission and, if wrong, tells the model to try again.
 
 ### Chaining solvers
+
+> **In plain words.** A list of solvers runs in order, each receiving the state the previous one returned, and stops early if `completed` is set. The example is a four-step recipe: set the role, rewrite the question, answer, then critique and answer again.
 
 You can pass a list of solvers to a `Task`, or wrap them with `chain()`. Solvers run in order, each receiving the state the previous one returned, and the chain stops early if `state.completed` becomes `True`; nested chains are flattened. Here is a composite solver from the Inspect docs, used with `solver=critique()`:
 
@@ -352,6 +410,8 @@ As a recipe: set the model's role, rewrite the question, get an answer, critique
 
 ### Writing your own solver
 
+> **In plain words.** A custom solver is a factory function (holding the parameters) that returns an async `solve(state, generate)`; the decorator registers its name for the log. The example appends a hint from the sample's metadata to the user prompt.
+
 A custom solver is a function decorated with `@solver` that returns an async `solve` function: the outer function holds the parameters, the inner one does the work, and the decorator registers the solver so Inspect can log its name and arguments. This example appends a hint stored in the sample's metadata:
 
 ```python
@@ -371,6 +431,8 @@ def add_hint(prefix: str = "Hint: ") -> Solver:
 Use it like any built-in: `solver=[add_hint(), generate()]`. A solver may also call `get_model()` to use another model, or `score(state)` to get a list of intermediate scores from the task's scorers.
 
 ### Solvers and agents
+
+> **In plain words.** An agent is a solver-like function for multi-turn, tool-using work; its state is just messages and output, so the same agent can also be a tool or a team member. `react()` is the recommended tool loop and can be dropped straight into `solver=`.
 
 An agent is a model working towards a goal over many turns: it calls tools, looks at the results, and decides what to do next. In Inspect an `Agent` is a close cousin of a solver, a function that takes and returns a state, but its `AgentState` holds only `messages` and `output`, so one agent can serve as a solver, a tool, or a member of a multi-agent system. `Task` and `chain()` accept agents directly (via `as_solver()`). The built-in `react()` agent is the recommended tool-calling loop; here it is as a task solver, adapted from the tutorial:
 
@@ -395,6 +457,8 @@ def ctf(attempts=3):
 
 ### Common variations and gotchas
 
+> **In plain words.** Always `await` model calls; `user_prompt` assumes a chat-shaped input; double a literal `{` in templates; `completed` or a limit ends the chain, but the sample is still scored.
+
 - Always `await` calls to `generate` and to model methods; a missing `await` breaks Inspect's scheduling of model calls.
 - `user_prompt` raises if there is no user message, so solvers that use it assume a chat-shaped input.
 - Template solvers format with Python's `str.format`, so a literal `{` in a template needs to be doubled.
@@ -402,19 +466,27 @@ def ctf(attempts=3):
 
 ### How it connects to the other components
 
+> **In plain words.** Solvers sit in the middle: they take what the dataset provides and leave what the scorer grades, without knowing how either works.
+
 For each sample in the dataset, Inspect builds a `TaskState`, runs the task's solver on it, and then hands the finished state (with its `output` and `messages`) and the sample's `Target` to the scorer. Solvers sit in the middle: they consume what the dataset provides and produce what the scorer grades, without knowing how either is implemented.
 
 ### In the .NET port
 
+> **In plain words.** `Solver` and `Generate` are delegates, `TaskState` is a class with the same members, and the built-ins are static methods on `Solvers`; agents live under `Agents` and attach with `Agents.AsSolver`. Every solver also takes a `CancellationToken`, and there is no decorator registry.
+
 `Solver` and `Generate` are delegates in `src/InspectAzureAI.Eval/Solvers/SolverDelegates.cs`, with `ToolCallsMode` standing in for the `"loop"`, `"single"` and `"none"` strings. `TaskState` is a class in `TaskState.cs` with the same members (`Messages`, `Output`, `UserPrompt`, `Target`, `Metadata`, `Store`, `Tools`, `ToolChoice`, `Completed`, `Choices`, `Scores`). The built-ins are static methods on a `Solvers` class: `Chain`, `Generate`, `UseTools`, `SystemMessage`, `UserMessage`, `PromptTemplate`, `ChainOfThought`, `SelfCritique`, `MultipleChoice`, `Fork` and `BasicAgent`, while the `react` agent lives under `Agents` and is attached to a task with `Agents.AsSolver`. Notable differences: every solver takes a `CancellationToken`; the per-sample `Generate` is built explicitly by `GenerateLoop.Create(model)`; there is no `@solver` registry, so the CLI resolves solvers by their Python names against the static `Solvers` factories; and `UseTools` leaves `tool_choice` untouched by default where Python sets it to `"auto"`.
 
 ## Scorers
+
+> **In plain words.** The grader. This chapter covers the `Score` object, the `Target`, the built-in scorers (string matching, regex, multiple choice, model-graded, F1), the difference between scorers and metrics, reducers, custom scorers, worked examples, the trade-offs of model grading, gotchas and the C# equivalent.
 
 A scorer is the part of an evaluation that marks the model's work. When the solver finishes, Inspect hands the scorer the finished `TaskState` (including the model's final `output`) and the `Target` (the expected answer or grading guidance from the dataset), and the scorer compares them and returns a `Score`. Scorers run once per sample; metrics then combine those scores into headline numbers.
 
 A model's raw output is just text, and the scorer is the consistent rule for turning "here is what the model said" into "was that right, and how right". Sometimes the mark scheme is one word ("Paris"); sometimes it is a rubric ("should mention salting and a slow hash") that needs judgement. Inspect ships examiners for both, and lets you write your own.
 
 ### The key pieces
+
+> **In plain words.** The vocabulary: a `Score` has a value (usually `C` or `I`, or a number), the extracted `answer`, an `explanation` and `metadata`; a `Target` can hold several acceptable strings; the built-in scorers differ in *where* and *how* they look for the target; metrics summarise scores across samples; reducers combine repeats across epochs; and a custom scorer is an async function under `@scorer(metrics=[...])`.
 
 **Score.** Every scorer returns a `Score` object with these fields:
 
@@ -453,6 +525,8 @@ Each scorer declares its own default metrics (most use `accuracy()` and `stderr(
 **Custom scorers.** A custom scorer is an async function taking a `TaskState` and a `Target` and returning a `Score`, wrapped in a factory decorated with `@scorer(metrics=[...])`, which registers it by name so eval logs record which scorer produced each score.
 
 ### Worked examples
+
+> **In plain words.** Three levels: `match()` when the answer is a literal; `model_graded_qa()` with a separate grader when the target is a rubric; and a hand-written scorer when neither fits (here, the last number in the output within one percent of the target).
 
 The simplest case is the `capitals` task from the Tasks chapter: `scorer=match()` checks that the model's answer ends with the target.
 
@@ -496,6 +570,8 @@ def close_enough(rel_tol: float = 0.01):
 
 ### Model-graded scoring and its tradeoffs
 
+> **In plain words.** Using a model as the judge is the only option for open-ended answers, but choose the grader deliberately (the model under test can flatter itself), know how the `GRADE:` line is read, pin the temperature for consistency, consider a cheap scorer first, use a panel for robustness, and rely on Inspect's guard against injected markers.
+
 A model grader is the only practical option for open-ended answers, but it is a judge with quirks:
 
 - **Who grades.** By default the grader is the model bound to the `"grader"` role, or else the model under test, which can flatter itself. Pass `model=` for an independent grader.
@@ -506,19 +582,27 @@ A model grader is the only practical option for open-ended answers, but it is a 
 
 ### Common variations and gotchas
 
+> **In plain words.** Several scorers give several scores per sample; custom string values need a `to_float` mapping for the metric; an unscored sample is excluded, not counted as zero.
+
 - **Several scorers.** Pass a list to `scorer=` for one score per scorer on each sample. A scorer can also return a dictionary value, with metrics declared per key.
 - **Value types must match metrics.** If you return your own strings, tell the metric how to read them: `accuracy(to_float=value_to_float(correct="pass", incorrect="fail"))`.
 - **Unscored is not zero.** `Score.unscored()` samples are excluded from metrics and reported separately as `unscored_samples`.
 
 ### How it connects to the other components
 
+> **In plain words.** The dataset's target and the scorer must agree on what the target means; the solver leaves the output to grade; reducers and metrics turn per-sample scores into the log's numbers.
+
 The dataset supplies each sample's `target`, so the dataset and the scorer must agree on what it means (a literal answer for `match()`, a rubric for `model_graded_qa()`). The solver leaves the model's `output` in the `TaskState` for the scorer to read. The task's reducers then fold the scorer's per-sample results, and its metrics turn them into the numbers in the eval log.
 
 ### In the .NET port
 
+> **In plain words.** A `Scorer` is a delegate; `ScorerDef` plus `Scorers.Custom` replace the decorator; `Score`, `ScoreValue` and `ScoreConstants` mirror the Python types; built-ins, metrics and reducers are static classes. An unscored result is a `Score.Unscored` value rather than null, and a grading panel is built with `MultiScorer`.
+
 The C# port keeps the same shapes under `InspectAzureAI.Eval.Scorers`. A `Scorer` is a delegate `(TaskState, Target, CancellationToken) -> Task<Score>`; `ScorerDef(Name, Score, Metrics)` replaces the `@scorer` decorator, and hand-written scorers go through `Scorers.Custom(name, scorer, metrics)`. `Score` is a record with `Value` (a `ScoreValue` union of `Str`, `Num`, `Bool`, `List`, and `Dict`), `Answer`, `Explanation`, `Reason`, and `Metadata`; `ScoreConstants.Correct` and friends replace `CORRECT` and `INCORRECT`. The built-ins are `Scorers.Includes`, `Match`, `Pattern`, `Answer`, `Choice`, `F1`, `Exact`, `ModelGradedQa`, `ModelGradedFact`, `MultiScorer`, and `Cascade`; metrics live on `Metrics` (`Accuracy`, `Mean`, `Stderr`, `BootstrapStderr`) and reducers on `Reducers`. Two differences stand out: the C# `Scorer` cannot return null, so an unscored result is a `Score.Unscored` value (its value is NaN), which `MultiScorer` and `Cascade` skip; and `ModelGradedQa` takes one optional `Model` rather than a list or role, so a grading panel is assembled with `Scorers.MultiScorer`.
 
 ## How the components fit together
+
+> **In plain words.** One sample's journey in six steps: sample to `TaskState`, setup and solver, model output landing in the state, scorer, reducer and metrics, eval log. The diagram is the same thing drawn, and the list at the end shows that each piece can be swapped without touching the others.
 
 The clearest way to see the pipeline is to follow one sample from dataset to eval log.
 
@@ -570,9 +654,13 @@ Each piece can be replaced without touching the others. The most common swaps ar
 
 ### In the .NET port
 
+> **In plain words.** The same pipeline in C#: `Eval.RunAsync` fans out per sample and epoch, `SampleRunner` runs setup, solver and scorers, `EvalResultsBuilder` reduces and computes metrics, and `EvalLogWriter` writes the log.
+
 The pipeline runs the same way. `Eval.RunAsync` fans out one run per sample and epoch; `SampleRunner` builds the `TaskState`, runs setup and solver, marks the state completed, and runs each `ScorerDef`; `EvalResultsBuilder` reduces epochs per sample id before computing metrics; and `EvalLogWriter` writes an eval log the Python tools can read.
 
 ## Where to read next
+
+> **In plain words.** Links: the official Inspect docs for each component and the tutorial, plus this repository's architecture document for the C# layout.
 
 - Inspect docs: [Tasks](https://inspect.aisi.org.uk/tasks.html), [Datasets](https://inspect.aisi.org.uk/datasets.html), [Solvers](https://inspect.aisi.org.uk/solvers.html), [Scorers](https://inspect.aisi.org.uk/scorers.html), and the [Tutorial](https://inspect.aisi.org.uk/tutorial.html) with complete worked examples.
 - This repository: [docs/ARCHITECTURE.md](ARCHITECTURE.md) on how the .NET port lays out the same components in C#.

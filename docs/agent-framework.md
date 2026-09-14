@@ -28,6 +28,13 @@ flowchart LR
 
 ## Three ways to bridge, and which one this is
 
+> **In plain words.** There are three places you could connect Agent Framework to Inspect, and the table says which
+> one this project is. The one that is built is *in-process*: Agent Framework asks for a chat client, and it is handed
+> one that is secretly Inspect's model, so there is no web server, no container and no HTTP. The second option would
+> run the existing bridge web server on the loopback address and point Agent Framework's OpenAI client at it; that
+> works today but is not wired into the showcase. The third, running Agent Framework inside the sandbox container the
+> way Claude Code runs there, is not built because the container image would need a .NET runtime.
+
 | Level | How | Status |
 |---|---|---|
 | **In-process `IChatClient`** | `InspectChatClient` translates Microsoft.Extensions.AI messages, tools and options into `AgentBridge.GenerateAsync` calls and the `ModelOutput` back into a `ChatResponse`. No HTTP, no container, works for every provider in the port. | **Built** — this project. |
@@ -35,6 +42,15 @@ flowchart LR
 | Agent Framework inside the sandbox | A .NET console app in the container with `OPENAI_BASE_URL` set to the host bridge, the way `ClaudeCodeAgent` runs the CLI. | Not built (needs a .NET runtime in the sandbox image). |
 
 ## The pieces
+
+> **In plain words.** The three C# types that make it work. `InspectChatClient` is the adapter: Agent Framework speaks
+> Microsoft.Extensions.AI (messages, tools, options), and this class translates each request into a call on Inspect's
+> `AgentBridge` and translates the model's reply back, including any tool calls the model wants made.
+> `ToolDefFunction` goes the other way: it wraps an Inspect tool (such as the sandbox `bash`) as an Agent Framework
+> function, so when the framework runs it, Inspect's own tool executor does the work and records the transcript event.
+> `AgentFramework.Agent(options)` is the factory that builds the framework agent over those two and runs the outer
+> attempt loop. The `MafAgentOptions` paragraph lists every knob: instructions, tools, whether there is a submit tool,
+> attempts, model, refusal retries, cache, approval, a custom agent factory, and whether to record tool events.
 
 | Type | Role |
 |---|---|
@@ -49,6 +65,18 @@ model), `RetryRefusals`, `Cache`, `Approval`, `AgentFactory` (`Func<IChatClient,
 custom `ChatClientAgent`, extra middleware, or a workflow wrapped as an agent), `RecordToolEvents`.
 
 ## What a run does
+
+> **In plain words.** The six numbered steps are one sample from start to finish. (1) Set-up: take the sample's model,
+> build a bridge over the agent state, wrap it as a chat client, and wrap that in the framework's tool-running client
+> with its round-trip cap removed, so Inspect's limits are the only limits. (2) Hand the sample's messages to the
+> framework as the first turn of a fresh session; the framework resends the whole history on every call, which is how
+> the bridge keeps Inspect's copy of the conversation current. (3) Middleware around every tool call: record a
+> `ToolEvent` for framework-side functions, catch limit and termination exceptions to re-throw later, and stop the
+> loop once the iteration containing the submit call has finished. (4) The last round's tool results never go back to
+> the model, so they are copied into the state and the submitted answer becomes the completion. (5) If attempts
+> remain, the submission is scored and the model is told it was wrong; if the agent stopped without submitting, it is
+> nudged to continue. (6) Limits from model calls propagate out; approval rejections are answered before the framework
+> ever sees the call; a call the framework left un-run fails the run outright.
 
 1. `SampleContext.Require()` supplies the model; an `AgentBridge` is built over the incoming `AgentState` with the
    options' approval policies, refusal retries and cache policy; an `InspectChatClient` wraps it, and a
@@ -80,6 +108,12 @@ custom `ChatClientAgent`, extra middleware, or a workflow wrapped as an agent), 
 
 ## Using it
 
+> **In plain words.** A complete example: define a plain C# function as a tool, add the sandbox `bash` tool from
+> Inspect, build the agent with instructions and two attempts, and drop it into an `EvalTask` as the solver. Because
+> the adapter is just an `IChatClient`, any library that accepts one (Semantic Kernel, a raw Microsoft.Extensions.AI
+> pipeline) can be pointed at Inspect the same way. The last paragraph says what the showcase's `--agent maf` does and
+> which of the showcase flags apply to it.
+
 ```csharp
 using InspectAzureAI.Eval.Agents;
 using InspectAzureAI.Eval.Tools;
@@ -106,6 +140,11 @@ same scripted turns as `basic`.
 
 ## Tests
 
+> **In plain words.** What the 45 offline tests cover, in three layers: the translation in both directions
+> (`MafConversionTests`), the chat client over a scripted model (`InspectChatClientTests`), and full `Eval.RunAsync`
+> runs with a real framework agent (`MafAgentTests`): the tool loop, attempts, limits, approval, tool events, error
+> handling and cancellation. `Swe.Tests` adds the showcase-level checks. None of them need Docker or a network.
+
 `tests/InspectAzureAI.Maf.Tests` (45 tests, offline, no Docker):
 
 - `MafConversionTests`: both directions of the message translation (text, instructions, function calls and
@@ -129,6 +168,10 @@ same scripted turns as `basic`.
 
 ## Verified against a live Foundry resource
 
+> **In plain words.** Proof that it works for real: two runs on a given date against a live Foundry resource, one on a
+> GPT deployment and one on Claude through the Anthropic-on-Foundry route, with the score, tokens, time and exactly
+> which model and tool calls happened. Both passed and left no container behind.
+
 Run on 2026-09-07 against `https://myfoundry0406.services.ai.azure.com/models` (Entra ID through `az login`),
 Docker 29.5 on an arm64 host, `--sandbox docker`; Microsoft.Agents.AI 1.20.0 on Microsoft.Extensions.AI 10.9.0.
 
@@ -138,6 +181,15 @@ Docker 29.5 on an arm64 host, `--sandbox docker`; Microsoft.Agents.AI 1.20.0 on 
 | hello-swe (2, `--sample-id 2`) | claude-sonnet-4-6 (anthropic) | `exec_check=C` | 9,059 | 26.9 s | The Anthropic-on-Foundry route through the same adapter: 6 model calls, 5 tool calls (`bash` to read and rewrite `words.py`, then `submit`); the submission text became `output.completion`. No leftover container. |
 
 ## Fidelity notes and limits
+
+> **In plain words.** The numbered list of where this adapter deliberately differs from Python's `agent_bridge()`, or
+> has an edge worth knowing. The themes: only ordinary function tools cross to the model (hosted tools are refused,
+> not silently dropped); instructions become one system message; tool arguments arrive as JSON elements, as they would
+> from a real provider; errors from framework-side tools and from Inspect tools reach the model by different routes;
+> streaming is synthesised after the fact; generation settings are mapped but stripped unless the bridge is told to
+> forward them; compaction is not available because the framework owns its history; how the submit tool stops the loop
+> and what happens to its sibling calls; how a limit raised inside a tool surfaces; only the eval model is
+> addressable; and the completion is the submitted answer alone.
 
 1. Only `AIFunction` tools cross to the model; a hosted tool (web search, code interpreter, MCP server objects)
    is refused with `NotSupportedException` rather than dropped, since the Inspect model could not honour it.
